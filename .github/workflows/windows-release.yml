@@ -1,0 +1,50 @@
+name: Windows release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version to place in the unsigned beta installer
+        required: true
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --omit=dev
+      - run: npm test
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+      - name: Select release version
+        id: version
+        shell: pwsh
+        run: |
+          $requested = '${{ inputs.version }}'
+          if ([string]::IsNullOrWhiteSpace($requested)) {
+            $requested = '${{ github.ref_name }}'.TrimStart('v')
+          }
+          "value=$requested" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Build unsigned beta installer and checksums
+        run: node tools/build-release.mjs --installer --version "${{ steps.version.outputs.value }}"
+      - name: Audit staged public tree
+        run: npm run release:audit -- --root dist/release/stage --stage --require-markers
+        env:
+          SCOUT_RELEASE_MARKERS: ${{ secrets.SCOUT_RELEASE_MARKERS }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Scout-${{ steps.version.outputs.value }}-windows-x64-unsigned
+          path: installer/output/*
+          if-no-files-found: error
+          retention-days: 30

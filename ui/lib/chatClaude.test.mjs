@@ -1,0 +1,66 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { buildClaudeArgs, parseClaudeLine } from './chatClaude.mjs';
+
+test('buildClaudeArgs: fresh session', () => {
+  assert.deepEqual(buildClaudeArgs(null), {
+    command: process.platform === 'win32' ? 'claude.cmd' : 'claude',
+    args: [
+      '-p', '--output-format', 'stream-json', '--verbose',
+      '--permission-mode', 'acceptEdits',
+    ],
+  });
+  assert.deepEqual(buildClaudeArgs(null, { model: 'claude-example' }).args.slice(-2), ['--model', 'claude-example']);
+});
+
+test('buildClaudeArgs: resume appends --resume, rejects bad ids', () => {
+  const { args } = buildClaudeArgs('abc-123-DEF');
+  assert.deepEqual(args.slice(-2), ['--resume', 'abc-123-DEF']);
+  assert.throws(() => buildClaudeArgs('bad id; rm -rf'), /invalid session id/i);
+});
+
+test('parseClaudeLine: init event yields session', () => {
+  const line = JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-1' });
+  assert.deepEqual(parseClaudeLine(line), [{ kind: 'session', sessionId: 'sess-1' }]);
+});
+
+test('parseClaudeLine: assistant message yields deltas and tools', () => {
+  const line = JSON.stringify({
+    type: 'assistant',
+    message: {
+      content: [
+        { type: 'text', text: 'Working on it.' },
+        { type: 'tool_use', name: 'Edit', input: { file_path: 'C:/repo/applications/acme/cv.typ' } },
+        { type: 'tool_use', name: 'Bash', input: { command: 'typst compile …' } },
+      ],
+    },
+  });
+  assert.deepEqual(parseClaudeLine(line), [
+    { kind: 'delta', text: 'Working on it.' },
+    { kind: 'tool', label: 'Edit: C:/repo/applications/acme/cv.typ', file: 'C:/repo/applications/acme/cv.typ', activity: 'writing' },
+    { kind: 'tool', label: 'Bash', file: null, activity: 'thinking' },
+  ]);
+});
+
+test('parseClaudeLine: result yields session then done with usage', () => {
+  const line = JSON.stringify({
+    type: 'result', subtype: 'success', is_error: false, result: 'All done.',
+    session_id: 'sess-1', total_cost_usd: 0.12, usage: { output_tokens: 42 },
+  });
+  assert.deepEqual(parseClaudeLine(line), [
+    { kind: 'session', sessionId: 'sess-1' },
+    { kind: 'done', text: 'All done.', ok: true, usage: { costUsd: 0.12, output_tokens: 42 } },
+  ]);
+});
+
+test('parseClaudeLine: error result has ok false', () => {
+  const line = JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'boom' });
+  const events = parseClaudeLine(line);
+  assert.equal(events.at(-1).ok, false);
+});
+
+test('parseClaudeLine: malformed and unknown lines yield []', () => {
+  assert.deepEqual(parseClaudeLine('not json {'), []);
+  assert.deepEqual(parseClaudeLine(''), []);
+  assert.deepEqual(parseClaudeLine(JSON.stringify({ type: 'user' })), []);
+});

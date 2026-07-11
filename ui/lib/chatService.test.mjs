@@ -1,0 +1,308 @@
+import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { ENGINES, registerChatRoutes } from './chatService.mjs';
+import { parseClaudeLine } from './chatClaude.mjs';
+import { emptyChat, loadChat, saveChat } from './chatStore.mjs';
+import { HANDOFF_SUMMARY_PROMPT } from './chatPrompts.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const FAKE = path.join(HERE, 'fixtures', 'fake-cli.mjs');
+const ID = 'acme-role-2026-07';
+const ENTRY = { id: ID, company: 'Acme', role: 'Engineer' };
+
+class MockResponse extends EventEmitter {
+  constructor() {
+    super();
+    this.statusCode = null;
+    this.headers = {};
+    this.headersSent = false;
+    this.chunks = [];
+    this.destroyed = false;
+    this.writableEnded = false;
+    this.finished = new Promise((resolve) => { this.resolveFinished = resolve; });
+  }
+
+  writeHead(statusCode, headers) {
+    this.statusCode = statusCode;
+    this.headers = headers;
+    this.headersSent = true;
+  }
+
+  write(chunk) {
+    this.chunks.push(String(chunk));
+    return true;
+  }
+
+  end(chunk) {
+    if (chunk !== undefined) this.write(chunk);
+    this.writableEnded = true;
+    this.resolveFinished();
+  }
+
+  text() { return this.chunks.join(''); }
+}
+
+function tmpRoot() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'scout-chat-service-'));
+}
+
+function routeFixture(root, overrides = {}) {
+  const routes = {};
+  registerChatRoutes({
+    routes,
+    repoRoot: root,
+    readTracker: () => ({ opportunities: [ENTRY] }),
+    ...overrides,
+  });
+  return routes;
+}
+
+async function callRoute(handler, body, { closeRequest = false } = {}) {
+  const req = new EventEmitter();
+  const res = new MockResponse();
+  handler(req, res, body);
+  if (closeRequest) req.emit('close');
+  await res.finished;
+  return res;
+}
+
+function sseEvents(text) {
+  return text.trim().split('\n\n').map((block) => {
+    const lines = block.split('\n');
+    const event = lines.find((line) => line.startsWith('event: '))?.slice(7);
+    const data = lines.find((line) => line.startsWith('data: '))?.slice(6);
+    return { event, data: JSON.parse(data) };
+  });
+}
+
+function fakeBuild(calls, engine) {
+  return (resumeId) => {
+    calls.push({ engine, resumeId });
+    return { command: 'node', args: [FAKE] };
+  };
+}
+
+test('handoff route summarises the old session, starts the other engine, and persists it', { concurrency: false }, async () => {
+  const root = tmpRoot();
+  const chat = emptyChat('claude');
+  chat.cliSessionId = 'old-session';
+  saveChat(root, ID, chat);
+  const calls = [];
+  const oldClaude = ENGINES.claude;
+  const oldCodex = ENGINES.codex;
+  ENGINES.claude = { build: fakeBuild(calls, 'claude'), parse: parseClaudeLine };
+  ENGINES.codex = { build: fakeBuild(calls, 'codex'), parse: parseClaudeLine };
+
+  try {
+    const res = await callRoute(
+      routeFixture(root)['POST /api/chat/handoff'],
+      JSON.stringify({ id: ID }),
+      { closeRequest: true },
+    );
+    assert.equal(res.statusCode, 200);
+    assert.match(res.headers['Content-Type'], /text\/event-stream/);
+    const events = sseEvents(res.text());
+    assert.deepEqual(events.filter((ev) => ev.event === 'status').map((ev) => ev.data.message), [
+      'asking claude for a handoff summary…',
+      'starting codex with the summary…',
+    ]);
+    assert.ok(events.some((ev) => ev.event === 'delta'));
+    assert.deepEqual(events.at(-1), { event: 'done', data: { engine: 'codex' } });
+    assert.deepEqual(calls, [
+      { engine: 'claude', resumeId: 'old-session' },
+      { engine: 'codex', resumeId: null },
+    ]);
+
+    const saved = loadChat(root, ID);
+    assert.equal(saved.engine, 'codex');
+    assert.equal(saved.cliSessionId, 'fake-sess-1');
+    assert.equal(saved.handoffs.length, 1);
+    assert.deepEqual(saved.handoffs[0].from, 'claude');
+    assert.deepEqual(saved.handoffs[0].to, 'codex');
+    assert.ok(saved.messages.some((m) => m.role === 'system' && m.text.includes(`echo: ${HANDOFF_SUMMARY_PROMPT}`)));
+    assert.ok(saved.messages.some((m) => m.role === 'user' && m.text.includes('taking over an in-progress task')));
+    assert.ok(saved.messages.some((m) => m.role === 'assistant' && m.text.includes('taking over an in-progress task')));
+    assert.deepEqual(saved.filesTouched, ['applications/acme/cv.typ']);
+  } finally {
+    ENGINES.claude = oldClaude;
+    ENGINES.codex = oldCodex;
+  }
+});
+
+test('handoff route persists the switch and summary when the replacement turn fails', { concurrency: false }, async () => {
+  const root = tmpRoot();
+  const chat = emptyChat('claude');
+  chat.cliSessionId = 'old-session';
+  saveChat(root, ID, chat);
+  const oldClaude = ENGINES.claude;
+  const oldCodex = ENGINES.codex;
+  ENGINES.claude = { build: fakeBuild([], 'claude'), parse: parseClaudeLine };
+  ENGINES.codex = {
+    build: fakeBuild([], 'codex'),
+    parse: (line) => {
+      let event;
+      try { event = JSON.parse(line); } catch { return []; }
+      if (event.type === 'result') return [
+        { kind: 'session', sessionId: 'replacement-session' },
+        { kind: 'tool', label: 'Edit: applications/acme/failed.typ', file: 'applications/acme/failed.typ' },
+        { kind: 'done', text: 'replacement failed', ok: false, usage: {} },
+      ];
+      return [];
+    },
+  };
+
+  try {
+    const res = await callRoute(routeFixture(root)['POST /api/chat/handoff'], JSON.stringify({ id: ID }));
+    const events = sseEvents(res.text());
+    assert.equal(events.at(-1).event, 'error');
+    assert.equal(events.at(-1).data.message, 'replacement failed');
+    assert.equal(events.at(-1).data.engine, 'codex');
+    assert.equal(events.at(-1).data.sessionId, 'replacement-session');
+    const saved = loadChat(root, ID);
+    assert.equal(saved.engine, 'codex');
+    assert.equal(saved.cliSessionId, 'replacement-session');
+    assert.ok(saved.filesTouched.includes('applications/acme/failed.typ'));
+    assert.equal(saved.handoffs.length, 1);
+    assert.ok(saved.messages.some((m) => m.role === 'system' && m.text.startsWith('handoff summary:')));
+    assert.equal(saved.messages.at(-1).text, 'replacement failed');
+  } finally {
+    ENGINES.claude = oldClaude;
+    ENGINES.codex = oldCodex;
+  }
+});
+
+test('handoff route rejects malformed JSON and chats without a resumable session', { concurrency: false }, async () => {
+  const root = tmpRoot();
+  const route = routeFixture(root)['POST /api/chat/handoff'];
+  const badJson = await callRoute(route, '{');
+  assert.equal(badJson.statusCode, 400);
+  assert.deepEqual(JSON.parse(badJson.text()), { error: 'bad json' });
+
+  const missing = await callRoute(route, JSON.stringify({ id: ID }));
+  assert.equal(missing.statusCode, 400);
+  assert.deepEqual(JSON.parse(missing.text()), { error: 'no conversation to hand off yet' });
+});
+
+test('a failed cold start keeps history but allows retrying with the other engine', { concurrency: false }, async () => {
+  const root = tmpRoot();
+  const routes = routeFixture(root);
+  const calls = [];
+  const oldClaude = ENGINES.claude;
+  const oldCodex = ENGINES.codex;
+  ENGINES.claude = { build: fakeBuild(calls, 'claude'), parse: parseClaudeLine };
+  ENGINES.codex = { build: fakeBuild(calls, 'codex'), parse: parseClaudeLine };
+
+  try {
+    const failed = await callRoute(
+      routes['POST /api/chat/send'],
+      JSON.stringify({ id: ID, engine: 'claude', text: 'FAIL' }),
+    );
+    assert.equal(sseEvents(failed.text()).at(-1).event, 'error');
+
+    const req = new EventEmitter();
+    const get = new MockResponse();
+    routes['GET /api/chat'](req, get, '', new URL(`http://127.0.0.1/api/chat?id=${ID}`));
+    await get.finished;
+    const visible = JSON.parse(get.text());
+    assert.equal(visible.exists, true);
+    assert.equal(visible.chat.engine, null);
+    assert.ok(visible.chat.messages.some((message) => message.role === 'system'));
+
+    const retried = await callRoute(
+      routes['POST /api/chat/send'],
+      JSON.stringify({ id: ID, engine: 'codex', text: 'hello' }),
+    );
+    assert.equal(sseEvents(retried.text()).at(-1).event, 'done');
+    const saved = loadChat(root, ID);
+    assert.equal(saved.engine, 'codex');
+    assert.equal(saved.cliSessionId, 'fake-sess-1');
+    assert.deepEqual(calls.map((call) => call.engine), ['claude', 'codex']);
+  } finally {
+    ENGINES.claude = oldClaude;
+    ENGINES.codex = oldCodex;
+  }
+});
+
+test('a failed send preserves emitted session and file metadata for retry', { concurrency: false }, async () => {
+  const root = tmpRoot();
+  const oldClaude = ENGINES.claude;
+  ENGINES.claude = {
+    build: fakeBuild([], 'claude'),
+    parse: (line) => {
+      let event;
+      try { event = JSON.parse(line); } catch { return []; }
+      if (event.type !== 'result') return [];
+      return [
+        { kind: 'session', sessionId: 'failed-session' },
+        { kind: 'tool', label: 'Edit: applications/acme/partial.typ', file: 'applications/acme/partial.typ' },
+        { kind: 'done', text: 'failed after editing', ok: false, usage: {} },
+      ];
+    },
+  };
+
+  try {
+    const response = await callRoute(
+      routeFixture(root)['POST /api/chat/send'],
+      JSON.stringify({ id: ID, engine: 'claude', text: 'hello' }),
+    );
+    assert.equal(sseEvents(response.text()).at(-1).event, 'error');
+    const saved = loadChat(root, ID);
+    assert.equal(saved.cliSessionId, 'failed-session');
+    assert.deepEqual(saved.filesTouched, ['applications/acme/partial.typ']);
+  } finally {
+    ENGINES.claude = oldClaude;
+  }
+});
+
+test('handoff build errors end SSE and release the running slot', { concurrency: false }, async () => {
+  const root = tmpRoot();
+  const chat = emptyChat('claude');
+  chat.cliSessionId = 'old-session';
+  saveChat(root, ID, chat);
+  const oldClaude = ENGINES.claude;
+  ENGINES.claude = { build: () => { throw new Error('bad saved session'); }, parse: parseClaudeLine };
+
+  try {
+    const routes = routeFixture(root);
+    const response = await callRoute(routes['POST /api/chat/handoff'], JSON.stringify({ id: ID }));
+    assert.deepEqual(sseEvents(response.text()).at(-1), {
+      event: 'error', data: { message: 'summary failed: bad saved session' },
+    });
+    const get = new MockResponse();
+    routes['GET /api/chat'](new EventEmitter(), get, '', new URL(`http://127.0.0.1/api/chat?id=${ID}`));
+    await get.finished;
+    assert.equal(JSON.parse(get.text()).busy, false);
+  } finally {
+    ENGINES.claude = oldClaude;
+  }
+});
+
+test('handoff save errors end SSE and release the running slot', { concurrency: false }, async () => {
+  const root = tmpRoot();
+  const chat = emptyChat('claude');
+  chat.cliSessionId = 'old-session';
+  saveChat(root, ID, chat);
+  const oldClaude = ENGINES.claude;
+  ENGINES.claude = { build: fakeBuild([], 'claude'), parse: parseClaudeLine };
+
+  try {
+    const routes = routeFixture(root, {
+      saveChatFn: () => { throw new Error('disk full'); },
+    });
+    const response = await callRoute(routes['POST /api/chat/handoff'], JSON.stringify({ id: ID }));
+    assert.deepEqual(sseEvents(response.text()).at(-1), {
+      event: 'error', data: { message: 'handoff transcript save failed: disk full' },
+    });
+    const get = new MockResponse();
+    routes['GET /api/chat'](new EventEmitter(), get, '', new URL(`http://127.0.0.1/api/chat?id=${ID}`));
+    await get.finished;
+    assert.equal(JSON.parse(get.text()).busy, false);
+  } finally {
+    ENGINES.claude = oldClaude;
+  }
+});

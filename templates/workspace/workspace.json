@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "locale": "en-GB",
+  "currency": "GBP",
+  "timezone": "Europe/London",
+  "profile": { "displayName": "", "tone": "natural, direct and evidence-led" },
+  "search": { "roleFamilies": [], "sectors": [], "locations": [], "exclusions": [], "salaryMinimum": null },
+  "triage": { "actionScore": 70, "checkScore": 55, "nudgeDays": 8, "closeoutDays": 10, "staleDays": 10, "decisionDays": 2 },
+  "sources": {
+    "adzuna": { "country": "gb", "where": "", "distanceKm": null, "resultsPerPage": 50 },
+    "hiringCafe": {}
+  },
+  "commute": { "origin": "", "mode": "either", "maxMinutes": 180, "includeUnknown": true },
+  "ai": { "provider": null, "model": null },
+  "schedule": { "enabled": false, "time": "07:30", "provider": null }
+}

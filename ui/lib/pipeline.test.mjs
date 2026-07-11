@@ -1,0 +1,52 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { pipeline, applicationSummary } from './pipeline.mjs';
+
+const entry = (over) => ({
+  id: over.id || 'x',
+  company: over.company || 'X',
+  role: over.role || 'Role',
+  status: over.status || 'watch',
+  score: over.score ?? 60,
+  tags: [],
+  lastChecked: over.lastChecked || '2026-07-01',
+  log: over.log || [],
+  application: over.application,
+});
+
+test('applicationSummary derives current stage and movement age', () => {
+  const e = entry({
+    status: 'interviewing',
+    application: {
+      appliedDate: '2026-07-01',
+      stages: [
+        { name: 'Applied', completed: true, date: '2026-07-01' },
+        { name: 'Technical call', completed: false, date: null },
+      ],
+    },
+  });
+  const out = applicationSummary(e, '2026-07-11');
+  assert.equal(out.currentStage, 'Technical call');
+  assert.equal(out.needsInterviewPrep, true);
+  assert.equal(out.daysSinceApplied, 10);
+});
+
+test('pipeline buckets active, awaiting, closed and flags work', () => {
+  const data = { opportunities: [
+    entry({ id: 'new', status: 'new', score: 80, lastChecked: '2026-07-01' }),
+    entry({ id: 'active', status: 'applied', application: { appliedDate: '2026-07-01', stages: [{ name: 'Applied', completed: true, date: '2026-07-01' }] } }),
+    entry({ id: 'prep', status: 'interviewing', application: { appliedDate: '2026-07-01', stages: [{ name: 'Screen', completed: false, date: null }] } }),
+    entry({ id: 'closed', status: 'rejected', application: { rejectedDate: '2026-07-09', stages: [{ name: 'Rejected', completed: true, date: '2026-07-09' }] } }),
+    entry({ id: 'watch', status: 'watch', score: 65 }),
+    entry({ id: 'accepted', status: 'accepted', score: 90 }),
+  ] };
+  const out = pipeline(data, '2026-07-12');
+  assert.deepEqual(out.new.map((x) => x.id), ['new']);
+  assert.deepEqual(out.watch.map((x) => x.id), ['watch']);
+  assert.deepEqual(out.awaitingDecision.map((x) => x.id), ['new', 'watch']);
+  assert.deepEqual(out.active.map((x) => x.id).sort(), ['active', 'prep']);
+  assert.deepEqual(out.recentlyClosed.map((x) => x.id).sort(), ['accepted', 'closed']);
+  assert.equal(out.summary.total, data.opportunities.length);
+  assert.equal(out.flags.some((f) => f.id === 'prep' && f.kind === 'interview-prep'), true);
+  assert.equal(out.flags.some((f) => f.id === 'active' && f.kind === 'stale'), true);
+});

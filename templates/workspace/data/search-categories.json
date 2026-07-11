@@ -1,0 +1,7 @@
+{
+  "_note": "User-defined search lanes. IDs remain stable for tracker compatibility; labels and rules are configurable.",
+  "categories": [
+    { "id": "startup", "label": "Priority", "description": "The user's primary opportunity lane.", "priority": "primary", "queries": [], "keeperRule": "Apply the profile rubric and hard exclusions." },
+    { "id": "established", "label": "Explore", "description": "A secondary lane for adjacent employers or opportunity types.", "priority": "secondary", "queries": [], "keeperRule": "Apply the same evidence and scoring standards as the priority lane." }
+  ]
+}

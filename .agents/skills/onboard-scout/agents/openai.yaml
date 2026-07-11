@@ -1,0 +1,4 @@
+interface:
+  display_name: "Onboard Scout"
+  short_description: "Set up and retune a private Scout workspace"
+  default_prompt: "Use $onboard-scout to set up or retune my Scout workspace safely."

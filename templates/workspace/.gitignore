@@ -1,0 +1,9 @@
+.env
+.agents/
+.claude/
+AGENTS.md
+CLAUDE.md
+.scout/
+logs/
+applications/**/*.pdf
+applications/**/*.docx

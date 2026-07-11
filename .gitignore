@@ -1,0 +1,26 @@
+# local scratch
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+.scout-scan.lock
+
+# rendered CV outputs (regenerable)
+applications/**/*.pdf
+applications/**/*.docx
+
+# per-opportunity chat transcripts (personal)
+data/chats/
+
+# local API credentials (Adzuna etc.)
+.env
+
+# installed dependencies and release output
+node_modules/
+dist/
+installer/output/
+
+# managed private workspace when kept beside a development checkout
+/workspace/
+/scratch_*
+/tmp/
