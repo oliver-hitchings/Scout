@@ -11,9 +11,14 @@ function quoteXml(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-export function taskXml({ command, args = [], workingDirectory, time, userId = process.env.USERNAME }) {
+function localDateTime(value) {
+  const pad = (number) => String(number).padStart(2, '0');
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}:00`;
+}
+
+export function taskXml({ command, args = [], workingDirectory, time, userId = process.env.USERNAME, now = new Date() }) {
   validateTime(time);
-  const start = `${new Date().toISOString().slice(0, 10)}T${time}:00`;
+  const start = localDateTime(new Date(nextScheduledRun(time, now)));
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers><CalendarTrigger><StartBoundary>${start}</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers>

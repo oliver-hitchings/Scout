@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import { nextScheduledRun, scheduleSummary, taskXml } from './scheduler.mjs';
 
 test('scheduled task is catch-up enabled, non-overlapping and time limited', () => {
-  const xml = taskXml({ command: 'node.exe', args: ['tools/scout.mjs', 'scan'], workingDirectory: 'C:\\Scout', time: '07:30', userId: 'user' });
+  const xml = taskXml({ command: 'node.exe', args: ['tools/scout.mjs', 'scan'], workingDirectory: 'C:\\Scout', time: '07:30', userId: 'user', now: new Date(2026, 6, 11, 8, 0) });
+  assert.match(xml, /<StartBoundary>2026-07-12T07:30:00<\/StartBoundary>/);
   assert.match(xml, /<StartWhenAvailable>true<\/StartWhenAvailable>/);
   assert.match(xml, /<MultipleInstancesPolicy>IgnoreNew<\/MultipleInstancesPolicy>/);
   assert.match(xml, /<ExecutionTimeLimit>PT45M<\/ExecutionTimeLimit>/);
