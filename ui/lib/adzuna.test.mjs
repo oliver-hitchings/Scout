@@ -33,6 +33,8 @@ test('adzunaUrl omits unset personal filters', () => {
 test('fetchAdzuna normalises jobs, locale/currency, and per-query counts', async () => {
   const result = await fetchAdzuna({ ...creds, queries: ['product designer'], locale: 'en-GB', currency: 'GBP' }, async () => response({ results: [item] }));
   assert.equal(result.available, true);
+  assert.equal(result.status, 'healthy');
+  assert.equal(result.count, 1);
   assert.equal(result.jobs.length, 1);
   assert.equal(result.jobs[0].company, 'Example Studio');
   assert.equal(result.jobs[0].salary, '\u00a360,000-\u00a370,000');
@@ -49,11 +51,15 @@ test('fetchAdzuna dedupes and fails soft per query', async () => {
   });
   assert.equal(result.jobs.length, 1);
   assert.equal(result.errors.length, 1);
+  assert.equal(result.status, 'degraded');
   assert.match(result.errors[0], /bad/);
 });
 
 test('fetchAdzuna reports unavailable without credentials or configured queries', async () => {
-  assert.deepEqual(await fetchAdzuna({ appId: '', apiKey: '', queries: ['x'] }), { jobs: [], sources: {}, errors: [], available: false });
+  const missing = await fetchAdzuna({ appId: '', apiKey: '', queries: ['x'] });
+  assert.equal(missing.available, false);
+  assert.equal(missing.status, 'unavailable');
+  assert.equal(missing.count, 0);
   const empty = await fetchAdzuna({ ...creds, queries: [] });
   assert.equal(empty.available, false);
   assert.match(empty.note, /no Adzuna queries/);

@@ -192,10 +192,9 @@ async function main() {
     }));
     if (source === 'adzuna') {
       const credentials = resolveAdzunaCredentials({ ...loadEnv(root), ...process.env });
-      if (!credentials) return print({ jobs: [], sources: {}, errors: [], available: false, note: 'Adzuna credentials are not configured in the private workspace.' });
       const adzuna = config.sources?.adzuna || {};
       return print(await fetchAdzuna({
-        ...credentials,
+        ...(credentials || {}),
         ...adzuna,
         queries,
         where: adzuna.where || config.search?.locations?.[0] || '',

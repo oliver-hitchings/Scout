@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  fetchGreenhouse, fetchLever, fetchAshby, parsePortalConfig, fetchPortal, portalSummary,
+  fetchGreenhouse, fetchLever, fetchAshby, parsePortalConfig, fetchPortal, fetchPortals, portalSummary,
 } from './ats.mjs';
 
 function response(body) {
@@ -51,4 +51,24 @@ test('parsePortalConfig validates shape and summary hides tokens', () => {
 test('fetchPortal skips disabled and unsupported portals', async () => {
   assert.deepEqual(await fetchPortal({ ...portal, enabled: false }, async () => { throw new Error('no'); }), []);
   assert.deepEqual(await fetchPortal({ ...portal, ats: 'manual' }, async () => { throw new Error('no'); }), []);
+});
+
+test('fetchAllPortals reports partial portal failures as degraded', async () => {
+  const result = await fetchPortals([
+    portal,
+    { ...portal, name: 'BrokenCo', token: 'broken' },
+  ], async (url) => {
+    if (String(url).includes('broken')) return { ok: false, status: 503 };
+    return response({ jobs: [] });
+  });
+  assert.equal(result.status, 'degraded');
+  assert.equal(result.count, 0);
+  assert.equal(result.errors.length, 1);
+});
+
+test('fetchPortals reports unavailable when no supported portals are enabled', async () => {
+  const result = await fetchPortals([{ ...portal, enabled: false }]);
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.count, 0);
+  assert.match(result.reason, /no supported ATS portals/);
 });

@@ -21,7 +21,7 @@ jobs:
       - run: npm test
       - name: Verify release staging
         run: node tools/build-release.mjs --stage-only
-      - name: Audit staged public tree
-        run: npm run release:audit -- --root dist/release/stage --stage
+      - name: Audit staged public tree with required private markers
+        run: npm run release:audit -- --root dist/release/stage --stage --require-markers
         env:
           SCOUT_RELEASE_MARKERS: ${{ secrets.SCOUT_RELEASE_MARKERS }}

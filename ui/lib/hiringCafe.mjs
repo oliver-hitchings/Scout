@@ -1,3 +1,5 @@
+import { withSourceStatus } from './sourceHealth.mjs';
+
 const HOME_URL = 'https://hiring.cafe/';
 
 export const DEFAULT_HIRING_CAFE_QUERIES = [];
@@ -47,7 +49,10 @@ export async function fetchHiringCafe(queries = DEFAULT_HIRING_CAFE_QUERIES, fet
   const sources = {};
   const errors = [];
   const seen = new Set();
-  if (!queries.length) return { jobs, sources, errors, available: false, note: 'no hiring.cafe queries configured' };
+  if (!queries.length) return withSourceStatus({
+    jobs, sources, errors, available: false, status: 'unavailable', count: 0,
+    reason: 'no hiring.cafe queries configured', note: 'no hiring.cafe queries configured',
+  });
 
   let buildId = null;
   try {
@@ -56,7 +61,10 @@ export async function fetchHiringCafe(queries = DEFAULT_HIRING_CAFE_QUERIES, fet
     buildId = extractBuildId(await home.text());
     if (!buildId) throw new Error('buildId not found in homepage (endpoint shape may have changed)');
   } catch (e) {
-    return { jobs: [], sources: {}, errors: [`hiring.cafe: ${e.message}`], available: false };
+    return withSourceStatus({
+      jobs: [], sources: {}, errors: [`hiring.cafe: ${e.message}`], available: false,
+      status: 'unavailable', count: 0, reason: e.message,
+    });
   }
 
   for (const query of queries) {
@@ -82,5 +90,8 @@ export async function fetchHiringCafe(queries = DEFAULT_HIRING_CAFE_QUERIES, fet
       errors.push(`hiring.cafe "${query}": ${e.message}`);
     }
   }
-  return { jobs, sources, errors, available: true };
+  return withSourceStatus({
+    jobs, sources, errors, available: true,
+    reason: errors.length ? `${errors.length} of ${queries.length} queries failed` : null,
+  });
 }

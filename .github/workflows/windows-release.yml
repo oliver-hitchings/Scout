@@ -17,6 +17,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,15 +38,66 @@ jobs:
             $requested = '${{ github.ref_name }}'.TrimStart('v')
           }
           "value=$requested" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Validate tag and package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json | ConvertFrom-Json).version
+          if ('${{ github.ref_name }}' -ne "v$packageVersion") {
+            throw "Tag ${{ github.ref_name }} does not match package version v$packageVersion"
+          }
       - name: Build unsigned beta installer and checksums
         run: node tools/build-release.mjs --installer --version "${{ steps.version.outputs.value }}"
       - name: Audit staged public tree
         run: npm run release:audit -- --root dist/release/stage --stage --require-markers
         env:
           SCOUT_RELEASE_MARKERS: ${{ secrets.SCOUT_RELEASE_MARKERS }}
+      - name: Smoke install, initialise workspace, and uninstall
+        shell: pwsh
+        run: |
+          $installer = Resolve-Path "installer/output/Scout-${{ steps.version.outputs.value }}-windows-x64.exe"
+          $install = Start-Process $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer failed with exit code $($install.ExitCode)" }
+          $installed = Join-Path $env:LOCALAPPDATA 'Programs\Scout'
+          $node = Join-Path $installed 'runtime\node.exe'
+          $cli = Join-Path $installed 'app\tools\scout.mjs'
+          if (-not (Test-Path $node) -or -not (Test-Path $cli)) { throw 'Installed Scout payload is incomplete' }
+          $workspace = Join-Path $env:RUNNER_TEMP 'Scout Workspace'
+          & $node $cli workspace init --workspace $workspace | Out-Null
+          if (-not (Test-Path (Join-Path $workspace 'workspace.json'))) { throw 'Workspace initialisation failed' }
+          $uninstaller = Join-Path $installed 'unins000.exe'
+          $uninstall = Start-Process $uninstaller -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed with exit code $($uninstall.ExitCode)" }
+          if (-not (Test-Path (Join-Path $workspace 'workspace.json'))) { throw 'Uninstall removed the private workspace' }
       - uses: actions/upload-artifact@v4
         with:
           name: Scout-${{ steps.version.outputs.value }}-windows-x64-unsigned
           path: installer/output/*
           if-no-files-found: error
           retention-days: 30
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Scout-${{ needs.build.outputs.version }}-windows-x64-unsigned
+          path: installer/output
+      - name: Publish tagged GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          gh release create "${{ github.ref_name }}" `
+            installer/output/Scout-$version-windows-x64.exe `
+            installer/output/checksums.txt `
+            --title "Scout $version" `
+            --notes-file docs/releases/$version.md `
+            --prerelease `
+            --verify-tag

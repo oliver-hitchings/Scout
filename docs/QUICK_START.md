@@ -7,7 +7,7 @@ Scout is a Windows-first, local-first opportunity finder. It keeps your career d
 Download the Windows installer and its `checksums.txt` from the same GitHub release. Compare the installer SHA-256 hash before running it:
 
 ```powershell
-Get-FileHash .\Scout-0.1.0-beta.2-windows-x64.exe -Algorithm SHA256
+Get-FileHash .\Scout-0.1.0-beta.3-windows-x64.exe -Algorithm SHA256
 ```
 
 The first unsigned beta may trigger Microsoft SmartScreen. A matching checksum proves file integrity, not publisher trust. Scout installs for the current user under `%LOCALAPPDATA%\Programs\Scout` and does not require administrator rights.

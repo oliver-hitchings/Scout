@@ -32,6 +32,8 @@ test('fetchHiringCafe normalises hits and skips expired ones', async () => {
     return dataResponse([hit, { ...hit, is_expired: true }]);
   });
   assert.equal(result.available, true);
+  assert.equal(result.status, 'healthy');
+  assert.equal(result.count, 1);
   assert.equal(result.jobs.length, 1);
   assert.equal(result.jobs[0].salary, 'GBP 60,000-75,000');
   assert.deepEqual(result.sources, { 'product designer': 1 });
@@ -40,6 +42,7 @@ test('fetchHiringCafe normalises hits and skips expired ones', async () => {
 test('fetchHiringCafe fails soft when build id or a query fails', async () => {
   const missing = await fetchHiringCafe(['x'], async () => ({ ok: true, text: async () => 'not next.js' }));
   assert.equal(missing.available, false);
+  assert.equal(missing.status, 'unavailable');
   let call = 0;
   const partial = await fetchHiringCafe(['a', 'b'], async () => {
     call += 1;
@@ -49,6 +52,19 @@ test('fetchHiringCafe fails soft when build id or a query fails', async () => {
   });
   assert.equal(partial.jobs.length, 1);
   assert.equal(partial.errors.length, 1);
+  assert.equal(partial.status, 'degraded');
+  assert.match(partial.reason, /1 of 2/);
+});
+
+test('fetchHiringCafe treats a successful empty search as healthy', async () => {
+  let call = 0;
+  const result = await fetchHiringCafe(['rare role'], async () => {
+    call += 1;
+    return call === 1 ? homepage('bld1') : dataResponse([]);
+  });
+  assert.equal(result.status, 'healthy');
+  assert.equal(result.count, 0);
+  assert.deepEqual(result.errors, []);
 });
 
 test('default queries are empty until onboarding configures the search', async () => {
