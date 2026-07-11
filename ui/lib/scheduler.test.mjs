@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { taskXml } from './scheduler.mjs';
+import { nextScheduledRun, scheduleSummary, taskXml } from './scheduler.mjs';
 
 test('scheduled task is catch-up enabled, non-overlapping and time limited', () => {
   const xml = taskXml({ command: 'node.exe', args: ['tools/scout.mjs', 'scan'], workingDirectory: 'C:\\Scout', time: '07:30', userId: 'user' });
@@ -13,4 +13,25 @@ test('scheduled task is catch-up enabled, non-overlapping and time limited', () 
 
 test('scheduled task rejects invalid times', () => {
   assert.throws(() => taskXml({ command: 'node', workingDirectory: '.', time: '25:00' }), /HH:MM/);
+});
+
+test('nextScheduledRun chooses today or tomorrow in local time', () => {
+  const before = new Date(2026, 6, 11, 6, 0);
+  const sameDay = new Date(nextScheduledRun('07:30', before));
+  assert.deepEqual([sameDay.getDate(), sameDay.getHours(), sameDay.getMinutes()], [11, 7, 30]);
+  const after = new Date(2026, 6, 11, 8, 0);
+  const nextDay = new Date(nextScheduledRun('07:30', after));
+  assert.deepEqual([nextDay.getDate(), nextDay.getHours(), nextDay.getMinutes()], [12, 7, 30]);
+});
+
+test('scheduleSummary distinguishes saved configuration from a live task', () => {
+  const config = { ai: { provider: 'claude' }, schedule: { enabled: true, time: '07:30', provider: 'claude' } };
+  const missing = scheduleSummary(config, { lastRunAt: null }, { ok: false, supported: true }, new Date('2026-07-11T06:00:00.000Z'));
+  assert.equal(missing.configured, true);
+  assert.equal(missing.enabled, false);
+  const live = scheduleSummary(config, { lastRunAt: '2026-07-11T05:00:00Z', healthy: false, degraded: true }, { ok: true, supported: true }, new Date('2026-07-11T06:00:00.000Z'));
+  assert.equal(live.enabled, true);
+  assert.equal(live.lastResult, 'degraded');
+  const next = new Date(live.nextRunAt);
+  assert.deepEqual([next.getHours(), next.getMinutes()], [7, 30]);
 });

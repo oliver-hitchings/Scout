@@ -391,6 +391,9 @@ const Scout = {
     const healthText = h
       ? `${h.healthy ? 'healthy' : (h.stale ? 'stale' : 'degraded')}${h.reason ? ' - ' + h.reason : ''}`
       : 'unknown';
+    const sourceHealth = (h?.sourceHealth || []).length
+      ? `<div class="source-health">${h.sourceHealth.map((source) => `<span class="chip source-${this.esc(source.status)}" title="${this.esc(source.reason || '')}">${this.esc(source.name)}: ${this.esc(source.status)}${source.count === null ? '' : ` (${this.esc(source.count)})`}</span>`).join('')}</div>`
+      : '<div class="meta">No per-source health was recorded for this run.</div>';
     const flags = p.flags.length
       ? '<div class="label">Flags</div>' + p.flags.map((f) =>
           `<div class="card flag" data-id="${this.esc(f.id)}" onclick="Scout.expandCard(${this.jsArg(f.id)},this)">
@@ -414,6 +417,7 @@ const Scout = {
       <div class="card">
         <div class="top"><b>Scan health</b><span class="chip">${this.esc(healthText)}</span></div>
         <div class="meta">last run: ${this.esc(h && h.lastRunAt ? h.lastRunAt : 'never')} - keepers: ${this.esc(h && h.keepersAdded !== null ? h.keepersAdded : 'n/a')} - candidates: ${this.esc(h && h.candidatesFound !== null ? h.candidatesFound : 'n/a')}</div>
+        ${sourceHealth}
       </div>
       ${flags}
       <div class="split">

@@ -29,6 +29,31 @@ export function scheduleStatus({ spawn = spawnSync } = {}) {
   return { ok: r.status === 0, supported: true, output: String(r.stdout || r.stderr || '').trim() };
 }
 
+export function nextScheduledRun(time, now = new Date()) {
+  validateTime(time);
+  const [hours, minutes] = time.split(':').map(Number);
+  const next = new Date(now);
+  next.setHours(hours, minutes, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next.toISOString();
+}
+
+export function scheduleSummary(config = {}, scanHealth = null, task = null, now = new Date()) {
+  const schedule = config.schedule || {};
+  const enabled = Boolean(schedule.enabled && task?.ok);
+  return {
+    enabled,
+    configured: Boolean(schedule.enabled),
+    provider: schedule.provider || config.ai?.provider || null,
+    time: schedule.time || null,
+    nextRunAt: enabled && schedule.time ? nextScheduledRun(schedule.time, now) : null,
+    lastRunAt: scanHealth?.lastRunAt || null,
+    lastResult: !scanHealth?.lastRunAt ? 'never' : scanHealth.healthy ? 'healthy' : scanHealth.stale ? 'stale' : 'degraded',
+    taskOk: Boolean(task?.ok),
+    supported: task?.supported !== false,
+  };
+}
+
 export function removeSchedule({ spawn = spawnSync } = {}) {
   const r = spawn('schtasks.exe', ['/Delete', '/TN', TASK_NAME, '/F'], { encoding: 'utf8', windowsHide: true });
   return { ok: r.status === 0, output: String(r.stdout || r.stderr || '').trim() };

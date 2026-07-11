@@ -79,8 +79,8 @@ Run `scout` without arguments for command help.
 Requirements: Windows 10/11, Node.js 20 or later, Git, and at least one authenticated provider CLI.
 
 ```powershell
-git clone <public-scout-repository>
-cd scout
+git clone https://github.com/oliver-hitchings/Scout.git
+cd Scout
 npm install
 $env:SCOUT_WORKSPACE = "$HOME\Documents\Scout Workspace"
 node tools/scout.mjs workspace init
@@ -88,7 +88,7 @@ npm test
 npm start
 ```
 
-Open `http://127.0.0.1:8459`. Do not use this current private repository as the source for a public clone or release.
+Open `http://127.0.0.1:8459`. Use a synthetic workspace for development and never copy private workspace content into tests, screenshots or commits.
 
 ## Documentation
 

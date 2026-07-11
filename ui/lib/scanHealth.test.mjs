@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseScanRuns, scanHealthFromText } from './scanHealth.mjs';
+import { normaliseSourceHealth, parseScanRuns, scanHealthFromText } from './scanHealth.mjs';
 
 test('parseScanRuns parses jsonl and reports bad lines', () => {
   const out = parseScanRuns('{"timestamp":"2026-07-08T07:30:00"}\nnope\n');
@@ -39,5 +39,30 @@ test('scanHealthFromText flags stale and degraded runs', () => {
   const degraded = scanHealthFromText('{"timestamp":"2026-07-08T07:30:00","search_degraded":true,"errors":[]}\n', '2026-07-08');
   assert.equal(degraded.degraded, true);
   assert.equal(degraded.healthy, false);
+});
+
+test('normaliseSourceHealth distinguishes healthy, degraded and unavailable sources', () => {
+  const result = normaliseSourceHealth({
+    api_sources: { adzuna: 4, hiring_cafe: 0, ats: 12 },
+    errors: ['hiring.cafe returned 0 results', 'ATS one portal failed'],
+  });
+  assert.deepEqual(result, [
+    { name: 'adzuna', status: 'healthy', count: 4, reason: null },
+    { name: 'ats', status: 'degraded', count: 12, reason: 'ATS one portal failed' },
+    { name: 'hiring_cafe', status: 'unavailable', count: 0, reason: 'hiring.cafe returned 0 results' },
+  ]);
+});
+
+test('normaliseSourceHealth prefers explicit source records from new scans', () => {
+  assert.deepEqual(normaliseSourceHealth({
+    source_health: {
+      hiring_cafe: { status: 'healthy', count: 0, reason: null },
+      ats: { status: 'degraded', count: 8, reason: 'one portal blocked' },
+    },
+    errors: ['unrelated wording'],
+  }), [
+    { name: 'ats', status: 'degraded', count: 8, reason: 'one portal blocked' },
+    { name: 'hiring_cafe', status: 'healthy', count: 0, reason: null },
+  ]);
 });
 

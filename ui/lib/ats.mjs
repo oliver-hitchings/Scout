@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { withSourceStatus } from './sourceHealth.mjs';
 
 const SUPPORTED_ATS = ['greenhouse', 'lever', 'ashby'];
 
@@ -92,13 +93,16 @@ export async function fetchPortal(portal, fetchImpl = globalThis.fetch) {
   return fetchAshby(portal, fetchImpl);
 }
 
-export async function fetchConfiguredPortals(repoRoot, fetchImpl = globalThis.fetch) {
-  const portals = loadPortals(repoRoot);
+export async function fetchPortals(portals, fetchImpl = globalThis.fetch) {
+  const active = portals.filter((portal) => portal.enabled && SUPPORTED_ATS.includes(portal.ats));
+  if (!active.length) return withSourceStatus({
+    jobs: [], sources: {}, errors: [], portalsChecked: 0, available: false,
+    note: 'no supported ATS portals enabled',
+  });
   const jobs = [];
   const sources = {};
   const errors = [];
-  for (const portal of portals) {
-    if (!portal.enabled || !SUPPORTED_ATS.includes(portal.ats)) continue;
+  for (const portal of active) {
     try {
       const found = await fetchPortal(portal, fetchImpl);
       jobs.push(...found);
@@ -108,7 +112,11 @@ export async function fetchConfiguredPortals(repoRoot, fetchImpl = globalThis.fe
       sources[portal.name] = 0;
     }
   }
-  return { jobs, sources, errors, portalsChecked: Object.keys(sources).length };
+  return withSourceStatus({ jobs, sources, errors, portalsChecked: Object.keys(sources).length });
+}
+
+export async function fetchConfiguredPortals(repoRoot, fetchImpl = globalThis.fetch) {
+  return fetchPortals(loadPortals(repoRoot), fetchImpl);
 }
 
 export function portalSummary(portals) {
@@ -121,4 +129,3 @@ export function portalSummary(portals) {
     supported: SUPPORTED_ATS.includes(portal.ats),
   }));
 }
-

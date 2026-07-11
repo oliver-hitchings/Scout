@@ -55,6 +55,12 @@ export function bytesToBase64(bytes) {
   return Buffer.from(binary, 'binary').toString('base64');
 }
 
+export function formatLocalDateTime(value, locale = 'en-GB') {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return 'pending';
+  return date.toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
 export function buildOnboardingPrompt({ workspaceRoot, provider, imported, config } = {}) {
   const cvLine = imported?.extracted
     ? `Use the locally extracted CV at ${imported.extracted} as evidence.`
@@ -215,6 +221,12 @@ const Setup = {
 
   renderWelcome() {
     const established = this.status?.established;
+    const schedule = this.status?.schedule || {};
+    const scheduleText = schedule.enabled
+      ? `${this.escape(schedule.provider || 'provider')} daily at ${this.escape(schedule.time || '')}; next run ${this.escape(formatLocalDateTime(schedule.nextRunAt, this.status?.config?.locale))}; last result ${this.escape(schedule.lastResult || 'unknown')}`
+      : schedule.configured
+        ? 'A daily scan is saved in the workspace, but the Windows task is not active.'
+        : 'Daily scanning is off. Run one supervised scan before enabling it.';
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame setup-scout-welcome" role="img" aria-label="Scout welcomes you"></span></div><div class="scout-bubble tail-left">
       <h2>${established ? 'Review or retune Scout' : 'Hi, I’m Scout. Let’s find the work worth moving for.'}</h2>
@@ -223,6 +235,7 @@ const Setup = {
       <div class="setup-grid">
         <div class="setup-callout"><strong>No automatic sending</strong><p>Scout drafts material for your review. It never applies or sends outreach for you.</p></div>
         <div class="setup-callout"><strong>No telemetry</strong><p>Your workspace is not uploaded by Scout. Your chosen AI provider receives only the context used for the tasks you ask it to perform.</p></div>
+        <div class="setup-callout"><strong>Daily scan</strong><p>${scheduleText}</p></div>
       </div>
       <p>You can move or back up the workspace independently. API credentials stay in its ignored <code>.env</code> file and are never shown again here.</p>
       <p class="meta">Something stuck? <button id="setup-restart" class="act" type="button">Restart Scout</button> restarts the local server and reloads this page.</p></div></div>`;

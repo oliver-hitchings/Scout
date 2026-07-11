@@ -5,6 +5,7 @@ import {
   buildConfig,
   buildOnboardingPrompt,
   bytesToBase64,
+  formatLocalDateTime,
   splitList,
   validateCvName,
 } from './setup.js';
@@ -61,6 +62,11 @@ test('CV validation accepts only supported local import types', () => {
 test('bytesToBase64 preserves binary bytes', () => {
   const bytes = new Uint8Array([0, 1, 2, 127, 128, 255]);
   assert.deepEqual(Buffer.from(bytesToBase64(bytes), 'base64'), Buffer.from(bytes));
+});
+
+test('formatLocalDateTime returns local readable text and handles missing values', () => {
+  assert.equal(formatLocalDateTime(null), 'pending');
+  assert.match(formatLocalDateTime('2026-07-12T07:30:00.000Z', 'en-GB'), /2026/);
 });
 
 test('AI hand-off prompt is evidence-led and approval-gated', () => {

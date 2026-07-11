@@ -42,6 +42,8 @@ Write `reports/YYYY-MM-DD.md` with:
 
 Derive score bands and follow-up intervals from the profile/configuration. When today's report exists, preserve richer verified facts and regenerate action sections from current tracker state. State degraded coverage prominently.
 
-Append one JSON object to `data/scan-runs.jsonl` containing timestamp, agent, mode, degradation, checked sources and queries, watch/employer coverage, candidate/keeper counts, discarded reasons, errors, and per-source counts.
+If fresh map or directions verification is blocked, preserve the newest previously audited commute value and its checked date. Mark the commute check degraded; never replace a verified value with a guess or erase it merely because the current provider is unavailable.
+
+Append one JSON object to `data/scan-runs.jsonl` containing timestamp, agent, mode, degradation, checked sources and queries, watch/employer coverage, candidate/keeper counts, discarded reasons, errors, and per-source counts. New runs must also include `source_health`, keyed by stable source name, with `{ "status": "healthy|degraded|unavailable", "count": number|null, "reason": string|null }`. A successful empty response is healthy; blocked or failed endpoints are unavailable; partial query or portal failures are degraded.
 
 Commit only files changed by this scan with `scan: YYYY-MM-DD <agent> <mode>`. Never stage unrelated workspace files. Release the lock even after degraded search or commit failure.

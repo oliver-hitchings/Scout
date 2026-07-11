@@ -617,9 +617,52 @@
     .scout-arrival-copy { display:grid; gap:7px; margin-bottom:72px; }
     .scout-arrival-copy span { color:var(--muted); font-size:12px; }
     .scout-arrival-copy button { margin-right:7px; }
+    .source-health { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+    .source-healthy { border-color:var(--good); color:var(--good); }
+    .source-degraded { border-color:var(--warn); color:var(--warn); }
+    .source-unavailable { border-color:var(--danger); color:var(--danger); }
     @keyframes scout-arrive { from { opacity:0; transform:translateX(30px); } }
     @media (prefers-reduced-motion:reduce) { .scout-sprite { animation:none; background-position:var(--scout-still-x) var(--scout-still-y), center; } .scout-arrival { animation:none; } }
     @media (max-width:620px) { .scout-arrival { right:6px; } .scout-arrival-character { width:120px; height:120px; } .scout-arrival-copy { margin-bottom:48px; } }
+    @media (max-width:700px) {
+      body { overflow-x:hidden; }
+      header { height:auto; min-height:56px; padding:8px 12px 0; gap:8px 12px; flex-wrap:wrap; }
+      header b { align-self:center; }
+      nav { order:3; width:calc(100% + 24px); height:46px; margin:0 -12px; padding:0 8px; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:thin; }
+      nav button { flex:0 0 auto; min-height:44px; padding:4px 12px; }
+      #scan-status { margin-left:auto; max-width:65%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      main { padding:12px; }
+      .card { padding:13px; }
+      .card .top { align-items:center; flex-wrap:wrap; }
+      .card .top b { flex:1 1 210px; overflow-wrap:anywhere; }
+      .filterbar { align-items:stretch; }
+      .filterbar label { min-height:44px; }
+      .filterbar select, .filterbar input { min-height:40px; max-width:100%; }
+      .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .setup-head { padding:16px; }
+      .setup-body { padding:16px; }
+      .setup-actions { position:sticky; bottom:0; z-index:2; padding:12px 16px calc(12px + env(safe-area-inset-bottom)); background:var(--card-bg); flex-wrap:wrap; }
+      .setup-actions button { min-height:44px; }
+      .chat-drawer { width:100vw; border-left:0; }
+      .chat-head button, .chat-foot button { min-width:44px; min-height:44px; }
+      .chat-body { padding:10px 12px; }
+      .chat-foot { padding-left:12px; padding-right:12px; }
+      .chat-companion { align-items:flex-end; padding:8px 12px 2px; }
+      .chat-companion .scout-character { width:82px; height:82px; }
+      .chat-companion .scout-bubble { max-width:calc(100vw - 118px); }
+      .scout-arrival { right:4px; max-width:calc(100vw - 8px); }
+      .scout-arrival-character { width:104px; height:104px; }
+      .scout-arrival-copy { min-width:0; margin-bottom:46px; }
+      .scout-arrival-copy .scout-bubble { padding:10px 12px; }
+      .scout-arrival-copy button { min-height:44px; margin-top:2px; }
+    }
+    @media (max-width:380px) {
+      #scan-status { display:none; }
+      .setup-scout, .setup-scout-frame { width:112px; height:112px; }
+      .chat-companion .scout-character { width:68px; height:68px; }
+      .chat-companion .scout-bubble { max-width:calc(100vw - 100px); }
+      .scout-arrival-character { width:88px; height:88px; }
+    }
   </style>
 </head>
 <body>

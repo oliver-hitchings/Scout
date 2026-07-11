@@ -1,3 +1,5 @@
+import { withSourceStatus } from './sourceHealth.mjs';
+
 const ADZUNA_ORIGIN = 'https://api.adzuna.com/v1/api/jobs';
 
 export const DEFAULT_ADZUNA_QUERIES = [];
@@ -63,8 +65,8 @@ function normalise(item, options) {
 export async function fetchAdzuna(options, fetchImpl = globalThis.fetch) {
   const values = { ...DEFAULT_ADZUNA_OPTIONS, ...options };
   const { appId, apiKey, queries = DEFAULT_ADZUNA_QUERIES } = values;
-  if (!appId || !apiKey) return { jobs: [], sources: {}, errors: [], available: false };
-  if (!queries.length) return { jobs: [], sources: {}, errors: [], available: false, note: 'no Adzuna queries configured' };
+  if (!appId || !apiKey) return withSourceStatus({ jobs: [], sources: {}, errors: [], available: false }, { unavailableReason: 'Adzuna credentials are not configured' });
+  if (!queries.length) return withSourceStatus({ jobs: [], sources: {}, errors: [], available: false, note: 'no Adzuna queries configured' });
 
   const jobs = [];
   const sources = {};
@@ -88,5 +90,5 @@ export async function fetchAdzuna(options, fetchImpl = globalThis.fetch) {
       errors.push(`adzuna "${query}": ${e.message}`);
     }
   }
-  return { jobs, sources, errors, available: true };
+  return withSourceStatus({ jobs, sources, errors, available: true });
 }

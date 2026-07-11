@@ -7,6 +7,7 @@ import { triage } from './lib/derive.mjs';
 import { pipeline } from './lib/pipeline.mjs';
 import { listCvFiles, safeCvPath } from './lib/cv.mjs';
 import { scanHealthFromText } from './lib/scanHealth.mjs';
+import { scheduleStatus, scheduleSummary } from './lib/scheduler.mjs';
 import { loadPortals, portalSummary } from './lib/ats.mjs';
 import { JOB_CATEGORIES } from './lib/filters.mjs';
 import { buildSourcePayload, sourceUrlOf, SourceCache } from './lib/source.mjs';
@@ -89,6 +90,10 @@ function reportDates() {
 function readScanHealth() {
   const text = fs.existsSync(SCAN_RUNS) ? fs.readFileSync(SCAN_RUNS, 'utf8') : '';
   return scanHealthFromText(text, today());
+}
+
+function readScheduleSummary(config = loadWorkspaceConfig(WORKSPACE_ROOT), health = readScanHealth()) {
+  return scheduleSummary(config, health, scheduleStatus());
 }
 
 function establishedWorkspace() {
@@ -190,6 +195,7 @@ function handleRead(req, res, url) {
       trackerExists: fs.existsSync(TRACKER),
       established,
       ready: established || !!(config.profile?.displayName && fs.existsSync(TRACKER)),
+      schedule: readScheduleSummary(config),
       doctor: doctor(WORKSPACE_ROOT),
     });
   }
@@ -207,6 +213,7 @@ function handleRead(req, res, url) {
       triage: triage(data, todayValue, config.triage),
       pipeline: pipeline(data, todayValue, config.triage),
       scanHealth: readScanHealth(),
+      schedule: readScheduleSummary(config),
       categories: readCategories(),
       workspaceConfig: config,
     });
