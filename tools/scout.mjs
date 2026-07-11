@@ -117,7 +117,10 @@ async function runScan(root, provider, mode) {
   const prompt = `Run the Scout scan skill in this workspace with agent=${provider} and mode=${mode}. Follow AGENTS.md and docs/SCOUT_SCAN_PROTOCOL.md. The Scout CLI is available as: "${process.execPath}" "${cli}" --workspace "${root}". Never send applications or outreach.`;
   const builder = provider === 'codex' ? buildCodexArgs : buildClaudeArgs;
   const parser = provider === 'codex' ? parseCodexLine : parseClaudeLine;
-  const turn = runTurn({ ...builder(null, { model: config.ai?.provider === provider ? config.ai?.model : null }), prompt, cwd: root, parseLine: parser, timeoutMs: 45 * 60 * 1000 });
+  const turn = runTurn({ ...builder(null, {
+    model: config.ai?.provider === provider ? config.ai?.model : null,
+    ...(provider === 'claude' ? { permissionMode: 'auto' } : {}),
+  }), prompt, cwd: root, parseLine: parser, timeoutMs: 45 * 60 * 1000 });
   const result = await turn.finished;
   const logs = workspacePaths(root).logs;
   fs.mkdirSync(logs, { recursive: true });

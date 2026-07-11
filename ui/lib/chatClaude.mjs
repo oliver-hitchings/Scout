@@ -3,9 +3,11 @@ import { assertSafeModel, providerCommand } from './providers.mjs';
 const SESSION_ID = /^[A-Za-z0-9-]+$/;
 
 export function buildClaudeArgs(resumeId, options = {}) {
+  const permissionMode = options.permissionMode || 'acceptEdits';
+  if (!['acceptEdits', 'auto'].includes(permissionMode)) throw new Error(`invalid Claude permission mode: ${permissionMode}`);
   const args = [
     '-p', '--output-format', 'stream-json', '--verbose',
-    '--permission-mode', 'acceptEdits',
+    '--permission-mode', permissionMode,
   ];
   const model = assertSafeModel(options.model);
   if (model) args.push('--model', model);

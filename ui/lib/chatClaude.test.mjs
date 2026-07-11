@@ -13,6 +13,12 @@ test('buildClaudeArgs: fresh session', () => {
   assert.deepEqual(buildClaudeArgs(null, { model: 'claude-example' }).args.slice(-2), ['--model', 'claude-example']);
 });
 
+test('buildClaudeArgs: unattended scans can use Claude auto permissions', () => {
+  const built = buildClaudeArgs(null, { permissionMode: 'auto' });
+  assert.deepEqual(built.args.slice(0, 6), ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'auto']);
+  assert.throws(() => buildClaudeArgs(null, { permissionMode: 'bypassPermissions' }), /invalid Claude permission mode/);
+});
+
 test('buildClaudeArgs: resume appends --resume, rejects bad ids', () => {
   const { args } = buildClaudeArgs('abc-123-DEF');
   assert.deepEqual(args.slice(-2), ['--resume', 'abc-123-DEF']);
