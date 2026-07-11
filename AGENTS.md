@@ -1,5 +1,9 @@
 # Scout project instructions
 
+## Repository boundary
+
+This checkout must be the public [`oliver-hitchings/Scout`](https://github.com/oliver-hitchings/Scout) application repository for app development. Put UI, server, installer, provider, test, template and public-documentation work here. Put CV, profile, tracker, report and application data only in the private `oliver-hitchings/scout-workspace` repository. `oliver-hitchings/StartupFinder` is a private legacy archive and must not receive new development. See `docs/REPOSITORY_LAYOUT.md` before choosing a destination.
+
 Scout is a local-first, AI-assisted opportunity finder. Before searching, scoring, tailoring a CV, preparing for an interview, or drafting outreach, read `workspace.json`, `profile/context.md`, and `profile/calibration.md`. They are the source of truth for the current user.
 
 ## Hard rules

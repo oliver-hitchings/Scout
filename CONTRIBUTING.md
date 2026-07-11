@@ -4,7 +4,7 @@ Thank you for helping make Scout safer and more useful. The most important contr
 
 ## Before you start
 
-- Use the clean-history public repository, not a private workspace or the original mixed-history development repository.
+- Use [`oliver-hitchings/Scout`](https://github.com/oliver-hitchings/Scout), the canonical clean-history public application repository. Do not develop in the private workspace or the legacy mixed-history `StartupFinder` repository. See [Repository layout](docs/REPOSITORY_LAYOUT.md).
 - Discuss substantial UI, workspace-schema, provider, or source changes in an issue first.
 - Keep Scout local-first and provider-neutral.
 - Preserve the rule that applications and outreach are drafts for human review only.

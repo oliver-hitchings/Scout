@@ -4,7 +4,7 @@ Scout is a local-first, AI-assisted opportunity finder. It searches configured j
 
 Scout never submits an application or sends outreach. Your CV, profile, tracker, reports, applications, chat history, and source credentials live in a separate private workspace.
 
-> **Public-release note:** this development repository has previously contained personal career data and must remain private. A public Scout repository must be created with clean Git history from an audited allowlist; changing this repository's visibility is not safe.
+> **Repository note:** this is the canonical public Scout application repository. Personal CV, profile, tracker, report and application data belongs only in the separate private workspace repository. See [Repository layout](docs/REPOSITORY_LAYOUT.md).
 
 ## Status
 
@@ -102,6 +102,7 @@ Open `http://127.0.0.1:8459`. Do not use this current private repository as the 
 - [Upgrades and migrations](docs/UPGRADES.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Release process](docs/RELEASE.md)
+- [Repository layout and development boundaries](docs/REPOSITORY_LAYOUT.md)
 
 ## Contributing and security
 
