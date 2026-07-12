@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node ui/server.mjs",
-    "test": "node --test ui/*.test.mjs ui/lib/*.test.mjs tools/*.test.mjs",
+    "test": "node tools/run-tests.mjs",
     "doctor": "node tools/scout.mjs doctor",
     "release:audit": "node tools/release-audit.mjs"
   },

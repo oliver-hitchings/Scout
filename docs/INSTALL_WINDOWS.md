@@ -24,3 +24,10 @@ Scout runs as `Scout.exe` in the Windows notification area. Use its arrow-menu i
 The default private workspace is `%USERPROFILE%\Documents\Scout Workspace`. It survives upgrades and uninstall. Do not put it in a public repository or share its logs. If Scout does not open, launch it again and use **Settings → Restart Scout**; diagnostic logs are in the workspace's `logs` folder.
 
 To upgrade, use the tray menu to quit Scout, then install a newer release over the existing application. To uninstall, use Windows Installed Apps; remove any scheduled scan first. Your workspace is deliberately preserved.
+# Native host
+
+The installed `Scout.exe` is now the Wails v3 native host. It owns the bundled
+Node dashboard and shows it in a native WebView; closing Scout hides it to the
+tray by default. The tray provides Open Scout, Restart Scout, Check for updates,
+Settings and Quit. Quit offers to keep scheduled CLI scans enabled, disable them,
+or cancel. Launch at login starts the same host with `--background`.

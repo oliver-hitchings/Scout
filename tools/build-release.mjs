@@ -45,6 +45,8 @@ export const RELEASE_FILES = Object.freeze([
 const PUBLIC_DOCS = RELEASE_FILES.filter((entry) => entry.source.startsWith('docs/'));
 
 export const PUBLIC_SOURCE_FILES = Object.freeze([
+  { source: 'desktop', target: 'desktop', tree: true },
+  { source: '.gitmodules', target: '.gitmodules' },
   { source: 'ui', target: 'ui', tree: true },
   { source: '.agents/skills', target: '.agents/skills', tree: true },
   { source: '.claude/skills', target: '.claude/skills', tree: true },
@@ -59,6 +61,7 @@ export const PUBLIC_SOURCE_FILES = Object.freeze([
     'tools/fetch-adzuna.mjs', 'tools/fetch-ats.mjs', 'tools/fetch-hiring-cafe.mjs',
     'tools/scan-lock.mjs', 'tools/scan-lock.test.mjs', 'tools/scan-skill-parity.test.mjs',
     'tools/scout.mjs', 'tools/scout.test.mjs',
+    'tools/run-tests.mjs',
   ].map((source) => ({ source, target: source })),
   ...PUBLIC_DOCS,
   ...['.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'package.json', 'package-lock.json', 'LICENSE']
@@ -159,6 +162,15 @@ export function stageRelease({
   return { root: resolvedRoot, stageDir: resolvedStage, appDir };
 }
 
+// The host is compiled through the pinned checkout replacement in desktop/go.mod.
+// This is intentionally not `go install github.com/wailsapp/wails/...`.
+export function buildWailsHost({ root = DEFAULT_ROOT, output, platform = process.platform } = {}) {
+  const target = output || path.join(root, 'dist', 'release', 'stage', platform === 'win32' ? 'Scout.exe' : 'Scout');
+  const result = spawnSync('go', ['build', '-o', target, './cmd/scout-host'], { cwd: path.join(root, 'desktop'), encoding: 'utf8', windowsHide: true });
+  if (result.status !== 0) throw new Error(`Wails host build failed:\n${result.stdout}\n${result.stderr}`);
+  return target;
+}
+
 export function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
@@ -194,10 +206,7 @@ function checkedVersion(value) {
 
 export function buildInstaller({ root = DEFAULT_ROOT, stageDir, version, isccPath } = {}) {
   const staged = stageRelease({ root, stageDir });
-  const csc = path.join(process.env.WINDIR || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
-  if (!fs.existsSync(csc)) throw new Error('Windows C# compiler was not found');
-  const host = spawnSync(csc, ['/nologo', '/target:winexe', `/win32icon:${path.join(root, 'ui', 'assets', 'scout-icon.ico')}`, `/out:${path.join(staged.stageDir, 'Scout.exe')}`, '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll', '/reference:System.Web.Extensions.dll', path.join(root, 'installer', 'windows', 'ScoutHost.cs')], { cwd: root, encoding: 'utf8', windowsHide: true });
-  if (host.status !== 0) throw new Error(`Scout host build failed:\n${host.stdout}\n${host.stderr}`);
+  buildWailsHost({ root, output: path.join(staged.stageDir, 'Scout.exe'), platform: 'win32' });
   const outputDir = path.join(root, 'installer', 'output');
   fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(outputDir, { recursive: true });

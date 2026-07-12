@@ -9,3 +9,14 @@ Scout supports Ubuntu 22.04+ and Debian 12+ on x64. Other x64 distributions can 
 5. Complete provider setup, onboarding and the supervised first scan in the browser window Scout opens.
 
 Private data defaults to `~/Documents/Scout Workspace`. `sudo apt remove scout` removes application files but preserves that workspace. Daily scans use the current user’s systemd service manager; systems without systemd user services retain supervised manual scans.
+# Native desktop host and KDE
+
+The Linux desktop entry starts the bundled Wails host, which starts the bundled
+loopback-only Node service and displays the existing UI in the system WebView.
+KDE Plasma is supported with tray/menu actions (Open, Restart, Check for updates,
+Settings, Quit). On a desktop without a usable StatusNotifier tray, Scout remains
+fully usable as a normal window; closing it may leave it window-only rather than
+in the tray.
+
+`scout` remains the CLI entry point for scans and scheduled scans; schedules run
+independent CLI processes and do not require the desktop host.

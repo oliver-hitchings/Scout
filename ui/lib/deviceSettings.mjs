@@ -3,14 +3,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-export const DEVICE_SETUP_SECTIONS = Object.freeze({ 'windows-startup': 1 });
+export const DEVICE_SETUP_SECTIONS = Object.freeze({ 'launch-at-login': 1 });
 
 export function deviceSettingsPath(env = process.env, platform = process.platform) {
   if (env.SCOUT_DEVICE_SETTINGS) return path.resolve(env.SCOUT_DEVICE_SETTINGS);
   const base = platform === 'win32'
     ? (env.LOCALAPPDATA || path.join(env.USERPROFILE || os.homedir(), 'AppData', 'Local'))
     : (env.XDG_CONFIG_HOME || path.join(env.HOME || os.homedir(), '.config'));
-  return path.join(base, 'Scout', 'device-settings.json');
+  if (platform === 'darwin') return path.join(env.HOME || os.homedir(), 'Library', 'Application Support', 'Scout', 'host-settings.json');
+  return path.join(base, platform === 'win32' ? 'Scout' : 'scout', 'host-settings.json');
 }
 
 export function loadDeviceSettings(options = {}) {

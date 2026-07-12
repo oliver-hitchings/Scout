@@ -19,6 +19,7 @@ import { extractCvText } from './lib/cvImport.mjs';
 import { setupReadiness } from './lib/setupReadiness.mjs';
 import { loadDeviceSettings, pendingDeviceSections, saveDeviceSettings, setWindowsStartup } from './lib/deviceSettings.mjs';
 import { checkForUpdate } from './lib/updates.mjs';
+import { hostControlConfig, hostUpdate } from './lib/hostControl.mjs';
 import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
 import { loadEnv, saveEnv } from './lib/env.mjs';
 import {
@@ -535,6 +536,9 @@ routes['POST /api/setup/section'] = (req, res, body) => {
 
 let updateCheckRunning = null;
 async function updateStatus(force = false) {
+  // Installed Wails builds delegate update policy, verification and installation
+  // to Go. Browser clients only ever see this sanitised result.
+  if (hostControlConfig()) return hostUpdate('/check', { force });
   const settings = loadDeviceSettings();
   const last = new Date(settings.updates?.lastCheckedAt || 0).getTime();
   if (!force && Date.now() - last < 86400000 && settings.updates?.lastResult) return { ...settings.updates.lastResult, notify: false };
@@ -550,6 +554,15 @@ routes['POST /api/update/check'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try { return replyJson(res, 200, await updateStatus(Boolean(b.force))); }
   catch (e) { return replyJson(res, 503, { error: e.message, available: false, currentVersion: APP_VERSION }); }
+};
+
+// Plural routes are the stable desktop-host contract. Keep the beta.7 singular
+// endpoint above for old launchers and bookmarked Settings pages.
+routes['POST /api/updates/check'] = routes['POST /api/update/check'];
+routes['POST /api/updates/install'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  try { return replyJson(res, 200, await hostUpdate('/install', b)); }
+  catch (e) { return replyJson(res, 503, { error: e.message }); }
 };
 
 routes['POST /api/setup/credentials'] = (req, res, body) => {

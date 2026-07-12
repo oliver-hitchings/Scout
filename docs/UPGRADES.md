@@ -45,3 +45,18 @@ a public repository safe: old mixed Git history must remain private.
 If an upgrade fails, stop Scout, preserve the failed workspace and logs, reinstall the previous compatible application version, and restore a copied backup only when necessary. Do not overwrite newer workspace history casually.
 
 Uninstall removes application files but intentionally preserves the workspace. Verify this on important deployments and remove schedules separately.
+# Native host updates
+
+Scout desktop releases use the Wails v3 native host. The host owns direct-install
+updates and downloads only GitHub Release assets whose exact filename and SHA-256
+entry are present in the combined `checksums.txt`. Stable is the default channel;
+existing beta installs follow Beta unless the user opts out. The Settings page and
+tray share the same host update state.
+
+Windows runs the verified per-user Inno installer after Scout exits. macOS replaces
+the app through its normal elevation prompt. Debian uses `pkexec dpkg -i`; portable
+Linux stages and atomically swaps a sibling copy with rollback. AUR/pacman installs
+are never self-updated: use `paru -Syu scout` or `yay -Syu scout`.
+
+The beta.7 legacy launchers remain compatibility delegates for this first native
+host release and will be removed in the following release.

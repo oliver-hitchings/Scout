@@ -9,3 +9,8 @@ Scout supports macOS 13 or newer on Apple Silicon and Intel Macs. Beta.5 is unsi
 5. Complete provider setup, onboarding and the supervised first scan in the browser window Scout opens.
 
 Scout stores private data in `~/Documents/Scout Workspace` unless `SCOUT_WORKSPACE` is set. Removing Scout from Applications does not delete that workspace. Disable its daily scan in Settings before uninstalling.
+# Native host
+
+Scout.app contains the Wails v3 native host plus the bundled Node payload. The
+host is local-only, uses the existing dashboard unchanged, and can launch in the
+background at login. Scheduled scans remain CLI jobs, independent of the app.
