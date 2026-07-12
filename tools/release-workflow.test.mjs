@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { test } from 'node:test';
 
 const workflow = fs.readFileSync(new URL('../.github/workflows/windows-release.yml', import.meta.url), 'utf8');
+const alpha = fs.readFileSync(new URL('../.github/workflows/alpha-build.yml', import.meta.url), 'utf8');
 
 test('tagged release workflow validates version and requires private markers', () => {
   assert.match(workflow, /Tag does not match package version/);
@@ -36,4 +37,14 @@ test('package, installer and release notes use one beta version', () => {
   const installer = fs.readFileSync(new URL('../installer/Scout.iss', import.meta.url), 'utf8');
   assert.match(installer, new RegExp(`MyAppVersion "${pkg.version.replaceAll('.', '\\.')}"`));
   assert.equal(fs.existsSync(new URL(`../docs/releases/${pkg.version}.md`, import.meta.url)), true);
+});
+
+test('alpha action builds the pinned Wails host and publishes one combined manifest', () => {
+  assert.match(alpha, /tags: \['alpha-\*'\]/);
+  assert.match(alpha, /submodules: recursive/);
+  assert.match(alpha, /setup-go/);
+  assert.match(alpha, /libwebkit2gtk-4\.1-dev/);
+  assert.match(alpha, /go test \.\/\.\.\./);
+  assert.match(alpha, /checksums\.txt/);
+  assert.match(alpha, /--prerelease/);
 });
