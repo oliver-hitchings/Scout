@@ -48,21 +48,22 @@ export function providerStatus(provider, {
 
 export function providerEnvironment(env = process.env, platform = process.platform) {
   const next = { ...env };
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
   const home = env.USERPROFILE || env.HOME || os.homedir();
   const pathKey = Object.keys(next).find((key) => key.toLowerCase() === 'path') || (platform === 'win32' ? 'Path' : 'PATH');
   const separator = platform === 'win32' ? ';' : ':';
   const existing = String(next[pathKey] || '');
   const common = platform === 'win32'
     ? [
-        path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'npm'),
-        path.join(env.ProgramFiles || 'C:\\Program Files', 'nodejs'),
-        path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'Programs', 'nodejs'),
-        path.join(home, '.local', 'bin'),
-        path.join(home, '.codex', 'bin'),
+        platformPath.join(env.APPDATA || platformPath.join(home, 'AppData', 'Roaming'), 'npm'),
+        platformPath.join(env.ProgramFiles || 'C:\\Program Files', 'nodejs'),
+        platformPath.join(env.LOCALAPPDATA || platformPath.join(home, 'AppData', 'Local'), 'Programs', 'nodejs'),
+        platformPath.join(home, '.local', 'bin'),
+        platformPath.join(home, '.codex', 'bin'),
       ]
     : [
-        path.join(home, '.local', 'bin'),
-        path.join(home, '.npm-global', 'bin'),
+        platformPath.join(home, '.local', 'bin'),
+        platformPath.join(home, '.npm-global', 'bin'),
         '/opt/homebrew/bin',
         '/usr/local/bin',
       ];
