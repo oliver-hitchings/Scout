@@ -55,6 +55,7 @@ jobs:
 
   macos:
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
@@ -69,10 +70,22 @@ jobs:
         env: { SCOUT_RELEASE_MARKERS: "${{ secrets.SCOUT_RELEASE_MARKERS }}" }
       - name: Mount and initialise workspace
         run: |
+          set -euxo pipefail
           dmg=$(find installer/output -name '*.dmg' -print -quit)
-          mount=$(mktemp -d); hdiutil attach "$dmg" -mountpoint "$mount" -nobrowse
-          workspace=$(mktemp -d)/Scout; "$mount/Scout.app/Contents/Resources/runtime/node" "$mount/Scout.app/Contents/Resources/app/tools/scout.mjs" workspace init --workspace "$workspace"
-          test -f "$workspace/workspace.json"; hdiutil detach "$mount"; test -f "$workspace/workspace.json"
+          mount=$(mktemp -d)
+          hdiutil attach "$dmg" -mountpoint "$mount" -nobrowse
+          runtime="$mount/Scout.app/Contents/Resources/runtime/node"
+          cli="$mount/Scout.app/Contents/Resources/app/tools/scout.mjs"
+          workspace=$(mktemp -d)/Scout
+          find "$mount/Scout.app/Contents/Resources" -maxdepth 3 -print
+          test -x "$runtime"
+          test -f "$cli"
+          file "$runtime"
+          "$runtime" --version
+          "$runtime" "$cli" workspace init --workspace "$workspace"
+          test -f "$workspace/workspace.json"
+          hdiutil detach "$mount"
+          test -f "$workspace/workspace.json"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.os }}
