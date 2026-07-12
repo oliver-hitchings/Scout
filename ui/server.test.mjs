@@ -150,6 +150,28 @@ test('daily schedule is blocked before a healthy supervised scan', async () => {
   assert.match(JSON.parse(response.text).error, /healthy supervised scan/i);
 });
 
+test('native quit does not use the public schedule action API', async () => {
+  const host = `127.0.0.1:${port}`;
+  const priorURL = process.env.SCOUT_HOST_CONTROL_URL;
+  const priorToken = process.env.SCOUT_HOST_CONTROL_TOKEN;
+  delete process.env.SCOUT_HOST_CONTROL_URL;
+  delete process.env.SCOUT_HOST_CONTROL_TOKEN;
+  try {
+    const response = await request({
+      method: 'POST', path: '/api/host/quit',
+      headers: { host, origin: `http://${host}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ disableSchedule: false }),
+    });
+    assert.equal(response.status, 503);
+    assert.match(JSON.parse(response.text).error, /desktop host is unavailable/i);
+  } finally {
+    if (priorURL === undefined) delete process.env.SCOUT_HOST_CONTROL_URL;
+    else process.env.SCOUT_HOST_CONTROL_URL = priorURL;
+    if (priorToken === undefined) delete process.env.SCOUT_HOST_CONTROL_TOKEN;
+    else process.env.SCOUT_HOST_CONTROL_TOKEN = priorToken;
+  }
+});
+
 test('legacy CV downloads require a hash-bound explicit override', async () => {
   const slug = 'synthetic-quality';
   const app = path.join(testWorkspace, 'applications', slug);

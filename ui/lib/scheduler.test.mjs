@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { linuxSystemdUnits, macLaunchAgent, nextScheduledRun, registerDailySchedule, scheduleSummary, schedulerRegistrationScript, taskXml } from './scheduler.mjs';
+import { linuxSystemdUnits, macLaunchAgent, nextScheduledRun, registerDailySchedule, removeSchedule, scheduleSummary, schedulerRegistrationScript, taskXml } from './scheduler.mjs';
 
 test('scheduled task is catch-up enabled, non-overlapping and time limited', () => {
   const xml = taskXml({ command: 'node.exe', args: ['tools/scout.mjs', 'scan'], workingDirectory: 'C:\\Scout', time: '07:30', userId: 'user', now: new Date(2026, 6, 11, 8, 0) });
@@ -14,6 +14,11 @@ test('scheduled task is catch-up enabled, non-overlapping and time limited', () 
 
 test('scheduled task rejects invalid times', () => {
   assert.throws(() => taskXml({ command: 'node', workingDirectory: '.', time: '25:00' }), /HH:MM/);
+});
+
+test('removing an already absent Windows task succeeds', () => {
+  const result = removeSchedule({ platform: 'win32', spawn: () => ({ status: 1, stderr: 'ERROR: The system cannot find the file specified.' }) });
+  assert.equal(result.ok, true);
 });
 
 test('nextScheduledRun chooses today or tomorrow in local time', () => {

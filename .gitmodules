@@ -1,0 +1,4 @@
+[submodule "third_party/wails-v3"]
+	path = third_party/wails-v3
+	url = https://github.com/wailsapp/wails.git
+	branch = v3.0.0-alpha.87

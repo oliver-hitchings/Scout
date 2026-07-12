@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isMainModule } from '../ui/lib/mainModule.mjs';
-import { sha256, stageRelease, writeChecksums } from './build-release.mjs';
+import { sha256, stageRelease, writeChecksums, buildWailsHost } from './build-release.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
@@ -26,7 +26,7 @@ export function buildMac({ arch = process.arch, nodeExecutable = process.execPat
   const stage = path.join(ROOT, 'dist', 'release', `macos-${arch}`); stageRelease({ root: ROOT, stageDir: stage, nodeExecutable, platform: 'darwin' });
   const bundle = path.join(stage, 'dmg-root', 'Scout.app'); const contents = path.join(bundle, 'Contents');
   copy(path.join(stage, 'app'), path.join(contents, 'Resources', 'app')); copy(path.join(stage, 'runtime'), path.join(contents, 'Resources', 'runtime'));
-  const launcher = path.join(contents, 'MacOS', 'Scout'); copy(path.join(ROOT, 'installer', 'unix', 'ScoutLauncher.sh'), launcher); executable(launcher);
+  const launcher = path.join(contents, 'MacOS', 'Scout'); buildWailsHost({ root: ROOT, output: launcher, platform: 'darwin' }); executable(launcher);
   const plist = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleName</key><string>Scout</string><key>CFBundleIdentifier</key><string>app.scout.local</string><key>CFBundleVersion</key><string>${VERSION}</string><key>CFBundleShortVersionString</key><string>${VERSION}</string><key>CFBundleExecutable</key><string>Scout</string><key>LSMinimumSystemVersion</key><string>13.0</string></dict></plist>`;
   fs.writeFileSync(path.join(contents, 'Info.plist'), plist);
   fs.symlinkSync('/Applications', path.join(stage, 'dmg-root', 'Applications'));
@@ -35,22 +35,18 @@ export function buildMac({ arch = process.arch, nodeExecutable = process.execPat
   return { output: path.join(output, name), sha256: sha256(path.join(output, name)) };
 }
 
-function launcher(rootExpression) {
-  return `#!/bin/sh\nSCOUT_ROOT=${rootExpression}\nexport SCOUT_ROOT\nexec "$SCOUT_ROOT/launcher/ScoutLauncher.sh" "$@"\n`;
-}
 export function buildLinux({ nodeExecutable = process.execPath } = {}) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Linux x64 packages must be built on Linux x64');
   const stage = path.join(ROOT, 'dist', 'release', 'linux-x64'); stageRelease({ root: ROOT, stageDir: stage, nodeExecutable, platform: 'linux' });
   const output = path.join(ROOT, 'installer', 'output'); fs.mkdirSync(output, { recursive: true });
-  const pkg = path.join(stage, 'deb'); reset(pkg); copy(path.join(stage, 'app'), path.join(pkg, 'opt/scout/app')); copy(path.join(stage, 'runtime'), path.join(pkg, 'opt/scout/runtime'));
-  copy(path.join(ROOT, 'installer/unix/ScoutLauncher.sh'), path.join(pkg, 'opt/scout/launcher/ScoutLauncher.sh')); executable(path.join(pkg, 'opt/scout/launcher/ScoutLauncher.sh'));
-  fs.mkdirSync(path.join(pkg, 'usr/bin'), { recursive: true }); fs.writeFileSync(path.join(pkg, 'usr/bin/scout-dashboard'), launcher('/opt/scout')); executable(path.join(pkg, 'usr/bin/scout-dashboard'));
+  const pkg = path.join(stage, 'deb'); reset(pkg); copy(path.join(stage, 'app'), path.join(pkg, 'opt/scout/app')); copy(path.join(stage, 'runtime'), path.join(pkg, 'opt/scout/runtime')); buildWailsHost({ root: ROOT, output: path.join(pkg, 'opt/scout', 'Scout'), platform: 'linux' }); executable(path.join(pkg, 'opt/scout', 'Scout'));
+  fs.mkdirSync(path.join(pkg, 'usr/bin'), { recursive: true }); fs.writeFileSync(path.join(pkg, 'usr/bin/scout-dashboard'), '#!/bin/sh\nexec /opt/scout/Scout "$@"\n'); executable(path.join(pkg, 'usr/bin/scout-dashboard'));
   fs.writeFileSync(path.join(pkg, 'usr/bin/scout'), '#!/bin/sh\nexec /opt/scout/runtime/node /opt/scout/app/tools/scout.mjs "$@"\n'); executable(path.join(pkg, 'usr/bin/scout'));
   fs.mkdirSync(path.join(pkg, 'usr/share/applications'), { recursive: true }); fs.writeFileSync(path.join(pkg, 'usr/share/applications/scout.desktop'), '[Desktop Entry]\nName=Scout\nExec=scout-dashboard\nIcon=scout\nType=Application\nCategories=Office;\n');
   copy(path.join(ROOT, 'ui/assets/scout-icon.png'), path.join(pkg, 'usr/share/icons/hicolor/512x512/apps/scout.png'));
   fs.mkdirSync(path.join(pkg, 'DEBIAN'), { recursive: true }); fs.writeFileSync(path.join(pkg, 'DEBIAN/control'), `Package: scout\nVersion: ${VERSION.replace(/-/g, '~')}\nArchitecture: amd64\nMaintainer: Scout contributors\nDescription: Local-first AI-assisted opportunity finder\n`);
   const deb = path.join(output, artifactNames().linuxDeb); run('dpkg-deb', ['--build', '--root-owner-group', pkg, deb]);
-  const portable = path.join(stage, `Scout-${VERSION}-linux-x64`); reset(portable); copy(path.join(stage, 'app'), path.join(portable, 'app')); copy(path.join(stage, 'runtime'), path.join(portable, 'runtime')); copy(path.join(ROOT, 'installer/unix/ScoutLauncher.sh'), path.join(portable, 'launcher/ScoutLauncher.sh')); executable(path.join(portable, 'launcher/ScoutLauncher.sh')); fs.writeFileSync(path.join(portable, 'scout-dashboard'), launcher('"$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"')); executable(path.join(portable, 'scout-dashboard'));
+  const portable = path.join(stage, `Scout-${VERSION}-linux-x64`); reset(portable); copy(path.join(stage, 'app'), path.join(portable, 'app')); copy(path.join(stage, 'runtime'), path.join(portable, 'runtime')); buildWailsHost({ root: ROOT, output: path.join(portable, 'Scout'), platform: 'linux' }); executable(path.join(portable, 'Scout')); fs.writeFileSync(path.join(portable, 'scout-dashboard'), '#!/bin/sh\nBASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$BASE/Scout" "$@"\n'); executable(path.join(portable, 'scout-dashboard'));
   const tar = path.join(output, artifactNames().linuxTar); run('tar', ['-czf', tar, '-C', stage, path.basename(portable)]);
   writeChecksums(output); return { deb, tar };
 }

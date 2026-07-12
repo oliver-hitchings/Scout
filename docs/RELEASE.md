@@ -4,7 +4,7 @@ This is the canonical clean-history public application repository. Release only 
 
 ## Release gates
 
-1. Start from a reviewed commit with a clean working tree. Run `npm ci`, `npm test`, `npm audit --audit-level=moderate` and `git diff --check`.
+1. Start from a reviewed commit with a clean working tree. Initialise the pinned Wails source with `git submodule update --init --recursive`, then run `npm ci`, `npm test`, `go test ./...` from `desktop`, `npm audit --audit-level=moderate` and `git diff --check`.
 2. Complete code/security review, a fresh-workspace onboarding browser smoke test and representative CV import tests.
 3. Configure personal markers for the audit without committing personal values. Run `npm run release:audit`; findings must be resolved, not waived casually.
 4. Stage the allowlisted bundle:
@@ -14,7 +14,7 @@ This is the canonical clean-history public application repository. Release only 
    ```
 
 5. Manually inspect every staged path. It is the installer payload, not a public source repository. It must contain runtime UI/tools, templates, managed skills, dependencies, licence and bundled runtime only. It must not contain `profile/`, `cv/`, `data/`, `reports/`, `applications/`, `.env`, logs, scratch files, private docs, test fixtures or `.git`.
-6. Build the unsigned Windows, macOS arm64/x64 and Linux x64 packages on their native GitHub runners. For a local Windows build:
+6. Build the unsigned Windows, macOS arm64/x64 and Linux x64 packages on their native GitHub runners. Wails tooling must be built from `third_party/wails-v3`, pinned at the reviewed submodule commit; never use `go install module@version`. For a local Windows build:
 
    ```powershell
    npm ci --omit=dev

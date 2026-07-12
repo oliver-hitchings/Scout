@@ -31,3 +31,14 @@ Close Scout before copying or moving a workspace. Back up the complete directory
 Uninstalling Scout deliberately leaves the workspace. To erase it, first remove any schedule, close Scout, delete the workspace and its backups, and separately delete copies from cloud sync, backup media and recycle bin. Git history retains old versions even after a current file is deleted; remove or destroy the repository history if erasure is required. Rotate any exposed credential.
 
 Do not put a workspace in a public repository. If using a private remote or synchronisation service, review its retention, sharing and encryption settings.
+## Desktop host privacy
+
+The Wails host stores only device preferences and update state in the platform
+application-data directory, never in the Scout Workspace. It passes a random,
+per-startup token to Node through the process environment for a loopback-only
+host-control API. The token is never exposed to the browser/WebView.
+
+The host proxies only the existing relative UI and `/api/*` requests to its
+loopback Node service, rewriting local request metadata so Node retains its local
+request guard. It does not expose the dashboard, token, workspace or Node control
+port to the network.

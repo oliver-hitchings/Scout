@@ -1,0 +1,115 @@
+name: Wails alpha build
+
+on:
+  push:
+    tags: ['alpha-*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing alpha tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25.x' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Verify release tooling
+        run: node --test tools/build-release.test.mjs tools/build-platform.test.mjs tools/release-workflow.test.mjs tools/windows-host.test.mjs ui/lib/hostControl.test.mjs
+      - run: cd desktop && go test ./...
+      - run: choco install innosetup --yes --no-progress
+      - run: node tools/build-release.mjs --installer
+      - name: Verify Windows artifact
+        shell: pwsh
+        run: |
+          $artifact = Get-ChildItem installer/output/Scout-*-windows-x64.exe
+          if ($artifact.Count -ne 1) { throw 'Expected exactly one Windows installer' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: installer/output/Scout-*-windows-x64.exe
+          if-no-files-found: error
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25.x' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Verify release tooling
+        run: node --test tools/build-release.test.mjs tools/build-platform.test.mjs tools/release-workflow.test.mjs tools/windows-host.test.mjs ui/lib/hostControl.test.mjs
+      - run: cd desktop && go test ./...
+      - run: node tools/build-platform.mjs mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.os }}
+          path: installer/output/Scout-*-macos-*.dmg
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25.x' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - name: Install Wails Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+      - run: npm ci
+      - name: Verify release tooling
+        run: node --test tools/build-release.test.mjs tools/build-platform.test.mjs tools/release-workflow.test.mjs tools/windows-host.test.mjs ui/lib/hostControl.test.mjs
+      - run: cd desktop && go test ./...
+      - run: node tools/build-platform.mjs linux
+      - name: Verify package payload
+        run: |
+          test -f installer/output/Scout-*-linux-x64.deb
+          test -f installer/output/Scout-*-linux-x64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            installer/output/Scout-*-linux-x64.deb
+            installer/output/Scout-*-linux-x64.tar.gz
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/alpha-') || github.event_name == 'workflow_dispatch'
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: release-assets, merge-multiple: true }
+      - name: Create one combined checksum manifest
+        run: |
+          cd release-assets
+          # Windows + macOS arm64/x64 + Linux DEB + portable Linux tarball.
+          test "$(find . -maxdepth 1 -type f -name 'Scout-*' | wc -l)" -eq 5
+          sha256sum Scout-* > checksums.txt
+      - name: Publish alpha release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          tag='${{ inputs.tag }}'
+          if [ -z "$tag" ]; then tag="$GITHUB_REF_NAME"; fi
+          gh release create "$tag" release-assets/* --title "Scout Wails alpha: $tag" --prerelease --generate-notes

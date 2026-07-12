@@ -731,6 +731,9 @@
     </div>
   </div>
   <div id="scout-arrival" class="scout-arrival hidden"></div>
+  <!-- Wails serves this in the native host. A normal Node/browser launch gets
+       a harmless 404; the script is optional outside the desktop shell. -->
+  <script type="module" src="/wails/runtime.js" onerror="this.remove()"></script>
   <script src="/app.js?v=beta-9"></script>
   <script type="module" src="/setup.js?v=beta-9"></script>
 </body>

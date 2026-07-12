@@ -86,7 +86,10 @@ export function removeSchedule({ spawn = spawnSync, platform = process.platform,
     const r = spawn('systemctl', ['--user', 'daemon-reload'], { encoding: 'utf8' }); return { ok: r.status === 0, output: String(r.stdout || r.stderr || '').trim() };
   }
   const r = spawn('schtasks.exe', ['/Delete', '/TN', TASK_NAME, '/F'], { encoding: 'utf8', windowsHide: true });
-  return { ok: r.status === 0, output: String(r.stdout || r.stderr || '').trim() };
+  const output = String(r.stdout || r.stderr || '').trim();
+  // Removing an absent task is already the desired final state.
+  const missing = /cannot find|does not exist/i.test(output);
+  return { ok: r.status === 0 || missing, output };
 }
 
 export function runScheduledNow({ spawn = spawnSync, platform = process.platform, uid = process.getuid?.() } = {}) {

@@ -17,15 +17,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25.x' }
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm test
+      - run: cd desktop && go test ./internal/host
       - name: Verify release staging
         run: node tools/build-release.mjs --stage-only
       - name: Audit staged public tree with required private markers
-        run: npm run release:audit -- --root dist/release/stage --stage --require-markers
+        # Forks cannot access the maintainer's private marker secret. They still
+        # run the structural/secret audit; protected upstream CI additionally
+        # requires the configured personal markers.
+        run: npm run release:audit -- --root dist/release/stage --stage ${{ secrets.SCOUT_RELEASE_MARKERS != '' && '--require-markers' || '' }}
         env:
           SCOUT_RELEASE_MARKERS: ${{ secrets.SCOUT_RELEASE_MARKERS }}

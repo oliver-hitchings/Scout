@@ -1,0 +1,15 @@
+pkgname=scout
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Local-first AI-assisted opportunity finder'
+arch=('x86_64')
+license=('MIT')
+depends=('gtk3' 'webkit2gtk-4.1')
+source=("Scout-${pkgver}-linux-x64.tar.gz")
+sha256sums=('SKIP')
+package() {
+  install -dm755 "$pkgdir/opt/scout" "$pkgdir/usr/bin"
+  cp -a "Scout-${pkgver}-linux-x64/." "$pkgdir/opt/scout/"
+  ln -s /opt/scout/Scout "$pkgdir/usr/bin/scout-dashboard"
+  # pacman owns /opt/scout; the native host detects this and never self-updates.
+}

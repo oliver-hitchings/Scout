@@ -3,6 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+// Keep the established setup-section id for existing workspaces. The Wails host
+// owns cross-platform launch-at-login registration; this legacy UI prompt is the
+// Windows compatibility surface until the host settings bridge replaces it.
 export const DEVICE_SETUP_SECTIONS = Object.freeze({ 'windows-startup': 1 });
 
 export function deviceSettingsPath(env = process.env, platform = process.platform) {
@@ -10,7 +13,8 @@ export function deviceSettingsPath(env = process.env, platform = process.platfor
   const base = platform === 'win32'
     ? (env.LOCALAPPDATA || path.join(env.USERPROFILE || os.homedir(), 'AppData', 'Local'))
     : (env.XDG_CONFIG_HOME || path.join(env.HOME || os.homedir(), '.config'));
-  return path.join(base, 'Scout', 'device-settings.json');
+  if (platform === 'darwin') return path.join(env.HOME || os.homedir(), 'Library', 'Application Support', 'Scout', 'host-settings.json');
+  return path.join(base, platform === 'win32' ? 'Scout' : 'scout', 'host-settings.json');
 }
 
 export function loadDeviceSettings(options = {}) {

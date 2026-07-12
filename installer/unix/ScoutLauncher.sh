@@ -4,6 +4,11 @@ set -eu
 BASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ -d "$BASE/../Resources/app" ]; then DEFAULT_ROOT=$(CDPATH= cd -- "$BASE/../Resources" && pwd); else DEFAULT_ROOT=$(CDPATH= cd -- "$BASE/.." && pwd); fi
 ROOT=${SCOUT_ROOT:-$DEFAULT_ROOT}
+if [ -x "$ROOT/Scout" ]; then
+  # beta.7 compatibility shim: upgraded installations delegate to the Wails
+  # host while old, still-installed launchers retain their previous fallback.
+  exec "$ROOT/Scout" "$@"
+fi
 NODE="$ROOT/runtime/node"
 SERVER="$ROOT/app/ui/server.mjs"
 URL=http://127.0.0.1:8459/
