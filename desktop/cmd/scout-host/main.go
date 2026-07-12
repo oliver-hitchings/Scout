@@ -51,9 +51,18 @@ func main() {
 	menu.Add("Settings").OnClick(func(*application.Context) { mainWindow.Show().Focus() })
 	menu.AddSeparator()
 	menu.Add("Quit Scout").OnClick(func(*application.Context) {
-		quit := app.Dialog.Question().SetTitle("Quit Scout").SetMessage("Scheduled scans are independent CLI processes. What should happen?").AttachToWindow(mainWindow)
-		quit.AddButton("Keep scheduled scans enabled").OnClick(func() { app.Quit() })
-		quit.AddButton("Disable scans and quit").OnClick(func() { disableSchedules(sup.Port); app.Quit() })
+		// Windows' native MessageBox supports only Yes/No/Cancel result IDs. Keep
+		// those labels so every platform invokes the intended callback, and make
+		// the consequence of each choice explicit in the message.
+		quit := app.Dialog.Question().SetTitle("Quit Scout?").SetMessage("Scheduled scans can continue after Scout closes.\n\nYes — quit and keep scheduled scans running\nNo — turn off scheduled scans, then quit\nCancel — keep Scout open").AttachToWindow(mainWindow)
+		quit.AddButton("Yes").OnClick(func() { app.Quit() }).SetAsDefault()
+		quit.AddButton("No").OnClick(func() {
+			if err := disableSchedules(sup.Port); err != nil {
+				app.Dialog.Error().SetTitle("Could not turn off scheduled scans").SetMessage("Scout is still open so your schedule is not changed.\n\n" + err.Error()).AttachToWindow(mainWindow).Show()
+				return
+			}
+			app.Quit()
+		})
 		quit.AddButton("Cancel").SetAsCancel()
 		quit.Show()
 	})
@@ -125,9 +134,18 @@ func (c *controlServer) Close() {
 	c.server.Shutdown(ctx)
 }
 
-func disableSchedules(port int) {
+func disableSchedules(port int) error {
 	req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/api/schedule", port), strings.NewReader(`{"action":"remove"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", fmt.Sprintf("http://127.0.0.1:%d", port))
-	_, _ = http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("could not contact Scout: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("Scout returned %s", resp.Status)
+	}
+	return nil
 }
