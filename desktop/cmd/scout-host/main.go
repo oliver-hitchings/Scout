@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"github.com/oliver-hitchings/scout/desktop/internal/host"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -25,12 +26,17 @@ var scoutIcon []byte
 var key = [32]byte{0x53, 0x63, 0x6f, 0x75, 0x74, 0x57, 0x61, 0x69, 0x6c, 0x73, 0x56, 0x33}
 
 func main() {
+	if runUpdateHelper(os.Args[1:]) {
+		return
+	}
 	root, _ := filepath.Abs(filepath.Dir(os.Args[0]))
 	if os.Getenv("SCOUT_ROOT") != "" {
 		root = os.Getenv("SCOUT_ROOT")
 	}
 	sup := &host.Supervisor{Paths: host.InstalledPaths(root), Port: configuredPort()}
-	control := newControl(sup)
+	version := installedVersion(root)
+	updates := host.NewUpdateManager(root, version)
+	control := newControl(sup, updates)
 	sup.ControlURL = control.URL
 	if err := sup.Start(context.Background()); err != nil {
 		log.Fatal(err)
@@ -57,6 +63,16 @@ func main() {
 	tray.SetMenu(menu)
 	tray.OnClick(func() { mainWindow.Show().Focus() })
 	control.onQuit = app.Quit
+	// Checks are automatic and rate-limited by the host manager. Installation
+	// remains a visible user choice in Settings/tray after checksum verification.
+	go func() {
+		control.Check(false)
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			control.Check(false)
+		}
+	}()
 	app.OnShutdown(func() { sup.Stop(); control.Close() })
 	if err := app.Run(); err != nil {
 		log.Print(err)
@@ -85,34 +101,46 @@ func configuredPort() int {
 }
 
 type controlServer struct {
-	URL    string
-	server *http.Server
-	token  string
-	onQuit func()
+	URL     string
+	server  *http.Server
+	token   string
+	onQuit  func()
+	updates *host.UpdateManager
 }
 
-func newControl(s *host.Supervisor) *controlServer {
+func newControl(s *host.Supervisor, updates *host.UpdateManager) *controlServer {
 	token := host.RandomToken()
 	s.Token = token
 	mux := http.NewServeMux()
-	c := &controlServer{token: token}
+	c := &controlServer{token: token, updates: updates}
 	mux.HandleFunc("/v1/updates/check", func(w http.ResponseWriter, r *http.Request) {
 		if !c.authorised(r) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
-		c.Check(r.URL.Query().Get("force") == "true")
+		var request struct {
+			Force bool `json:"force"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		result := c.Check(request.Force || r.URL.Query().Get("force") == "true")
 		w.Header().Set("content-type", "application/json")
-		w.Write([]byte(`{"available":false,"managedBy":"host"}`))
+		json.NewEncoder(w).Encode(result)
 	})
 	mux.HandleFunc("/v1/updates/install", func(w http.ResponseWriter, r *http.Request) {
 		if !c.authorised(r) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
-		// Installation is initiated only after the manager has fetched the named
-		// GitHub-release asset and verified its exact checksums.txt entry.
-		http.Error(w, "no verified update is staged", http.StatusConflict)
+		if err := c.updates.Apply(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		w.Write([]byte(`{"accepted":true}`))
+		if c.onQuit != nil {
+			go func() { time.Sleep(100 * time.Millisecond); c.onQuit() }()
+		}
 	})
 	mux.HandleFunc("/v1/window/quit", func(w http.ResponseWriter, r *http.Request) {
 		if !c.authorised(r) {
@@ -135,13 +163,27 @@ func newControl(s *host.Supervisor) *controlServer {
 func (c *controlServer) authorised(r *http.Request) bool {
 	return r.Header.Get("X-Scout-Host-Token") == c.token
 }
-func (c *controlServer) Check(force bool) {
-	_ = force /* update manager is the single owner; release retrieval is intentionally loopback-only */
+func (c *controlServer) Check(force bool) host.UpdateResult {
+	return c.updates.Check(context.Background(), force)
 }
 func (c *controlServer) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	c.server.Shutdown(ctx)
+}
+
+func installedVersion(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, "app", "package.json"))
+	if err != nil {
+		return "0.0.0"
+	}
+	var pkg struct {
+		Version string `json:"version"`
+	}
+	if json.Unmarshal(b, &pkg) != nil || pkg.Version == "" {
+		return "0.0.0"
+	}
+	return pkg.Version
 }
 
 func showQuitSheet(window *application.WebviewWindow) {

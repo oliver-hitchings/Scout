@@ -1,6 +1,10 @@
 package host
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +14,43 @@ func TestChannelInference(t *testing.T) {
 	if InferChannel("1.0.0-beta.2", false) != Beta || InferChannel("1.0.0-beta.2", true) != Stable {
 		t.Fatal("channel inference")
 	}
+}
+
+func TestManagerChecksExpectedReleaseAsset(t *testing.T) {
+	asset := AssetName("1.1.0")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode([]Release{{Tag: "v1.1.0", Assets: []ReleaseAsset{{Name: asset, URL: "https://example.test/" + asset}}}})
+	}))
+	defer server.Close()
+	m := NewUpdateManager(t.TempDir(), "1.0.0")
+	m.Client = server.Client()
+	m.StateFile = filepath.Join(t.TempDir(), "update-state.json")
+	// The manager normally uses the public ReleasesURL. A test transport keeps
+	// the production endpoint fixed while proving release parsing and selection.
+	m.Client.Transport = rewriteTransport{base: server.URL, next: server.Client().Transport}
+	r := m.Check(context.Background(), true)
+	if !r.Available || r.LatestVersion != "1.1.0" {
+		t.Fatalf("unexpected result %#v", r)
+	}
+}
+
+type rewriteTransport struct {
+	base string
+	next http.RoundTripper
+}
+
+func (t rewriteTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	copy := r.Clone(r.Context())
+	copy.URL.Scheme = "http"
+	copy.URL.Host = t.base[len("http://"):]
+	copy.URL.Path = "/releases"
+	if t.next == nil {
+		t.next = http.DefaultTransport
+	}
+	return t.next.RoundTrip(copy)
 }
 func TestReleaseSelection(t *testing.T) {
 	rs := []Release{{Tag: "v2", Prerelease: true}, {Tag: "v1"}}
