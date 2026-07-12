@@ -1,4 +1,4 @@
-const STEPS = ['Welcome', 'AI provider', 'Your search', 'Adzuna', 'Import CV', 'AI hand-off'];
+const STEPS = ['Welcome', 'AI provider', 'Your search', 'Adzuna', 'Import CV', 'AI hand-off', 'First scan'];
 const LEGACY_SKIP_KEY = 'scout.setup.legacySkipped.v1';
 const SUPPORTED_CV = /\.(pdf|docx|md|markdown|txt)$/i;
 
@@ -113,19 +113,6 @@ const Setup = {
   async refreshStatus({ keepOpen = false } = {}) {
     try {
       this.status = await requestJson('/api/setup/status');
-      // Compatibility with a Scout server that was already running when this
-      // readiness signal was introduced. A populated tracker is sufficient to
-      // suppress first-run setup; the server performs the stronger profile/CV
-      // checks after its next normal restart.
-      if (this.status.established === undefined && this.status.trackerExists) {
-        try {
-          const existing = await requestJson('/api/opportunities');
-          if (Array.isArray(existing.opportunities) && existing.opportunities.length > 0) {
-            this.status.established = true;
-            this.status.ready = true;
-          }
-        } catch { /* keep the server's original readiness result */ }
-      }
       window.Scout?.applyWorkspaceConfig?.(this.status.config);
       this.el('setup-title').textContent = this.status.established ? 'Scout settings' : 'Set up Scout';
       this.el('setup-subtitle').textContent = this.status.established
@@ -215,6 +202,7 @@ const Setup = {
       this.renderAdzuna,
       this.renderImport,
       this.renderHandoff,
+      this.renderFirstScan,
     ];
     renderers[this.step].call(this);
   },
@@ -229,12 +217,12 @@ const Setup = {
         : 'Daily scanning is off. Run one supervised scan before enabling it.';
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame setup-scout-welcome" role="img" aria-label="Scout welcomes you"></span></div><div class="scout-bubble tail-left">
-      <h2>${established ? 'Review or retune Scout' : 'Hi, I’m Scout. Let’s find the work worth moving for.'}</h2>
-      <p>${established ? 'Your existing tracker, profile, calibration and CV stay in place. Changes are merged or staged for review; nothing is reset.' : 'First, your search stays in your private workspace'} at <strong>${this.escape(this.status?.workspaceRoot || '')}</strong>.</p>
+      <h2>${established ? 'Review or retune Scout' : 'Hi, I’m Scout. Let’s find work that fits you.'}</h2>
+      <p>${established ? 'Your existing tracker, profile, calibration and CV stay in place. Changes are staged for review; nothing is reset.' : 'I build your search from the CV and preferences you choose to share—not from unrelated AI chat history. Your search stays in your private workspace'} at <strong>${this.escape(this.status?.workspaceRoot || '')}</strong>.</p>
       <p class="meta">Scout ${this.escape(this.status?.appVersion || '')} · App: ${this.escape(this.status?.appRoot || '')}</p>
       <div class="setup-grid">
         <div class="setup-callout"><strong>No automatic sending</strong><p>Scout drafts material for your review. It never applies or sends outreach for you.</p></div>
-        <div class="setup-callout"><strong>No telemetry</strong><p>Your workspace is not uploaded by Scout. Your chosen AI provider receives only the context used for the tasks you ask it to perform.</p></div>
+        <div class="setup-callout"><strong>Local workspace</strong><p>Scout has no telemetry or hosted profile. Codex or Claude receives the career context needed for the task you ask it to perform, under that provider’s account terms.</p></div>
         <div class="setup-callout"><strong>Daily scan</strong><p>${scheduleText}</p></div>
       </div>
       <p>You can move or back up the workspace independently. API credentials stay in its ignored <code>.env</code> file and are never shown again here.</p>
@@ -248,11 +236,12 @@ const Setup = {
     const selected = (this.status?.config?.ai?.provider || '') === name;
     const state = !provider.installed ? 'Not installed' : provider.authenticated ? 'Installed and signed in' : 'Installed; sign-in required';
     const login = name === 'codex' ? 'codex login' : 'claude auth login';
+    const guide = name === 'codex' ? 'https://developers.openai.com/codex/cli/' : 'https://docs.anthropic.com/en/docs/claude-code/setup';
     return `<label class="setup-provider ${provider.authenticated ? 'available' : ''}">
       <input type="radio" name="setup-provider" value="${name}" ${selected ? 'checked' : ''} ${provider.authenticated ? '' : 'disabled'}>
       <strong>${name[0].toUpperCase() + name.slice(1)}</strong>
       <span class="meta">${state}</span>
-      ${provider.authenticated ? '' : `<span class="meta">Run <code>${login}</code> in a terminal, complete the official login flow, then refresh.</span>`}
+      ${provider.authenticated ? '' : `<span class="meta"><a href="${guide}" target="_blank" rel="noreferrer">Official installation guide</a>. Install the provider, run <code>${login}</code>, complete its official login flow, then refresh. Your provider account may have separate usage limits or costs.</span>`}
     </label>`;
   },
 
@@ -287,7 +276,7 @@ const Setup = {
     const option = (value, label) => `<option value="${value}" ${d.commuteMode === value ? 'selected' : ''}>${label}</option>`;
     const questions = [
       ['First, what should I call you?', 'I’ll also match the tone you want in CVs and outreach drafts.', `<label class="setup-field">Your name<input id="setup-name" autocomplete="name" value="${this.escape(d.displayName)}" required></label><label class="setup-field">Writing tone<input id="setup-tone" value="${this.escape(d.tone)}" placeholder="Natural, direct and evidence-led"></label>`],
-      ['What kind of work should I look for?', 'Broad themes are fine—we’ll tune them together later.', `<label class="setup-field wide">Role families <span>comma-separated</span><input id="setup-roles" value="${this.escape(d.roleFamilies)}" placeholder="Electronics, systems, hardware leadership"></label><label class="setup-field wide">Sectors <span>comma-separated</span><input id="setup-sectors" value="${this.escape(d.sectors)}" placeholder="Robotics, space, deep tech"></label>`],
+      ['What kind of work should I look for?', 'Use job titles or role families you would genuinely consider. These answers become search queries after you approve the setup.', `<label class="setup-field wide">Role families <span>comma-separated</span><input id="setup-roles" value="${this.escape(d.roleFamilies)}" placeholder="Software engineer, product manager, data analyst"></label><label class="setup-field wide">Sectors <span>comma-separated</span><input id="setup-sectors" value="${this.escape(d.sectors)}" placeholder="Developer tools, climate, healthcare"></label>`],
       ['Where can the right role be?', 'I use travel time rather than simple mileage when commute information is available.', `<label class="setup-field wide">Locations <span>comma-separated</span><input id="setup-locations" value="${this.escape(d.locations)}"></label><label class="setup-field wide">Commute origin<input id="setup-commute-origin" value="${this.escape(d.commuteOrigin)}" placeholder="Town, city or postcode"></label><label class="setup-field">Mode<select id="setup-commute-mode">${option('either','Car or public transport')}${option('car','Car')}${option('public','Public transport')}${option('any','No filter')}</select></label><label class="setup-field">Maximum minutes<input id="setup-commute-max" type="number" min="0" max="1440" value="${this.escape(d.commuteMax)}"></label><label class="setup-field wide"><span><input id="setup-include-unknown" type="checkbox" ${d.includeUnknown ? 'checked' : ''}> Include roles with unknown commute</span></label>`],
       ['What compensation makes a move worthwhile?', 'This guides the search; it is not inserted into applications.', `<label class="setup-field">Minimum base salary<input id="setup-salary" type="number" min="0" step="1000" value="${this.escape(d.salaryMinimum)}"></label><label class="setup-field">Currency<input id="setup-currency" maxlength="3" value="${this.escape(d.currency)}"></label>`],
       ['What should I rule out immediately?', 'Keep these to genuine dealbreakers so I don’t hide an unusual but excellent role.', `<label class="setup-field wide">Hard exclusions <span>comma-separated</span><textarea id="setup-exclusions">${this.escape(d.exclusions)}</textarea></label>`],
@@ -351,6 +340,44 @@ const Setup = {
     this.el('setup-next').textContent = this.status?.ready ? 'Finish setup' : 'Check readiness';
   },
 
+  renderFirstScan() {
+    const health = this.status?.scanHealth || {};
+    const schedule = this.status?.schedule || {};
+    const healthy = Boolean(health.lastRunAt && health.healthy);
+    this.el('setup-body').innerHTML = `
+      <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame" role="img" aria-label="Scout is ready to search"></span></div><div class="scout-bubble tail-left">
+      <h2>${healthy ? 'Your first scan is ready to review' : 'Run your first search with me'}</h2>
+      <p>I search using your approved role families and search lanes, then apply your locations, exclusions, compensation preferences and evidence-based scoring. I do not use unrelated AI conversations.</p>
+      <div class="setup-callout"><strong>${healthy ? 'Healthy supervised scan completed' : 'Supervised first'}</strong><p>${healthy ? `Last run: ${this.escape(formatLocalDateTime(health.lastRunAt, this.status?.config?.locale))}. Review the dashboard before enabling automation.` : 'Keep this window open. A full source check can take several minutes and no application will be sent.'}</p></div>
+      <p><button id="setup-run-scan" class="act primary" type="button" ${this.busy ? 'disabled' : ''}>${healthy ? 'Run another supervised scan' : 'Run supervised scan'}</button></p>
+      <div class="setup-callout"><strong>Optional daily scan</strong><p>${schedule.enabled ? `Enabled at ${this.escape(schedule.time || '')} using ${this.escape(schedule.provider || '')}.` : 'Disabled until you choose to enable it after reviewing a healthy scan.'}</p>
+      <label class="setup-field">Daily time<input id="setup-schedule-time" type="time" value="${this.escape(schedule.time || '07:30')}"></label>
+      <p><button id="setup-schedule-toggle" class="act" type="button" ${healthy ? '' : 'disabled'}>${schedule.enabled ? 'Disable daily scan' : 'Enable daily scan'}</button></p></div></div>`;
+    this.el('setup-run-scan').addEventListener('click', () => this.runSupervisedScan());
+    this.el('setup-schedule-toggle').addEventListener('click', () => this.toggleSchedule());
+    this.el('setup-next').textContent = 'Finish';
+  },
+
+  async runSupervisedScan() {
+    this.setBusy(true); this.setMessage('Scout is searching and scoring. This can take several minutes…');
+    try {
+      await requestJson('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: this.status?.config?.ai?.provider }) });
+      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage('Scan completed. Review the dashboard results before enabling automation.', 'good');
+      window.Scout?.loadOpportunities?.();
+    } catch (error) { this.setMessage(error.message, 'error'); }
+    finally { this.setBusy(false); }
+  },
+
+  async toggleSchedule() {
+    this.setBusy(true);
+    try {
+      const enabled = this.status?.schedule?.enabled;
+      await requestJson('/api/schedule', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: enabled ? 'remove' : 'install', time: fieldValue('setup-schedule-time') || '07:30', provider: this.status?.config?.ai?.provider }) });
+      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage(enabled ? 'Daily scan disabled.' : 'Daily scan enabled and verified.', 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+    finally { this.setBusy(false); }
+  },
+
   openScoutChat(prefill = 'ask') {
     window.Scout?.openChat?.('setup-onboarding', prefill);
   },
@@ -403,6 +430,8 @@ const Setup = {
         }
         const config = this.readPreferences();
         if (!config.profile.displayName) throw new Error('Enter your name so Scout can identify the workspace profile.');
+        if (!config.search.roleFamilies.length) throw new Error('Add at least one role family or job title to search for.');
+        if (!config.search.locations.length) throw new Error('Add at least one location or enter Remote.');
         if (!Number.isFinite(config.search.salaryMinimum) && config.search.salaryMinimum !== null) throw new Error('Minimum salary must be a number or blank.');
         if (!config.locale || !config.currency || !config.timezone) throw new Error('Locale, currency and timezone are required.');
         const result = await requestJson('/api/setup/config', {
@@ -444,12 +473,13 @@ const Setup = {
         this.status = await requestJson('/api/setup/status');
         window.Scout?.applyWorkspaceConfig?.(this.status.config);
       }
-      if (this.step === STEPS.length - 1) {
+      if (this.step === 5) {
         await this.refreshStatus({ keepOpen: true });
-        if (this.status.ready) this.el('setup-overlay').classList.add('hidden');
-        else this.setMessage('The workspace is not ready yet. Run the AI onboarding prompt, then check again.', 'error');
+        if (this.status.ready) { this.step += 1; this.render(); }
+        else this.setMessage('The workspace is not ready yet. Run the AI onboarding prompt, approve the staged changes, then check again.', 'error');
         return;
       }
+      if (this.step === STEPS.length - 1) { this.el('setup-overlay').classList.add('hidden'); return; }
       this.step += 1;
       this.render();
     } catch (error) {

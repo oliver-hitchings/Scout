@@ -18,7 +18,7 @@ This is the canonical clean-history public application repository. Release only 
 
    ```powershell
    npm ci --omit=dev
-   node tools/build-release.mjs --installer --version 0.1.0-beta.3
+   node tools/build-release.mjs --installer --version 0.1.0-beta.4
    ```
 
    Set `ISCC_PATH` when required. The installer is named

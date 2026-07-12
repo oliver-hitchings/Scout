@@ -4,6 +4,8 @@ Scout is a local-first, AI-assisted opportunity finder. It searches configured j
 
 Scout never submits an application or sends outreach. Your CV, profile, tracker, reports, applications, chat history, and source credentials live in a separate private workspace.
 
+**New user?** Start with [Install Scout on Windows](docs/INSTALL_WINDOWS.md). Scout is an unsigned Windows 10/11 public beta and requires your own authenticated Codex or Claude provider account.
+
 > **Repository note:** this is the canonical public Scout application repository. Personal CV, profile, tracker, report and application data belongs only in the separate private workspace repository. See [Repository layout](docs/REPOSITORY_LAYOUT.md).
 
 ## Status
@@ -15,6 +17,7 @@ Scout `0.1.x` is a Windows-first beta. Expect an unsigned installer to trigger M
 - Uses either the Codex CLI or Claude Code as the AI provider; a second provider is optional.
 - Imports selectable text from PDF, DOCX, Markdown, or plain-text CVs.
 - Interviews you to build a factual profile, configurable search lanes, exclusions, and a 100-point scoring rubric.
+- Builds searches from the CV and preferences you explicitly approve; it does not inspect unrelated AI conversations or provider history.
 - Searches configured ATS boards and public sources. Adzuna is optional.
 - Tracks evidence, verdicts, follow-ups, applications, and dated reports in a private local Git repository.
 - Runs supervised or scheduled daily scans on Windows.
@@ -93,6 +96,7 @@ Open `http://127.0.0.1:8459`. Use a synthetic workspace for development and neve
 ## Documentation
 
 - [Quick Start](docs/QUICK_START.md)
+- [Install Scout on Windows](docs/INSTALL_WINDOWS.md)
 - [AI-assisted setup and retuning](docs/AI_SETUP.md)
 - [Configuration reference](docs/CONFIGURATION.md)
 - [Privacy and data handling](docs/PRIVACY.md)

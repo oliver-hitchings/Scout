@@ -15,6 +15,8 @@
 
 Stage changes first. Before activation, show the user the imported facts, unresolved questions, search/scoring rules, sensitive local files, and whether Adzuna and scheduling are enabled. Do not display secrets. Do not activate a schedule until `scout doctor` passes and a supervised scan succeeds.
 
+After explicit approval and successful activation, write `.scout/onboarding/activated.json` containing only the activation timestamp and provider. Scout uses this local marker to distinguish an approved fresh setup from incomplete seeded files.
+
 ## Retuning
 
 Base tuning on explicit reactions and outcomes. Append dated calibration precedents, explain which future scores they affect, and preserve previous history.

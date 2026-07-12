@@ -18,7 +18,7 @@ node tools/build-release.mjs --installer
 ```
 
 Set `ISCC_PATH` if `ISCC.exe` is not in its usual installation directory. Use
-`--version 0.1.0-beta.2` to override the package version. Outputs are written to
+`--version 0.1.0-beta.4` to override the package version. Outputs are written to
 `installer/output/`, including `checksums.txt`. The beta is intentionally
 unsigned until a code-signing certificate and secure signing pipeline exist.
 

@@ -14,6 +14,7 @@ import { buildSourcePayload, sourceUrlOf, SourceCache } from './lib/source.mjs';
 import { detectProviders } from './lib/providers.mjs';
 import { doctor } from './lib/doctor.mjs';
 import { extractCvText } from './lib/cvImport.mjs';
+import { setupReadiness } from './lib/setupReadiness.mjs';
 import { loadEnv, saveEnv } from './lib/env.mjs';
 import {
   loadWorkspaceConfig, resolveWorkspaceRoot, seedWorkspace, syncManagedInstructions,
@@ -96,20 +97,6 @@ function readScheduleSummary(config = loadWorkspaceConfig(WORKSPACE_ROOT), healt
   return scheduleSummary(config, health, scheduleStatus());
 }
 
-function establishedWorkspace() {
-  try {
-    const data = readTracker();
-    const hasTrackedHistory = Array.isArray(data.opportunities) && data.opportunities.length > 0;
-    const meaningful = (file, minimumBytes) => fs.existsSync(file) && fs.statSync(file).size >= minimumBytes;
-    return hasTrackedHistory
-      && meaningful(path.join(WORKSPACE_ROOT, 'profile', 'context.md'), 500)
-      && meaningful(path.join(WORKSPACE_ROOT, 'profile', 'calibration.md'), 100)
-      && meaningful(path.join(WORKSPACE_ROOT, 'cv', 'master-cv.md'), 500);
-  } catch {
-    return false;
-  }
-}
-
 // Task 5 assigns handlers into this table: routes['POST /api/status'] = (req,res,body)=>{...}
 export const routes = {};
 
@@ -184,7 +171,7 @@ function handleRead(req, res, url) {
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
     const providers = detectProviders();
     const env = loadEnv(WORKSPACE_ROOT);
-    const established = establishedWorkspace();
+    const readiness = setupReadiness(WORKSPACE_ROOT, config, providers, readTracker());
     return sendJson(res, 200, {
       workspaceRoot: WORKSPACE_ROOT,
       appRoot: APP_ROOT,
@@ -193,8 +180,10 @@ function handleRead(req, res, url) {
       providers,
       adzunaConfigured: !!(env.ADZUNA_APP_ID && env.ADZUNA_API_KEY),
       trackerExists: fs.existsSync(TRACKER),
-      established,
-      ready: established || !!(config.profile?.displayName && fs.existsSync(TRACKER)),
+      established: readiness.established,
+      ready: readiness.ready,
+      readiness: readiness.checks,
+      scanHealth: readScanHealth(),
       schedule: readScheduleSummary(config),
       doctor: doctor(WORKSPACE_ROOT),
     });
@@ -497,6 +486,42 @@ routes['POST /api/setup/import-cv'] = (req, res, body) => {
     fs.rmSync(imported, { force: true });
     replyJson(res, 400, { error: e.message });
   });
+};
+
+import { installSchedule, runScan } from '../tools/scout.mjs';
+import { removeSchedule, runScheduledNow } from './lib/scheduler.mjs';
+
+let supervisedScanRunning = false;
+routes['POST /api/scan'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (supervisedScanRunning) return replyJson(res, 409, { error: 'a supervised scan is already running' });
+  const config = loadWorkspaceConfig(WORKSPACE_ROOT);
+  const provider = b.provider || config.ai?.provider;
+  if (!['codex', 'claude'].includes(provider)) return replyJson(res, 400, { error: 'choose an authenticated AI provider first' });
+  supervisedScanRunning = true;
+  try {
+    const result = await runScan(WORKSPACE_ROOT, provider, 'primary');
+    return replyJson(res, result.ok ? 200 : 500, { ...result, scanHealth: readScanHealth() });
+  } catch (e) { return replyJson(res, 500, { error: e.message }); }
+  finally { supervisedScanRunning = false; }
+};
+
+routes['POST /api/schedule'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  const config = loadWorkspaceConfig(WORKSPACE_ROOT);
+  try {
+    let result;
+    if (b.action === 'install') {
+      const health = readScanHealth();
+      if (!health.lastRunAt || !health.healthy) return replyJson(res, 409, { error: 'complete a healthy supervised scan before enabling daily scans' });
+      result = installSchedule(WORKSPACE_ROOT, b.time || config.schedule?.time || '07:30', b.provider || config.ai?.provider);
+    } else if (b.action === 'remove') {
+      result = removeSchedule();
+      if (result.ok) { config.schedule = { ...config.schedule, enabled: false }; writeWorkspaceConfig(WORKSPACE_ROOT, config); }
+    } else if (b.action === 'run-now') result = runScheduledNow();
+    else return replyJson(res, 400, { error: 'action must be install, remove, or run-now' });
+    return replyJson(res, result.ok ? 200 : 500, result);
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 
 // Restart: reply first, then hand the port to a fresh detached copy of this

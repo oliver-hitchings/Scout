@@ -135,3 +135,17 @@ test('restart rejects a cross-origin browser request', async () => {
   });
   assert.equal(response.status, 403);
 });
+
+test('supervised scan requires a configured provider', async () => {
+  const host = `127.0.0.1:${port}`;
+  const response = await request({ method: 'POST', path: '/api/scan', headers: { host, origin: `http://${host}`, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(response.status, 400);
+  assert.match(JSON.parse(response.text).error, /provider/i);
+});
+
+test('daily schedule is blocked before a healthy supervised scan', async () => {
+  const host = `127.0.0.1:${port}`;
+  const response = await request({ method: 'POST', path: '/api/schedule', headers: { host, origin: `http://${host}`, 'content-type': 'application/json' }, body: JSON.stringify({ action: 'install', provider: 'codex', time: '07:30' }) });
+  assert.equal(response.status, 409);
+  assert.match(JSON.parse(response.text).error, /healthy supervised scan/i);
+});

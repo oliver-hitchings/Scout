@@ -68,3 +68,33 @@ export function runScheduledNow({ spawn = spawnSync } = {}) {
   const r = spawn('schtasks.exe', ['/Run', '/TN', TASK_NAME], { encoding: 'utf8', windowsHide: true });
   return { ok: r.status === 0, output: String(r.stdout || r.stderr || '').trim() };
 }
+
+export function schedulerRegistrationScript() {
+  return `param(
+  [Parameter(Mandatory=$true)][string]$TaskName,
+  [Parameter(Mandatory=$true)][string]$Command,
+  [Parameter(Mandatory=$true)][string]$Arguments,
+  [Parameter(Mandatory=$true)][string]$WorkingDirectory,
+  [Parameter(Mandatory=$true)][string]$Time
+)
+$ErrorActionPreference = 'Stop'
+$at = [datetime]::Today.Add([timespan]::Parse($Time))
+if ($at -le (Get-Date)) { $at = $at.AddDays(1) }
+$action = New-ScheduledTaskAction -Execute $Command -Argument $Arguments -WorkingDirectory $WorkingDirectory
+$trigger = New-ScheduledTaskTrigger -Daily -At $at
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 45) -MultipleInstances IgnoreNew
+$principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+`;
+}
+
+export function registerDailySchedule({ scriptFile, command, argumentsText, workingDirectory, time, spawn = spawnSync }) {
+  validateTime(time);
+  if (process.platform !== 'win32') return { ok: false, supported: false, error: 'scheduled scans are currently supported on Windows only' };
+  const r = spawn('powershell.exe', [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile,
+    '-TaskName', TASK_NAME, '-Command', command, '-Arguments', argumentsText,
+    '-WorkingDirectory', workingDirectory, '-Time', time,
+  ], { encoding: 'utf8', windowsHide: true });
+  return { ok: r.status === 0, supported: true, output: String(r.stdout || r.stderr || '').trim() };
+}

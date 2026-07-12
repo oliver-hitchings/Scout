@@ -13,7 +13,7 @@ import { fetchConfiguredPortals } from '../ui/lib/ats.mjs';
 import { fetchHiringCafe } from '../ui/lib/hiringCafe.mjs';
 import { loadEnv } from '../ui/lib/env.mjs';
 import { providerStatus } from '../ui/lib/providers.mjs';
-import { removeSchedule, runScheduledNow, scheduleStatus, TASK_NAME, taskXml } from '../ui/lib/scheduler.mjs';
+import { registerDailySchedule, removeSchedule, runScheduledNow, scheduleStatus, schedulerRegistrationScript } from '../ui/lib/scheduler.mjs';
 import {
   loadWorkspaceConfig, resolveWorkspaceRoot, seedWorkspace as seedWorkspaceFiles,
   syncManagedInstructions, workspacePaths, writeWorkspaceConfig,
@@ -106,7 +106,7 @@ export function migrateLegacyWorkspace(sourceRoot, targetRoot) {
   return { sourceRoot, targetRoot, verifiedFiles, committed: commit.status === 0, commitMessage: String(commit.stderr || commit.stdout || '').trim() };
 }
 
-async function runScan(root, provider, mode) {
+export async function runScan(root, provider, mode) {
   if (!['codex', 'claude'].includes(provider)) throw new Error('provider must be codex or claude');
   if (!['primary', 'second-pass'].includes(mode)) throw new Error('mode must be primary or second-pass');
   const status = providerStatus(provider);
@@ -128,28 +128,23 @@ async function runScan(root, provider, mode) {
   return result;
 }
 
-function installSchedule(root, time, provider) {
+export function installSchedule(root, time, provider) {
   if (process.platform !== 'win32') throw new Error('scheduled scans are currently supported on Windows only');
   if (!['codex', 'claude'].includes(provider)) throw new Error('schedule provider must be codex or claude');
   const config = loadWorkspaceConfig(root);
-  const xml = taskXml({
-    command: process.execPath,
-    args: [`"${fileURLToPath(import.meta.url)}"`, 'scan', '--workspace', `"${root}"`, '--provider', provider, '--mode', 'primary'],
-    workingDirectory: APP_ROOT,
-    time,
-  });
-  const xmlFile = path.join(os.tmpdir(), `scout-task-${process.pid}.xml`);
-  fs.writeFileSync(xmlFile, `\ufeff${xml}`, 'utf16le');
+  const scriptFile = path.join(os.tmpdir(), `scout-task-${process.pid}.ps1`);
+  fs.writeFileSync(scriptFile, schedulerRegistrationScript(), 'utf8');
   try {
-    const r = spawnSync('schtasks.exe', ['/Create', '/TN', TASK_NAME, '/XML', xmlFile, '/F'], { encoding: 'utf8', windowsHide: true });
-    const result = { ok: r.status === 0, output: String(r.stdout || r.stderr || '').trim() };
+    const cli = fileURLToPath(import.meta.url);
+    const argumentsText = `"${cli}" scan --workspace "${root}" --provider ${provider} --mode primary`;
+    const result = registerDailySchedule({ scriptFile, command: process.execPath, argumentsText, workingDirectory: APP_ROOT, time });
     if (result.ok) {
       config.schedule = { enabled: true, time, provider };
       writeWorkspaceConfig(root, config);
     }
     return result;
   } finally {
-    fs.rmSync(xmlFile, { force: true });
+    fs.rmSync(scriptFile, { force: true });
   }
 }
 
