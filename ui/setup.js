@@ -110,6 +110,7 @@ const Setup = {
   busy: false,
   preferenceStep: 0,
   preferenceDraft: null,
+  incrementalSection: null,
 
   el(id) { return document.getElementById(id); },
 
@@ -130,6 +131,13 @@ const Setup = {
         ? 'Review or retune your existing private workspace.'
         : 'A private workspace, tuned to your search.';
       const skipped = this.status.trackerExists && localStorage.getItem(SETUP_DEFERRED_KEY) === 'true';
+      const pending = this.status.pendingSetupSections || [];
+      if (!keepOpen && pending.length && (this.status.setupComplete || this.status.established || this.status.ready || skipped)) {
+        this.incrementalSection = pending[0];
+        this.el('setup-overlay').classList.remove('hidden');
+        this.render();
+        return;
+      }
       if (!keepOpen && (this.status.setupComplete || this.status.established || this.status.ready || skipped)) {
         this.el('setup-overlay').classList.add('hidden');
         return;
@@ -147,6 +155,7 @@ const Setup = {
   },
 
   async openSettings() {
+    this.incrementalSection = null;
     this.step = 0;
     this.preferenceStep = 0;
     this.preferenceDraft = null;
@@ -206,6 +215,7 @@ const Setup = {
 
   render() {
     this.setMessage();
+    if (this.incrementalSection) return this.renderIncrementalSection();
     this.renderProgress();
     this.el('setup-back').classList.toggle('hidden', this.step === 0);
     // The optional hand-off uses the primary Finish for now action. Keep the
@@ -240,11 +250,31 @@ const Setup = {
         <div class="setup-callout"><strong>No automatic sending</strong><p>Scout drafts material for your review. It never applies or sends outreach for you.</p></div>
         <div class="setup-callout"><strong>Local workspace</strong><p>Scout has no telemetry or hosted profile. Codex or Claude receives the career context needed for the task you ask it to perform, under that provider’s account terms.</p></div>
         <div class="setup-callout"><strong>Daily scan</strong><p>${scheduleText}</p></div>
+        ${this.status?.device ? `<div class="setup-callout"><strong>Windows startup</strong><label class="setup-field"><span><input id="setup-start-with-windows" type="checkbox" ${this.status.device.startWithWindows ? 'checked' : ''}> Start Scout when I sign into Windows</span></label><p><button id="setup-save-device" class="act" type="button">Save startup setting</button></p></div>` : ''}
       </div>
       <p>You can move or back up the workspace independently. API credentials stay in its ignored <code>.env</code> file and are never shown again here.</p>
       <p class="meta">Something stuck? <button id="setup-restart" class="act" type="button">Restart Scout</button> restarts the local server and reloads this page.</p></div></div>`;
     this.el('setup-restart').addEventListener('click', () => this.restartServer());
+    this.el('setup-save-device')?.addEventListener('click', () => this.saveDeviceSetting());
     this.el('setup-next').textContent = established ? 'Review settings' : 'Start setup';
+  },
+
+  renderIncrementalSection() {
+    this.el('setup-title').textContent = 'Scout setup update';
+    this.el('setup-subtitle').textContent = 'Only this new setting needs your attention.';
+    this.el('setup-progress').innerHTML = '<span class="done" title="Windows startup"></span>';
+    this.el('setup-back').classList.add('hidden');
+    this.el('setup-skip').classList.remove('hidden');
+    this.el('setup-skip').textContent = 'Later';
+    this.el('setup-next').textContent = 'Save setting';
+    this.el('setup-body').innerHTML = `<div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame" role="img" aria-label="Scout has a new setting"></span></div><div class="scout-bubble tail-left"><h2>Should I start with Windows?</h2><p>This keeps Scout available in the notification-area arrow after you sign in. You can change it later in Settings.</p><label class="setup-field"><span><input id="setup-start-with-windows" type="checkbox" ${this.status?.device?.startWithWindows ? 'checked' : ''}> Start Scout when I sign into Windows</span></label></div></div>`;
+  },
+
+  async saveDeviceSetting() {
+    const enabled = Boolean(this.el('setup-start-with-windows')?.checked);
+    const result = await requestJson('/api/device/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ startWithWindows: enabled }) });
+    this.status.device = result.settings;
+    this.setMessage('Windows startup setting saved.', 'good');
   },
 
   providerCard(name) {
@@ -440,6 +470,17 @@ const Setup = {
     if (this.busy) return;
     try {
       this.setBusy(true);
+      if (this.incrementalSection) {
+        await this.saveDeviceSetting();
+        await requestJson('/api/setup/section', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: this.incrementalSection.id, action: 'complete' }) });
+        this.incrementalSection = null;
+        this.el('setup-overlay').classList.add('hidden');
+        return;
+      }
+      if (this.step === 0 && this.status?.device) {
+        const enabled = Boolean(this.el('setup-start-with-windows')?.checked);
+        if (enabled !== Boolean(this.status.device.startWithWindows)) await this.saveDeviceSetting();
+      }
       if (this.step === 1) {
         const provider = this.selectedProvider();
         if (!provider) throw new Error('Sign in to Codex or Claude, refresh the status, then choose it.');
@@ -536,6 +577,12 @@ const Setup = {
   },
 
   deferSetup() {
+    if (this.incrementalSection) {
+      requestJson('/api/setup/section', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: this.incrementalSection.id, action: 'defer' }) })
+        .then(() => { this.incrementalSection = null; this.el('setup-overlay').classList.add('hidden'); })
+        .catch((error) => this.setMessage(error.message, 'error'));
+      return;
+    }
     if (!this.status?.trackerExists || this.status?.ready) return;
     localStorage.setItem(SETUP_DEFERRED_KEY, 'true');
     this.el('setup-overlay').classList.add('hidden');

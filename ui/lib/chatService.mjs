@@ -8,6 +8,7 @@ import { runTurn } from './chatRun.mjs';
 import { buildPrefills, HANDOFF_SUMMARY_PROMPT, handoffOpening } from './chatPrompts.mjs';
 import { readUsage } from './usage.mjs';
 import { loadWorkspaceConfig } from './workspace.mjs';
+import { providerStatus } from './providers.mjs';
 
 export const ENGINES = {
   claude: { build: buildClaudeArgs, parse: parseClaudeLine },
@@ -59,12 +60,14 @@ function stopTurnOnDisconnect(req, res, id) {
 }
 
 export function registerChatRoutes({
-  routes, repoRoot, readTracker, runTurnFn = runTurn, saveChatFn = saveChat,
+  routes, repoRoot, readTracker, runTurnFn = runTurn, saveChatFn = saveChat, providerStatusFn = providerStatus,
 }) {
   function engineBuild(engine, resumeId) {
     const config = loadWorkspaceConfig(repoRoot);
     const model = config.ai?.provider === engine ? config.ai?.model : null;
-    return ENGINES[engine].build(resumeId, { model });
+    const status = providerStatusFn(engine);
+    if (!status.installed || !status.authenticated) throw new Error(`${engine} CLI is not installed and signed in`);
+    return ENGINES[engine].build(resumeId, { model, command: status.executable, env: status.env });
   }
   function entryOf(id) {
     if (id === ONBOARDING_CHAT_ID) {

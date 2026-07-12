@@ -54,6 +54,7 @@ export const DEFAULT_WORKSPACE_CONFIG = Object.freeze({
   },
   setup: {
     completedAt: null,
+    completedSections: {},
   },
 });
 
@@ -119,7 +120,7 @@ export function mergeWorkspaceDefaults(value = {}) {
       hiringCafe: { ...defaults.sources.hiringCafe, ...(value.sources?.hiringCafe || {}) },
     },
     commute: { ...defaults.commute, ...(value.commute || {}) },
-    setup: { ...defaults.setup, ...(value.setup || {}) },
+    setup: { ...defaults.setup, ...(value.setup || {}), completedSections: { ...defaults.setup.completedSections, ...(value.setup?.completedSections || {}) } },
     ai: { ...defaults.ai, ...(value.ai || {}) },
     schedule: { ...defaults.schedule, ...(value.schedule || {}) },
   };

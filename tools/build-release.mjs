@@ -151,10 +151,9 @@ export function stageRelease({
   if (includeDependencies) copyTree(required(resolvedRoot, 'node_modules'), path.join(appDir, 'node_modules'));
   const runtimeDir = path.join(resolvedStage, 'runtime');
   fs.mkdirSync(runtimeDir, { recursive: true });
-  const runtimeName = platform === 'win32' ? 'node.exe' : 'node';
+  const runtimeName = platform === 'win32' ? 'ScoutRuntime.exe' : 'node';
   fs.copyFileSync(required(path.dirname(nodeExecutable), path.basename(nodeExecutable)), path.join(runtimeDir, runtimeName));
-  if (platform === 'win32') copyTree(required(resolvedRoot, 'installer/ScoutLauncher.ps1'), path.join(resolvedStage, 'launcher', 'ScoutLauncher.ps1'));
-  else fs.chmodSync(path.join(runtimeDir, runtimeName), 0o755);
+  if (platform !== 'win32') fs.chmodSync(path.join(runtimeDir, runtimeName), 0o755);
 
   return { root: resolvedRoot, stageDir: resolvedStage, appDir };
 }
@@ -194,6 +193,10 @@ function checkedVersion(value) {
 
 export function buildInstaller({ root = DEFAULT_ROOT, stageDir, version, isccPath } = {}) {
   const staged = stageRelease({ root, stageDir });
+  const csc = path.join(process.env.WINDIR || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
+  if (!fs.existsSync(csc)) throw new Error('Windows C# compiler was not found');
+  const host = spawnSync(csc, ['/nologo', '/target:winexe', `/win32icon:${path.join(root, 'ui', 'assets', 'scout-icon.ico')}`, `/out:${path.join(staged.stageDir, 'Scout.exe')}`, '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll', '/reference:System.Web.Extensions.dll', path.join(root, 'installer', 'windows', 'ScoutHost.cs')], { cwd: root, encoding: 'utf8', windowsHide: true });
+  if (host.status !== 0) throw new Error(`Scout host build failed:\n${host.stdout}\n${host.stderr}`);
   const outputDir = path.join(root, 'installer', 'output');
   fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(outputDir, { recursive: true });

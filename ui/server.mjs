@@ -16,6 +16,9 @@ import { detectProviders } from './lib/providers.mjs';
 import { doctor } from './lib/doctor.mjs';
 import { extractCvText } from './lib/cvImport.mjs';
 import { setupReadiness } from './lib/setupReadiness.mjs';
+import { loadDeviceSettings, pendingDeviceSections, saveDeviceSettings, setWindowsStartup } from './lib/deviceSettings.mjs';
+import { checkForUpdate } from './lib/updates.mjs';
+import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
 import { loadEnv, saveEnv } from './lib/env.mjs';
 import {
   loadWorkspaceConfig, resolveWorkspaceRoot, seedWorkspace, syncManagedInstructions,
@@ -188,6 +191,8 @@ function handleRead(req, res, url) {
       scanHealth: readScanHealth(),
       schedule: readScheduleSummary(config),
       doctor: doctor(WORKSPACE_ROOT),
+      device: process.platform === 'win32' ? loadDeviceSettings() : null,
+      pendingSetupSections: [...pendingWorkspaceSections(readiness.established ? { ...config.setup, completedAt: config.setup?.completedAt || 'legacy' } : config.setup), ...pendingDeviceSections(loadDeviceSettings())],
     });
   }
   if (req.method === 'GET' && url.pathname === '/api/app-info') {
@@ -460,10 +465,64 @@ routes['POST /api/setup/complete'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try {
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
-    config.setup = { ...config.setup, completedAt: new Date().toISOString() };
+    config.setup = { ...config.setup, completedAt: new Date().toISOString(), completedSections: completedWorkspaceSections({ completedAt: new Date().toISOString() }) };
     writeWorkspaceConfig(WORKSPACE_ROOT, config);
+    if (process.platform === 'win32') {
+      const device = loadDeviceSettings();
+      device.completedSections['windows-startup'] = 1;
+      saveDeviceSettings(device);
+    }
     return replyJson(res, 200, { ok: true, completedAt: config.setup.completedAt });
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
+routes['POST /api/device/settings'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  try {
+    const settings = loadDeviceSettings();
+    if (Object.hasOwn(b, 'startWithWindows')) {
+      const enabled = Boolean(b.startWithWindows);
+      const host = path.resolve(APP_ROOT, '..', 'Scout.exe');
+      if (!fs.existsSync(host)) return replyJson(res, 400, { error: 'Windows startup is available in the installed Scout app' });
+      const result = setWindowsStartup(enabled, host);
+      if (!result.ok) return replyJson(res, 400, result);
+      settings.startWithWindows = enabled;
+    }
+    saveDeviceSettings(settings);
+    return replyJson(res, 200, { ok: true, settings, pendingSetupSections: pendingDeviceSections(settings) });
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
+routes['POST /api/setup/section'] = (req, res, body) => {
+  const b = parseBody(body); if (!b || b.id !== 'windows-startup') return replyJson(res, 400, { error: 'unknown setup section' });
+  const settings = loadDeviceSettings();
+  if (b.action === 'complete') {
+    settings.completedSections[b.id] = 1;
+    delete settings.deferredSections[b.id];
+  } else if (b.action === 'defer') {
+    settings.deferredSections[b.id] = new Date(Date.now() + 7 * 86400000).toISOString();
+  } else return replyJson(res, 400, { error: 'action must be complete or defer' });
+  saveDeviceSettings(settings);
+  return replyJson(res, 200, { ok: true, pendingSetupSections: pendingDeviceSections(settings) });
+};
+
+let updateCheckRunning = null;
+async function updateStatus(force = false) {
+  const settings = loadDeviceSettings();
+  const last = new Date(settings.updates?.lastCheckedAt || 0).getTime();
+  if (!force && Date.now() - last < 86400000 && settings.updates?.lastResult) return { ...settings.updates.lastResult, notify: false };
+  if (!updateCheckRunning) updateCheckRunning = checkForUpdate(APP_VERSION).then((result) => {
+    const notify = Boolean(result.available && (force || settings.updates?.lastNotifiedVersion !== result.latestVersion));
+    settings.updates = { ...settings.updates, lastCheckedAt: new Date().toISOString(), lastResult: result, lastNotifiedVersion: notify ? result.latestVersion : settings.updates?.lastNotifiedVersion };
+    saveDeviceSettings(settings); return { ...result, notify };
+  }).finally(() => { updateCheckRunning = null; });
+  return updateCheckRunning;
+}
+
+routes['POST /api/update/check'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  try { return replyJson(res, 200, await updateStatus(Boolean(b.force))); }
+  catch (e) { return replyJson(res, 503, { error: e.message, available: false, currentVersion: APP_VERSION }); }
 };
 
 routes['POST /api/setup/credentials'] = (req, res, body) => {

@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0-beta.7"
+  #define MyAppVersion "0.1.0-beta.8"
 #endif
 
 #ifndef StageDir
@@ -8,7 +8,7 @@
 
 #define MyAppName "Scout"
 #define MyAppPublisher "Scout contributors"
-#define MyAppExeName "ScoutLauncher.ps1"
+#define MyAppExeName "Scout.exe"
 
 [Setup]
 AppId={{1A8566F8-806A-4E97-9B74-E0941139DB0C}
@@ -33,24 +33,27 @@ ChangesEnvironment=no
 
 [Files]
 Source: "{#StageDir}\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StageDir}\runtime\node.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
-Source: "{#StageDir}\launcher\ScoutLauncher.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\runtime\ScoutRuntime.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
+Source: "{#StageDir}\Scout.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Scout"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -ExecutionPolicy Bypass -File ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 14
-Name: "{userdesktop}\Scout"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -ExecutionPolicy Bypass -File ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 14; Tasks: desktopicon
+Name: "{group}\Scout"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{userdesktop}\Scout"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Run]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoLogo -NoProfile -ExecutionPolicy Bypass -File ""{app}\{#MyAppExeName}"""; Description: "Launch Scout"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch Scout"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 ; Remove any payload residue that Inno could not associate with the final
 ; installation pass (for example unchanged dependency files after an upgrade).
 ; The private workspace is always outside {app} and is deliberately untouched.
 Type: filesandordirs; Name: "{app}\app"
+
+[UninstallRun]
+Filename: "{sys}\reg.exe"; Parameters: "delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Scout /f"; Flags: runhidden; RunOnceId: "RemoveScoutStartup"
 
 ; The private workspace is deliberately outside {app}. The uninstaller therefore
 ; removes application files only and never deletes Documents\Scout Workspace or
