@@ -257,7 +257,7 @@ const Setup = {
       <input type="radio" name="setup-provider" value="${name}" ${selected ? 'checked' : ''} ${provider.authenticated ? '' : 'disabled'}>
       <strong>${name[0].toUpperCase() + name.slice(1)}</strong>
       <span class="meta">${state}</span>
-      ${provider.authenticated ? '' : `<span class="meta"><a href="${guide}" target="_blank" rel="noreferrer">Official installation guide</a>. Install the provider, run <code>${login}</code>, complete its official login flow, then refresh. Your provider account may have separate usage limits or costs.</span>`}
+      ${provider.authenticated ? '' : `<span class="meta"><a href="${guide}" target="_blank" rel="noreferrer">Official installation guide</a>. Open Windows PowerShell or your normal terminal, run <code>${login}</code>, complete its official CLI login flow, then refresh. A desktop-app login may not authenticate the command-line provider Scout uses. Your provider account may have separate usage limits or costs.</span>`}
     </label>`;
   },
 

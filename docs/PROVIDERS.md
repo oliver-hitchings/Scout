@@ -20,7 +20,9 @@ claude auth login
 claude auth status
 ```
 
-Then restart Scout so it inherits the updated `PATH`, and run `scout doctor`. macOS/Linux launchers include common Homebrew, `/usr/local/bin`, `$HOME/.local/bin` and npm-global locations; custom locations still require PATH configuration. On Windows Scout resolves npm-installed `.cmd` shims safely.
+Then refresh provider status in Scout. Scout checks the standard Windows npm, Node.js and `$HOME/.local/bin` locations directly, so a stale desktop `PATH` should not hide a normal Codex or Claude installation. macOS/Linux launchers include common Homebrew, `/usr/local/bin`, `$HOME/.local/bin` and npm-global locations; custom locations still require PATH configuration.
+
+Scout uses the provider CLI, not a desktop application's embedded session. If Codex is installed but shown as signed out, run `codex login` and confirm `codex login status` in PowerShell before refreshing Scout.
 
 ## Configure
 

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   assertSafeModel,
   commandInvocation,
+  providerEnvironment,
   providerCommand,
   providerStatus,
 } from './providers.mjs';
@@ -19,6 +20,30 @@ test('provider status distinguishes install and authentication', () => {
   assert.equal(result.installed, true);
   assert.equal(result.authenticated, false);
   assert.deepEqual(calls[1][1], ['login', 'status']);
+});
+
+test('Windows provider environment includes standard Codex and Claude install locations', () => {
+  const env = providerEnvironment({
+    USERPROFILE: 'C:\\Users\\example',
+    APPDATA: 'C:\\Users\\example\\AppData\\Roaming',
+    Path: 'C:\\Windows\\System32',
+  }, 'win32');
+  assert.match(env.Path, /C:\\Users\\example\\AppData\\Roaming\\npm/i);
+  assert.match(env.Path, /C:\\Program Files\\nodejs/i);
+  assert.match(env.Path, /C:\\Users\\example\\\.local\\bin/i);
+  assert.match(env.Path, /C:\\Windows\\System32/i);
+});
+
+test('provider checks receive the augmented environment', () => {
+  const calls = [];
+  const spawn = (command, args, options) => { calls.push(options); return { status: 0, stdout: 'ok', stderr: '' }; };
+  providerStatus('codex', {
+    spawn, platform: 'win32',
+    env: { USERPROFILE: 'C:\\Users\\example', APPDATA: 'C:\\Users\\example\\AppData\\Roaming', Path: 'C:\\Windows\\System32' },
+    resolve: (command, options) => { assert.match(options.env.Path, /AppData\\Roaming\\npm/i); return 'codex.exe'; },
+  });
+  assert.match(calls[0].env.Path, /AppData\\Roaming\\npm/i);
+  assert.match(calls[1].env.Path, /\.local\\bin/i);
 });
 
 test('Windows provider status uses a resolved native executable directly', () => {

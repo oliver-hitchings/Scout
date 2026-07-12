@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 
 export const PROVIDERS = Object.freeze(['codex', 'claude']);
@@ -15,18 +16,21 @@ export function providerStatus(provider, {
   resolve = resolveExecutable,
   timeoutMs = 10_000,
 } = {}) {
+  const providerEnv = providerEnvironment(env, platform);
   const command = providerCommand(provider, platform);
-  const versionCommand = commandInvocation(command, ['--version'], { platform, env, resolve });
+  const versionCommand = commandInvocation(command, ['--version'], { platform, env: providerEnv, resolve });
   const version = spawn(versionCommand.command, versionCommand.args, {
     encoding: 'utf8', windowsHide: true, shell: false, timeout: timeoutMs,
     windowsVerbatimArguments: versionCommand.windowsVerbatimArguments,
+    env: providerEnv,
   });
   if (version.status !== 0) return { provider, installed: false, authenticated: false, command };
   const authArgs = provider === 'codex' ? ['login', 'status'] : ['auth', 'status'];
-  const authCommand = commandInvocation(command, authArgs, { platform, env, resolve });
+  const authCommand = commandInvocation(command, authArgs, { platform, env: providerEnv, resolve });
   const auth = spawn(authCommand.command, authCommand.args, {
     encoding: 'utf8', windowsHide: true, shell: false, timeout: timeoutMs,
     windowsVerbatimArguments: authCommand.windowsVerbatimArguments,
+    env: providerEnv,
   });
   const authenticated = auth.status === 0;
   const rawAuthMessage = String(auth.stdout || auth.stderr || '').trim();
@@ -40,6 +44,37 @@ export function providerStatus(provider, {
     // needs readiness, not account metadata, so never expose that raw output.
     authMessage: authenticated ? 'Logged in' : (rawAuthMessage.split(/\r?\n/, 1)[0] || 'Not logged in'),
   };
+}
+
+export function providerEnvironment(env = process.env, platform = process.platform) {
+  const next = { ...env };
+  const home = env.USERPROFILE || env.HOME || os.homedir();
+  const pathKey = Object.keys(next).find((key) => key.toLowerCase() === 'path') || (platform === 'win32' ? 'Path' : 'PATH');
+  const separator = platform === 'win32' ? ';' : ':';
+  const existing = String(next[pathKey] || '');
+  const common = platform === 'win32'
+    ? [
+        path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'npm'),
+        path.join(env.ProgramFiles || 'C:\\Program Files', 'nodejs'),
+        path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'Programs', 'nodejs'),
+        path.join(home, '.local', 'bin'),
+        path.join(home, '.codex', 'bin'),
+      ]
+    : [
+        path.join(home, '.local', 'bin'),
+        path.join(home, '.npm-global', 'bin'),
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+      ];
+  const seen = new Set();
+  next[pathKey] = [...common, ...existing.split(separator)]
+    .map((entry) => entry.trim()).filter(Boolean)
+    .filter((entry) => {
+      const key = platform === 'win32' ? entry.toLowerCase() : entry;
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    }).join(separator);
+  return next;
 }
 
 export function detectProviders(options) {
