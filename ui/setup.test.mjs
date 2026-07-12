@@ -6,6 +6,7 @@ import {
   buildOnboardingPrompt,
   bytesToBase64,
   formatLocalDateTime,
+  handoffAction,
   splitList,
   validateCvName,
 } from './setup.js';
@@ -67,6 +68,11 @@ test('bytesToBase64 preserves binary bytes', () => {
 test('formatLocalDateTime returns local readable text and handles missing values', () => {
   assert.equal(formatLocalDateTime(null), 'pending');
   assert.match(formatLocalDateTime('2026-07-12T07:30:00.000Z', 'en-GB'), /2026/);
+});
+
+test('optional AI enrichment never traps initial setup in an error state', () => {
+  assert.deepEqual(handoffAction(false), { label: 'Finish for now', defer: true });
+  assert.deepEqual(handoffAction(true), { label: 'Continue to first scan', defer: false });
 });
 
 test('AI hand-off prompt is evidence-led and approval-gated', () => {

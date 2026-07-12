@@ -541,7 +541,9 @@
       box-shadow: var(--shadow-hover);
       display: flex;
       flex-direction: column;
-      z-index: 20;
+      /* Setup opens this drawer as its AI hand-off. Keep it above the modal's
+         full-screen backdrop so the engine picker and composer stay clickable. */
+      z-index: 120;
     }
     .chat-drawer.hidden { display: none; }
     .chat-head {
@@ -696,7 +698,7 @@
       </div>
       <div id="setup-body" class="setup-body"></div>
       <div class="setup-actions">
-        <button id="setup-skip" class="danger-link hidden" type="button">Skip setup for now</button>
+        <button id="setup-skip" class="danger-link hidden" type="button">Finish for now</button>
         <span id="setup-status" class="setup-status" role="status" aria-live="polite"></span>
         <button id="setup-back" class="act" type="button">Back</button>
         <button id="setup-next" class="act primary" type="button">Continue</button>

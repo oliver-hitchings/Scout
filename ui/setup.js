@@ -1,5 +1,8 @@
 const STEPS = ['Welcome', 'AI provider', 'Your search', 'Adzuna', 'Import CV', 'AI hand-off', 'First scan'];
-const LEGACY_SKIP_KEY = 'scout.setup.legacySkipped.v1';
+// Keep the existing storage key so people who previously dismissed setup are
+// not forced back into it after upgrading. It now represents an intentional
+// decision to finish the optional AI enrichment later.
+const SETUP_DEFERRED_KEY = 'scout.setup.legacySkipped.v1';
 const SUPPORTED_CV = /\.(pdf|docx|md|markdown|txt)$/i;
 
 export function splitList(value) {
@@ -61,6 +64,12 @@ export function formatLocalDateTime(value, locale = 'en-GB') {
   return date.toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+export function handoffAction(ready) {
+  return ready
+    ? { label: 'Continue to first scan', defer: false }
+    : { label: 'Finish for now', defer: true };
+}
+
 export function buildOnboardingPrompt({ workspaceRoot, provider, imported, config } = {}) {
   const cvLine = imported?.extracted
     ? `Use the locally extracted CV at ${imported.extracted} as evidence.`
@@ -106,7 +115,7 @@ const Setup = {
     if (!this.el('setup-overlay')) return;
     this.el('setup-back').addEventListener('click', () => this.move(-1));
     this.el('setup-next').addEventListener('click', () => this.next());
-    this.el('setup-skip').addEventListener('click', () => this.skipLegacy());
+    this.el('setup-skip').addEventListener('click', () => this.deferSetup());
     await this.refreshStatus();
   },
 
@@ -118,7 +127,7 @@ const Setup = {
       this.el('setup-subtitle').textContent = this.status.established
         ? 'Review or retune your existing private workspace.'
         : 'A private workspace, tuned to your search.';
-      const skipped = this.status.trackerExists && localStorage.getItem(LEGACY_SKIP_KEY) === 'true';
+      const skipped = this.status.trackerExists && localStorage.getItem(SETUP_DEFERRED_KEY) === 'true';
       if (!keepOpen && (this.status.ready || skipped)) {
         this.el('setup-overlay').classList.add('hidden');
         return;
@@ -194,7 +203,9 @@ const Setup = {
     this.setMessage();
     this.renderProgress();
     this.el('setup-back').classList.toggle('hidden', this.step === 0);
-    this.el('setup-skip').classList.toggle('hidden', !(this.status?.trackerExists && !this.status?.ready));
+    // The optional hand-off uses the primary Finish for now action. Keep the
+    // legacy footer control hidden so users are not offered duplicate exits.
+    this.el('setup-skip').classList.add('hidden');
     const renderers = [
       this.renderWelcome,
       this.renderProviders,
@@ -319,6 +330,7 @@ const Setup = {
   },
 
   renderHandoff() {
+    const action = handoffAction(this.status?.ready);
     const prompt = buildOnboardingPrompt({
       workspaceRoot: this.status?.workspaceRoot,
       provider: this.status?.config?.ai?.provider,
@@ -327,17 +339,19 @@ const Setup = {
     });
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame" role="img" aria-label="Scout is ready to talk"></span></div><div class="scout-bubble tail-left">
-      <h2>Let’s finish tuning your search together</h2>
-      <p>I’ll use your selected local AI provider to ask only about missing details. I’ll stage proposed files for review and won’t activate them without confirmation.</p>
-      <p><button id="setup-open-chat" class="act primary" type="button">Talk to Scout</button> <button id="setup-review-chat" class="act" type="button">Review staged changes</button> <button id="setup-approve-chat" class="act" type="button">Approve after review</button></p>
+      <h2>Would you like me to strengthen your CV and search?</h2>
+      <p>I can ask a few focused questions about the work you want, your experience, achievements and dealbreakers. I’ll use your answers to propose a stronger evidence-led CV and better-matched searches.</p>
+      <p><button id="setup-open-chat" class="act primary" type="button">${this.status?.ready ? 'Talk to Scout again' : 'Start questions'}</button></p>
+      <p class="meta">This is optional. You can finish setup now and return from Settings whenever you are ready. Nothing is activated without your review and approval.</p>
+      <details><summary class="meta">Already started?</summary><p><button id="setup-review-chat" class="act" type="button">Review staged changes</button> <button id="setup-approve-chat" class="act" type="button">Approve after review</button></p></details>
       </div></div>
       <textarea id="setup-ai-prompt" class="setup-prompt hidden" readonly></textarea>
-      <div class="setup-callout"><strong>${this.status?.ready ? 'Workspace is ready' : 'One final step remains'}</strong><p>${this.status?.ready ? 'Your settings and tracker are available. You can close setup now.' : 'After the AI creates and validates the remaining workspace material, return here and check readiness. Setup stays visible until the workspace is ready.'}</p></div>`;
+      <div class="setup-callout"><strong>${this.status?.ready ? 'CV and search enrichment complete' : 'Your initial setup is complete'}</strong><p>${this.status?.ready ? 'Your approved evidence and settings are ready for a supervised first scan.' : 'Scout can already save your preferences. The optional interview makes your CV and opportunity scoring more useful, but it does not block you from finishing setup.'}</p></div>`;
     this.el('setup-ai-prompt').value = prompt;
     this.el('setup-open-chat').addEventListener('click', () => this.openScoutChat('ask'));
     this.el('setup-review-chat').addEventListener('click', () => this.openScoutChat('review'));
     this.el('setup-approve-chat').addEventListener('click', () => this.openScoutChat('approve'));
-    this.el('setup-next').textContent = this.status?.ready ? 'Finish setup' : 'Check readiness';
+    this.el('setup-next').textContent = action.label;
   },
 
   renderFirstScan() {
@@ -475,8 +489,9 @@ const Setup = {
       }
       if (this.step === 5) {
         await this.refreshStatus({ keepOpen: true });
-        if (this.status.ready) { this.step += 1; this.render(); }
-        else this.setMessage('The workspace is not ready yet. Run the AI onboarding prompt, approve the staged changes, then check again.', 'error');
+        const action = handoffAction(this.status.ready);
+        if (!action.defer) { this.step += 1; this.render(); }
+        else this.deferSetup();
         return;
       }
       if (this.step === STEPS.length - 1) { this.el('setup-overlay').classList.add('hidden'); return; }
@@ -500,10 +515,9 @@ const Setup = {
     this.setMessage('Onboarding prompt copied.', 'good');
   },
 
-  skipLegacy() {
+  deferSetup() {
     if (!this.status?.trackerExists || this.status?.ready) return;
-    if (!confirm('Hide setup for this existing workspace? You can clear the browser site data to show it again.')) return;
-    localStorage.setItem(LEGACY_SKIP_KEY, 'true');
+    localStorage.setItem(SETUP_DEFERRED_KEY, 'true');
     this.el('setup-overlay').classList.add('hidden');
   },
 };
