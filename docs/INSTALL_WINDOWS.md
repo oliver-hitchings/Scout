@@ -4,7 +4,7 @@ Scout is an unsigned Windows 10/11 public beta. It keeps its workspace on your c
 
 ## Install
 
-1. Open the latest [Scout release](https://github.com/oliver-hitchings/Scout/releases/latest) and download the Windows `.exe` plus `checksums.txt`.
+1. Open [Scout releases](https://github.com/oliver-hitchings/Scout/releases), choose the newest beta, and download its Windows `.exe` plus `checksums.txt`.
 2. In PowerShell, verify the download with `Get-FileHash .\Scout-0.1.0-beta.4-windows-x64.exe -Algorithm SHA256` and compare it with `checksums.txt`.
 3. Run the installer. Windows SmartScreen may warn because the beta is not code-signed; use **More info → Run anyway** only after the checksum matches this repository's release.
 4. Leave **Launch Scout** selected, or double-click the Scout shortcut later. Scout starts a local server and opens `http://127.0.0.1:8459` in your browser.
