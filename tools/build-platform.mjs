@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isMainModule } from '../ui/lib/mainModule.mjs';
 import { sha256, stageRelease, writeChecksums } from './build-release.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -54,7 +55,7 @@ export function buildLinux({ nodeExecutable = process.execPath } = {}) {
   writeChecksums(output); return { deb, tar };
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
   const kind = process.argv[2];
   if (kind === 'mac') console.log(JSON.stringify(buildMac(), null, 2));

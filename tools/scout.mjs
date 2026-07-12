@@ -13,6 +13,7 @@ import { fetchConfiguredPortals } from '../ui/lib/ats.mjs';
 import { fetchHiringCafe } from '../ui/lib/hiringCafe.mjs';
 import { loadEnv } from '../ui/lib/env.mjs';
 import { providerStatus } from '../ui/lib/providers.mjs';
+import { isMainModule } from '../ui/lib/mainModule.mjs';
 import { registerDailySchedule, registerUnixSchedule, removeSchedule, runScheduledNow, scheduleStatus, schedulerRegistrationScript } from '../ui/lib/scheduler.mjs';
 import {
   loadWorkspaceConfig, resolveWorkspaceRoot, seedWorkspace as seedWorkspaceFiles,
@@ -228,5 +229,5 @@ async function main() {
   print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  workspace init|migrate [--from PATH] [--to PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude [--mode primary|second-pass]\n  schedule install|status|remove|run-now [--time HH:MM] [--provider PROVIDER]`);
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isMainModule(import.meta.url);
 if (isMain) main().catch((e) => { console.error(e.message); process.exitCode = 1; });

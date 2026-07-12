@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMainModule } from '../ui/lib/mainModule.mjs';
 import { resolveWorkspaceRoot } from '../ui/lib/workspace.mjs';
 
 export const LOCK_FILE = '.scout-scan.lock';
@@ -78,5 +79,5 @@ function cli() {
   if (!result.ok) process.exitCode = 2;
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isMainModule(import.meta.url);
 if (isMain) cli();

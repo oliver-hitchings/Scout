@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMainModule } from './lib/mainModule.mjs';
 import { triage } from './lib/derive.mjs';
 import { pipeline } from './lib/pipeline.mjs';
 import { listCvFiles, safeCvPath } from './lib/cv.mjs';
@@ -543,7 +544,7 @@ routes['POST /api/restart'] = (req, res) => {
 
 registerChatRoutes({ routes, repoRoot: WORKSPACE_ROOT, readTracker });
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
   const server = createServer();
   let bindRetries = 0;
