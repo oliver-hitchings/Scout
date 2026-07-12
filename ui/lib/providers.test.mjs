@@ -4,6 +4,7 @@ import {
   assertSafeModel,
   commandInvocation,
   providerEnvironment,
+  providerCandidates,
   providerCommand,
   providerStatus,
 } from './providers.mjs';
@@ -34,6 +35,16 @@ test('Windows provider environment includes standard Codex and Claude install lo
   assert.match(env.Path, /C:\\Windows\\System32/i);
 });
 
+test('Codex candidates include the official OpenAI Windows installation', () => {
+  const candidates = providerCandidates('codex', {
+    platform: 'win32',
+    env: { USERPROFILE: 'C:\\Users\\Oli', LOCALAPPDATA: 'C:\\Users\\Oli\\AppData\\Local', APPDATA: 'C:\\Users\\Oli\\AppData\\Roaming', Path: '' },
+    exists: (candidate) => candidate.endsWith('Programs\\OpenAI\\Codex\\bin\\codex.exe'),
+    resolve: () => 'codex.cmd',
+  });
+  assert.equal(candidates[0], 'C:\\Users\\Oli\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe');
+});
+
 test('provider checks receive the augmented environment', () => {
   const calls = [];
   const spawn = (command, args, options) => { calls.push(options); return { status: 0, stdout: 'ok', stderr: '' }; };
@@ -55,6 +66,7 @@ test('Windows provider status uses a resolved native executable directly', () =>
   const result = providerStatus('claude', {
     spawn,
     platform: 'win32',
+    env: { USERPROFILE: 'C:\\Users\\example', APPDATA: 'C:\\Users\\example\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\example\\AppData\\Local', Path: 'C:\\Windows\\System32' },
     resolve: () => 'C:\\Users\\example\\.local\\bin\\claude.exe',
   });
   assert.equal(result.installed, true);
@@ -71,6 +83,7 @@ test('provider status does not expose authenticated account metadata', () => {
   const result = providerStatus('claude', { spawn, platform: 'linux' });
   assert.equal(result.authMessage, 'Logged in');
   assert.doesNotMatch(JSON.stringify(result), /person@example\.test/);
+  assert.doesNotMatch(JSON.stringify(result), /USERPROFILE|ComSpec|SystemRoot/);
 });
 
 test('Windows cmd shims use cmd.exe without enabling a Node shell', () => {

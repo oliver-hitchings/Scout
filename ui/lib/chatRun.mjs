@@ -35,6 +35,7 @@ function relativeToRepo(cwd, file) {
 
 export function runTurn({
   command, args, prompt, cwd, parseLine,
+  env = process.env,
   onEvent = () => {},
   timeoutMs = 600000,
 }) {
@@ -43,12 +44,13 @@ export function runTurn({
   let timedOut = false;
   const finished = new Promise((resolve) => {
     const state = { sessionId: null, deltas: [], files: new Set(), done: null, stderr: '' };
-    const invocation = commandInvocation(command, args);
+    const invocation = commandInvocation(command, args, { env });
     child = spawn(invocation.command, invocation.args, {
       cwd,
       shell: false,
       windowsHide: true,
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      env,
     });
     const timer = setTimeout(() => { timedOut = true; killTree(child); }, timeoutMs);
     child.on('error', (err) => {

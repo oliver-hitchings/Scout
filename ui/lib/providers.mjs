@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -17,33 +18,69 @@ export function providerStatus(provider, {
   timeoutMs = 10_000,
 } = {}) {
   const providerEnv = providerEnvironment(env, platform);
-  const command = providerCommand(provider, platform);
-  const versionCommand = commandInvocation(command, ['--version'], { platform, env: providerEnv, resolve });
-  const version = spawn(versionCommand.command, versionCommand.args, {
-    encoding: 'utf8', windowsHide: true, shell: false, timeout: timeoutMs,
-    windowsVerbatimArguments: versionCommand.windowsVerbatimArguments,
-    env: providerEnv,
-  });
-  if (version.status !== 0) return { provider, installed: false, authenticated: false, command };
-  const authArgs = provider === 'codex' ? ['login', 'status'] : ['auth', 'status'];
-  const authCommand = commandInvocation(command, authArgs, { platform, env: providerEnv, resolve });
-  const auth = spawn(authCommand.command, authCommand.args, {
-    encoding: 'utf8', windowsHide: true, shell: false, timeout: timeoutMs,
-    windowsVerbatimArguments: authCommand.windowsVerbatimArguments,
-    env: providerEnv,
-  });
-  const authenticated = auth.status === 0;
-  const rawAuthMessage = String(auth.stdout || auth.stderr || '').trim();
-  return {
-    provider,
-    command,
-    installed: true,
-    authenticated,
-    version: String(version.stdout || version.stderr || '').trim(),
+  const attempts = [];
+  let installed = null;
+  for (const candidate of providerCandidates(provider, { platform, env: providerEnv, resolve })) {
+    const versionCommand = commandInvocation(candidate, ['--version'], { platform, env: providerEnv, resolve: (value) => value });
+    const version = spawn(versionCommand.command, versionCommand.args, {
+      encoding: 'utf8', windowsHide: true, shell: false, timeout: timeoutMs,
+      windowsVerbatimArguments: versionCommand.windowsVerbatimArguments, env: providerEnv,
+    });
+    if (version.status !== 0) { attempts.push({ source: providerSource(candidate, providerEnv), result: 'unavailable' }); continue; }
+    const authArgs = provider === 'codex' ? ['login', 'status'] : ['auth', 'status'];
+    const authCommand = commandInvocation(candidate, authArgs, { platform, env: providerEnv, resolve: (value) => value });
+    const auth = spawn(authCommand.command, authCommand.args, {
+      encoding: 'utf8', windowsHide: true, shell: false, timeout: timeoutMs,
+      windowsVerbatimArguments: authCommand.windowsVerbatimArguments, env: providerEnv,
+    });
+    const item = { command: candidate, version, auth, authenticated: auth.status === 0 };
+    attempts.push({ source: providerSource(candidate, providerEnv), result: item.authenticated ? 'authenticated' : 'signed-out' });
+    if (item.authenticated) { installed = item; break; }
+    if (!installed) installed = item;
+  }
+  if (!installed) return { provider, installed: false, authenticated: false, command: providerCommand(provider, platform), attempts };
+  const rawAuthMessage = String(installed.auth.stdout || installed.auth.stderr || '').trim();
+  const result = {
+    provider, command: providerCommand(provider, platform), installed: true, authenticated: installed.authenticated,
+    version: String(installed.version.stdout || installed.version.stderr || '').trim(),
+    source: providerSource(installed.command, providerEnv), attempts,
     // Some provider CLIs return account email/org identifiers as JSON. The UI
     // needs readiness, not account metadata, so never expose that raw output.
-    authMessage: authenticated ? 'Logged in' : (rawAuthMessage.split(/\r?\n/, 1)[0] || 'Not logged in'),
+    authMessage: installed.authenticated ? 'Logged in' : (rawAuthMessage.split(/\r?\n/, 1)[0] || 'Not logged in'),
   };
+  Object.defineProperties(result, {
+    executable: { value: installed.command, enumerable: false },
+    env: { value: providerEnv, enumerable: false },
+  });
+  return result;
+}
+
+export function providerCandidates(provider, { platform = process.platform, env = process.env, resolve = resolveExecutable, exists = fs.existsSync } = {}) {
+  const home = env.USERPROFILE || env.HOME || os.homedir();
+  const list = [];
+  const addIfPresent = (candidate) => { if (exists(candidate)) list.push(candidate); };
+  if (platform === 'win32') {
+    const local = env.LOCALAPPDATA || path.win32.join(home, 'AppData', 'Local');
+    const roaming = env.APPDATA || path.win32.join(home, 'AppData', 'Roaming');
+    if (provider === 'codex') addIfPresent(path.win32.join(local, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe'));
+    addIfPresent(path.win32.join(roaming, 'npm', `${provider}.cmd`));
+    addIfPresent(path.win32.join(home, '.local', 'bin', `${provider}.exe`));
+    addIfPresent(path.win32.join(home, `.${provider}`, 'bin', `${provider}.exe`));
+  }
+  const resolved = resolve(providerCommand(provider, platform), { platform, env });
+  if (resolved) list.push(resolved);
+  const seen = new Set();
+  return list.filter((candidate) => {
+    const key = platform === 'win32' ? String(candidate).toLowerCase() : String(candidate);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function providerSource(command, env) {
+  const home = env.USERPROFILE || env.HOME || os.homedir();
+  return String(command).replace(home, '%USERPROFILE%');
 }
 
 export function providerEnvironment(env = process.env, platform = process.platform) {

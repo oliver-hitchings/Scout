@@ -86,8 +86,6 @@ test('staging copies only manifest content and bundled runtime', () => {
       fs.writeFileSync(target, entry.source === 'package.json' ? '{"version":"1.0.0"}' : 'ok');
     }
   }
-  fs.mkdirSync(path.join(root, 'installer'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'installer', 'ScoutLauncher.ps1'), 'launcher');
   fs.mkdirSync(path.join(root, 'profile'), { recursive: true });
   fs.writeFileSync(path.join(root, 'profile', 'context.md'), 'private');
 
@@ -97,7 +95,7 @@ test('staging copies only manifest content and bundled runtime', () => {
   assert.equal(fs.existsSync(path.join(staged.appDir, 'profile')), false);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'README.md')), true);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'docs', 'QUICK_START.md')), true);
-  assert.equal(fs.readFileSync(path.join(stageDir, 'runtime', 'node.exe'), 'utf8'), 'runtime');
+  assert.equal(fs.readFileSync(path.join(stageDir, 'runtime', 'ScoutRuntime.exe'), 'utf8'), 'runtime');
 });
 
 test('checksums use SHA-256 and do not hash the manifest into itself', () => {

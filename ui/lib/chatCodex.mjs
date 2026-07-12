@@ -25,7 +25,7 @@ export function buildCodexArgs(resumeId, options = {}) {
     args.push('resume', resumeId);
   }
   args.push('-'); // prompt arrives on stdin
-  return { command: providerCommand('codex'), args };
+  return { command: options.command || providerCommand('codex'), args, ...(options.env ? { env: options.env } : {}) };
 }
 
 export function parseCodexLine(line) {

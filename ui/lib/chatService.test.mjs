@@ -57,6 +57,7 @@ function routeFixture(root, overrides = {}) {
     routes,
     repoRoot: root,
     readTracker: () => ({ opportunities: [ENTRY] }),
+    providerStatusFn: () => ({ installed: true, authenticated: true, executable: 'provider', env: process.env }),
     ...overrides,
   });
   return routes;

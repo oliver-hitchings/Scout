@@ -15,7 +15,7 @@ export function buildClaudeArgs(resumeId, options = {}) {
     if (!SESSION_ID.test(resumeId)) throw new Error(`invalid session id: ${resumeId}`);
     args.push('--resume', resumeId);
   }
-  return { command: providerCommand('claude'), args };
+  return { command: options.command || providerCommand('claude'), args, ...(options.env ? { env: options.env } : {}) };
 }
 
 function fileOfToolInput(input) {

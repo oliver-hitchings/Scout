@@ -121,7 +121,7 @@ function request({ method = 'GET', route, body, rawBody }) {
 before(async () => {
   child = spawn(process.execPath, ['ui/server.mjs'], {
     cwd: appRoot,
-    env: { ...process.env, SCOUT_WORKSPACE: workspace, PORT: String(port) },
+    env: { ...process.env, SCOUT_WORKSPACE: workspace, SCOUT_DEVICE_SETTINGS: path.join(workspace, '.scout', 'device-settings.json'), PORT: String(port) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   await new Promise((resolve, reject) => {

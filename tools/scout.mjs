@@ -120,6 +120,7 @@ export async function runScan(root, provider, mode) {
   const parser = provider === 'codex' ? parseCodexLine : parseClaudeLine;
   const turn = runTurn({ ...builder(null, {
     model: config.ai?.provider === provider ? config.ai?.model : null,
+    command: status.executable, env: status.env,
     ...(provider === 'claude' ? { permissionMode: 'auto' } : {}),
   }), prompt, cwd: root, parseLine: parser, timeoutMs: 45 * 60 * 1000 });
   const result = await turn.finished;
