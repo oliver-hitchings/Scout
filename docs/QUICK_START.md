@@ -7,7 +7,7 @@ Scout is a local-first opportunity finder for Windows, macOS and Linux. It keeps
 Download the Windows installer and its `checksums.txt` from the same GitHub release. Compare the installer SHA-256 hash before running it:
 
 ```powershell
-Get-FileHash .\Scout-0.1.0-beta.5-windows-x64.exe -Algorithm SHA256
+Get-FileHash .\Scout-0.1.0-beta.6-windows-x64.exe -Algorithm SHA256
 ```
 
 The first unsigned beta may trigger Microsoft SmartScreen. A matching checksum proves file integrity, not publisher trust. Scout installs for the current user under `%LOCALAPPDATA%\Programs\Scout` and does not require administrator rights.
@@ -69,7 +69,7 @@ Public/ATS sources work without Adzuna. Adzuna is optional and uses `ADZUNA_APP_
 
 ## 6. Run and review the first scan
 
-Use **Settings → First scan → Run supervised scan**. Keep Scout open while it searches, then review the dashboard and dated report. The command-line equivalent is:
+Scout starts the first supervised scan automatically when the required setup answers have been saved. Keep Scout open while it searches, then review the dashboard and dated report. Use **Scan now** in the dashboard header for another scan. The command-line equivalent is:
 
 ```powershell
 & $ScoutNode $ScoutCli doctor
@@ -80,7 +80,7 @@ Use `claude` instead if selected. Review the dated report and tracker changes. C
 
 ## 7. Enable daily scans (optional)
 
-Only schedule scans after a successful supervised run:
+During setup, choose the local daily time and enable the schedule after the first healthy scan. Return to **Settings → First scan** to change or disable it later. The command-line equivalent is:
 
 ```powershell
 & $ScoutNode $ScoutCli schedule install --time 07:30 --provider codex

@@ -177,6 +177,17 @@ test('saving setup config seeds a fresh generic workspace', async () => {
   assert.doesNotMatch(fs.readFileSync(path.join(workspace, 'profile', 'context.md'), 'utf8'), /Oliver|hardware|electronics/i);
 });
 
+test('setup completion is persisted in the private workspace', async () => {
+  const completed = await request({ method: 'POST', route: '/api/setup/complete', body: {} });
+  assert.equal(completed.status, 200);
+  assert.match(completed.json.completedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+  const status = await request({ route: '/api/setup/status' });
+  assert.equal(status.json.setupComplete, true);
+  const saved = JSON.parse(fs.readFileSync(path.join(workspace, 'workspace.json'), 'utf8'));
+  assert.equal(saved.setup.completedAt, completed.json.completedAt);
+});
+
 test('configured categories and triage thresholds flow through the opportunities API', async () => {
   const configured = await request({
     method: 'POST', route: '/api/setup/config',

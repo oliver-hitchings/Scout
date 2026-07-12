@@ -3,12 +3,18 @@ import fs from 'node:fs';
 import { test } from 'node:test';
 
 const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+const app = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
 
 test('phone layout keeps navigation scrollable and primary controls touch sized', () => {
   assert.match(html, /@media \(max-width:700px\)/);
   assert.match(html, /nav \{[^}]*overflow-x:auto/);
   assert.match(html, /nav button \{[^}]*min-height:44px/);
   assert.match(html, /\.setup-actions button \{[^}]*min-height:44px/);
+});
+
+test('dashboard exposes an explicit scan-now control', () => {
+  assert.match(html, /id="scan-now"[^>]*>Scan now</);
+  assert.match(app, /addEventListener\('click', \(\) => this\.scanNow\(\)\)/);
 });
 
 test('phone layout constrains chat and strong-match arrival to the viewport', () => {

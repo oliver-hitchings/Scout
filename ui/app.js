@@ -60,6 +60,7 @@ const Scout = {
   workspaceConfig: null,
   discoveries: [],
   discoveryTimer: null,
+  scanRunning: false,
 
   async api(pathname, opts) {
     const r = await fetch(pathname, opts);
@@ -171,6 +172,28 @@ const Scout = {
     this.renderPipeline();
     this.renderAll();
     this.queueStrongMatches();
+  },
+
+  async scanNow() {
+    if (this.scanRunning || this.chat?.streaming) return;
+    const button = document.getElementById('scan-now');
+    this.scanRunning = true;
+    if (button) { button.disabled = true; button.textContent = 'Scanning…'; }
+    document.getElementById('scan-status').textContent = 'Scout is searching now…';
+    try {
+      const response = await fetch('/api/scan', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: this.workspaceConfig?.ai?.provider }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || `Scan failed (${response.status})`);
+      await this.loadOpportunities();
+    } catch (error) {
+      document.getElementById('scan-status').textContent = error.message;
+    } finally {
+      this.scanRunning = false;
+      if (button) { button.disabled = false; button.textContent = 'Scan now'; }
+    }
   },
 
   discoveryKey() {
@@ -1273,6 +1296,7 @@ const Scout = {
         if (b.id === 'scout-settings') window.ScoutSetup?.openSettings?.();
         else if (b.dataset.tab) this.showTab(b.dataset.tab);
       }));
+    document.getElementById?.('scan-now')?.addEventListener('click', () => this.scanNow());
     this.loadOpportunities();
   },
 };

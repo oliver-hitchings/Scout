@@ -7,6 +7,7 @@ import {
   bytesToBase64,
   formatLocalDateTime,
   handoffAction,
+  shouldAutoRunFirstScan,
   splitList,
   validateCvName,
 } from './setup.js';
@@ -71,8 +72,13 @@ test('formatLocalDateTime returns local readable text and handles missing values
 });
 
 test('optional AI enrichment never traps initial setup in an error state', () => {
-  assert.deepEqual(handoffAction(false), { label: 'Finish for now', defer: true });
-  assert.deepEqual(handoffAction(true), { label: 'Continue to first scan', defer: false });
+  assert.deepEqual(handoffAction(false), { label: 'Continue to first scan', defer: false, ready: false });
+  assert.deepEqual(handoffAction(true), { label: 'Continue to first scan', defer: false, ready: true });
+});
+
+test('a first scan starts automatically only when the workspace has never scanned', () => {
+  assert.equal(shouldAutoRunFirstScan({}), true);
+  assert.equal(shouldAutoRunFirstScan({ lastRunAt: '2026-07-12T10:00:00.000Z' }), false);
 });
 
 test('AI hand-off prompt is evidence-led and approval-gated', () => {
