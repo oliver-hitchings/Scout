@@ -24,7 +24,7 @@ Confirm both variables exist in the selected workspace `.env`, without quotes ac
 
 ## Scheduled scan does not run
 
-Check `scout schedule status`, confirm the task points to the current application/workspace and run `scout schedule run-now`. The Windows task requires an interactive signed-in user. Inspect workspace logs and Task Scheduler history. Remove/reinstall the task after moving a workspace.
+Check `scout schedule status`, confirm the native scheduler entry points to the current application/workspace and run `scout schedule run-now`. Inspect workspace logs and Task Scheduler, launchd, or systemd-user history. Remove/reinstall the schedule after moving a workspace.
 
 ## Port or UI problem
 

@@ -1,103 +1,121 @@
-name: Windows release candidate
+name: Cross-platform release candidate
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Semantic version to place in the unsigned beta installer
+        description: Semantic version to package
         required: true
         type: string
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  windows:
     runs-on: windows-2022
     outputs:
       version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+        with: { node-version: 22, cache: npm }
       - run: npm ci --omit=dev
       - run: npm test
-      - name: Install Inno Setup
-        run: choco install innosetup --yes --no-progress
-      - name: Select release version
+      - run: choco install innosetup --yes --no-progress
+      - name: Select and validate version
         id: version
         shell: pwsh
         run: |
-          $requested = '${{ inputs.version }}'
-          if ([string]::IsNullOrWhiteSpace($requested)) {
-            $requested = '${{ github.ref_name }}'.TrimStart('v')
-          }
-          "value=$requested" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-      - name: Validate tag and package version
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        run: |
+          $version = '${{ inputs.version }}'
+          if ([string]::IsNullOrWhiteSpace($version)) { $version = '${{ github.ref_name }}'.TrimStart('v') }
           $packageVersion = (Get-Content package.json | ConvertFrom-Json).version
-          if ('${{ github.ref_name }}' -ne "v$packageVersion") {
-            throw "Tag ${{ github.ref_name }} does not match package version v$packageVersion"
-          }
-      - name: Build unsigned beta installer and checksums
-        run: node tools/build-release.mjs --installer --version "${{ steps.version.outputs.value }}"
-      - name: Audit staged public tree
-        run: npm run release:audit -- --root dist/release/stage --stage --require-markers
-        env:
-          SCOUT_RELEASE_MARKERS: ${{ secrets.SCOUT_RELEASE_MARKERS }}
-      - name: Smoke install, initialise workspace, and uninstall
+          if ($version -ne $packageVersion) { throw 'Requested version does not match package version' }
+          if ('${{ github.ref_type }}' -eq 'tag' -and '${{ github.ref_name }}' -ne "v$packageVersion") { throw 'Tag does not match package version' }
+          "value=$version" | Out-File $env:GITHUB_OUTPUT -Append
+      - run: node tools/build-release.mjs --installer --version "${{ steps.version.outputs.value }}"
+      - run: npm run release:audit -- --root dist/release/stage --stage --require-markers
+        env: { SCOUT_RELEASE_MARKERS: "${{ secrets.SCOUT_RELEASE_MARKERS }}" }
+      - name: Smoke install and preserve workspace
         shell: pwsh
         run: |
           $installer = Resolve-Path "installer/output/Scout-${{ steps.version.outputs.value }}-windows-x64.exe"
-          $install = Start-Process $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw "Installer failed with exit code $($install.ExitCode)" }
-          $installed = Join-Path $env:LOCALAPPDATA 'Programs\Scout'
-          $node = Join-Path $installed 'runtime\node.exe'
-          $cli = Join-Path $installed 'app\tools\scout.mjs'
-          if (-not (Test-Path $node) -or -not (Test-Path $cli)) { throw 'Installed Scout payload is incomplete' }
-          $workspace = Join-Path $env:RUNNER_TEMP 'Scout Workspace'
-          & $node $cli workspace init --workspace $workspace | Out-Null
-          if (-not (Test-Path (Join-Path $workspace 'workspace.json'))) { throw 'Workspace initialisation failed' }
-          $uninstaller = Join-Path $installed 'unins000.exe'
-          $uninstall = Start-Process $uninstaller -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
-          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller failed with exit code $($uninstall.ExitCode)" }
-          if (-not (Test-Path (Join-Path $workspace 'workspace.json'))) { throw 'Uninstall removed the private workspace' }
+          $p = Start-Process $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($p.ExitCode) { throw 'Installer failed' }
+          $installed = Join-Path $env:LOCALAPPDATA 'Programs\Scout'; $workspace = Join-Path $env:RUNNER_TEMP 'Scout Workspace'
+          & "$installed\runtime\node.exe" "$installed\app\tools\scout.mjs" workspace init --workspace $workspace | Out-Null
+          $u = Start-Process "$installed\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($u.ExitCode -or -not (Test-Path "$workspace\workspace.json")) { throw 'Uninstall smoke failed' }
       - uses: actions/upload-artifact@v4
         with:
-          name: Scout-${{ steps.version.outputs.value }}-windows-x64-unsigned
-          path: installer/output/*
-          if-no-files-found: error
-          retention-days: 30
+          name: windows
+          path: installer/output/*.exe
+
+  macos:
+    strategy:
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci --omit=dev
+      - run: npm test
+      - run: node tools/build-platform.mjs mac
+      - run: npm run release:audit -- --root "dist/release/macos-$(node -p process.arch)" --stage --require-markers
+        env: { SCOUT_RELEASE_MARKERS: "${{ secrets.SCOUT_RELEASE_MARKERS }}" }
+      - name: Mount and initialise workspace
+        run: |
+          dmg=$(find installer/output -name '*.dmg' -print -quit)
+          mount=$(mktemp -d); hdiutil attach "$dmg" -mountpoint "$mount" -nobrowse
+          workspace=$(mktemp -d)/Scout; "$mount/Scout.app/Contents/Resources/runtime/node" "$mount/Scout.app/Contents/Resources/app/tools/scout.mjs" workspace init --workspace "$workspace"
+          test -f "$workspace/workspace.json"; hdiutil detach "$mount"; test -f "$workspace/workspace.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.os }}
+          path: installer/output/*.dmg
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci --omit=dev
+      - run: npm test
+      - run: node tools/build-platform.mjs linux
+      - run: npm run release:audit -- --root dist/release/linux-x64 --stage --require-markers
+        env: { SCOUT_RELEASE_MARKERS: "${{ secrets.SCOUT_RELEASE_MARKERS }}" }
+      - name: Install, initialise and uninstall DEB
+        run: |
+          sudo apt-get install -y ./installer/output/*.deb
+          workspace=$(mktemp -d)/Scout; /opt/scout/runtime/node /opt/scout/app/tools/scout.mjs workspace init --workspace "$workspace"
+          sudo apt-get remove -y scout; test -f "$workspace/workspace.json"
+          tar -tzf installer/output/*.tar.gz | grep -q scout-dashboard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            installer/output/*.deb
+            installer/output/*.tar.gz
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build
-    runs-on: windows-2022
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with:
-          name: Scout-${{ needs.build.outputs.version }}-windows-x64-unsigned
-          path: installer/output
-      - name: Publish tagged GitHub release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
+        with: { path: release-assets, merge-multiple: true }
+      - name: Create combined checksums
+        run: cd release-assets && sha256sum Scout-* > checksums.txt
+      - name: Publish prerelease
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          $version = '${{ github.ref_name }}'.TrimStart('v')
-          gh release create "${{ github.ref_name }}" `
-            installer/output/Scout-$version-windows-x64.exe `
-            installer/output/checksums.txt `
-            --title "Scout $version" `
-            --notes-file docs/releases/$version.md `
-            --prerelease `
-            --verify-tag
+          version=${GITHUB_REF_NAME#v}
+          gh release create "$GITHUB_REF_NAME" release-assets/* --title "Scout $version" --notes-file "docs/releases/$version.md" --prerelease --verify-tag

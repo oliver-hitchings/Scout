@@ -4,13 +4,13 @@ Scout is a local-first, AI-assisted opportunity finder. It searches configured j
 
 Scout never submits an application or sends outreach. Your CV, profile, tracker, reports, applications, chat history, and source credentials live in a separate private workspace.
 
-**New user?** Start with [Install Scout on Windows](docs/INSTALL_WINDOWS.md). Scout is an unsigned Windows 10/11 public beta and requires your own authenticated Codex or Claude provider account.
+**New user?** Choose [Windows](docs/INSTALL_WINDOWS.md), [macOS](docs/INSTALL_MACOS.md), or [Linux](docs/INSTALL_LINUX.md). Scout beta packages are unsigned and require your own authenticated Codex or Claude provider account.
 
 > **Repository note:** this is the canonical public Scout application repository. Personal CV, profile, tracker, report and application data belongs only in the separate private workspace repository. See [Repository layout](docs/REPOSITORY_LAYOUT.md).
 
 ## Status
 
-Scout `0.1.x` is a Windows-first beta. Expect an unsigned installer to trigger Microsoft SmartScreen until releases are code-signed. Verify the SHA-256 checksum published with a release before running it.
+Scout `0.1.x` is a cross-platform public beta. Windows SmartScreen and macOS Gatekeeper may warn because packages are unsigned. Verify the SHA-256 checksum published with every release.
 
 ## What Scout does
 
@@ -97,6 +97,8 @@ Open `http://127.0.0.1:8459`. Use a synthetic workspace for development and neve
 
 - [Quick Start](docs/QUICK_START.md)
 - [Install Scout on Windows](docs/INSTALL_WINDOWS.md)
+- [Install Scout on macOS](docs/INSTALL_MACOS.md)
+- [Install Scout on Linux](docs/INSTALL_LINUX.md)
 - [AI-assisted setup and retuning](docs/AI_SETUP.md)
 - [Configuration reference](docs/CONFIGURATION.md)
 - [Privacy and data handling](docs/PRIVACY.md)

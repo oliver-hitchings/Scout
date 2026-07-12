@@ -13,10 +13,10 @@ explicit bundled CLI invocation in [Quick Start](QUICK_START.md).
 3. Record the installed Scout version and run `scout doctor`.
 4. Read release notes for schema, provider and source changes.
 
-Install the newer release over the existing per-user installation, then run:
+Install the newer release over the existing application (Windows installer, replacement macOS app, or Linux package), then run:
 
 ```powershell
-scout doctor --workspace "$HOME\Documents\Scout Workspace"
+scout doctor --workspace "$HOME/Documents/Scout Workspace"
 ```
 
 Scout validates `workspace.json`. Versioned migrations are designed to be safe to rerun and save the pre-migration configuration under `.scout/backups/`. Scout refuses a workspace schema newer than the application understands; upgrade the application rather than manually lowering `schemaVersion`.

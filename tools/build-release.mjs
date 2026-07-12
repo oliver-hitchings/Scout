@@ -22,6 +22,8 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'SECURITY.md', target: 'SECURITY.md' },
   { source: 'docs/QUICK_START.md', target: 'docs/QUICK_START.md' },
   { source: 'docs/INSTALL_WINDOWS.md', target: 'docs/INSTALL_WINDOWS.md' },
+  { source: 'docs/INSTALL_MACOS.md', target: 'docs/INSTALL_MACOS.md' },
+  { source: 'docs/INSTALL_LINUX.md', target: 'docs/INSTALL_LINUX.md' },
   { source: 'docs/AI_SETUP.md', target: 'docs/AI_SETUP.md' },
   { source: 'docs/CONFIGURATION.md', target: 'docs/CONFIGURATION.md' },
   { source: 'docs/PRIVACY.md', target: 'docs/PRIVACY.md' },
@@ -50,6 +52,7 @@ export const PUBLIC_SOURCE_FILES = Object.freeze([
   { source: 'skills', target: 'skills', tree: true },
   ...[
     'tools/build-release.mjs', 'tools/build-release.test.mjs',
+    'tools/build-platform.mjs', 'tools/build-platform.test.mjs',
     'tools/release-audit.mjs', 'tools/release-audit.test.mjs',
     'tools/fetch-adzuna.mjs', 'tools/fetch-ats.mjs', 'tools/fetch-hiring-cafe.mjs',
     'tools/scan-lock.mjs', 'tools/scan-lock.test.mjs', 'tools/scan-skill-parity.test.mjs',
@@ -126,6 +129,7 @@ export function stageRelease({
   stageDir = path.join(root, 'dist', 'release', 'stage'),
   nodeExecutable = process.execPath,
   includeDependencies = true,
+  platform = process.platform,
 } = {}) {
   const resolvedRoot = path.resolve(root);
   const resolvedStage = path.resolve(stageDir);
@@ -145,8 +149,10 @@ export function stageRelease({
   if (includeDependencies) copyTree(required(resolvedRoot, 'node_modules'), path.join(appDir, 'node_modules'));
   const runtimeDir = path.join(resolvedStage, 'runtime');
   fs.mkdirSync(runtimeDir, { recursive: true });
-  fs.copyFileSync(required(path.dirname(nodeExecutable), path.basename(nodeExecutable)), path.join(runtimeDir, 'node.exe'));
-  copyTree(required(resolvedRoot, 'installer/ScoutLauncher.ps1'), path.join(resolvedStage, 'launcher', 'ScoutLauncher.ps1'));
+  const runtimeName = platform === 'win32' ? 'node.exe' : 'node';
+  fs.copyFileSync(required(path.dirname(nodeExecutable), path.basename(nodeExecutable)), path.join(runtimeDir, runtimeName));
+  if (platform === 'win32') copyTree(required(resolvedRoot, 'installer/ScoutLauncher.ps1'), path.join(resolvedStage, 'launcher', 'ScoutLauncher.ps1'));
+  else fs.chmodSync(path.join(runtimeDir, runtimeName), 0o755);
 
   return { root: resolvedRoot, stageDir: resolvedStage, appDir };
 }

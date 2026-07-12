@@ -10,7 +10,10 @@ permissions:
 
 jobs:
   test-and-audit:
-    runs-on: windows-2022
+    strategy:
+      matrix:
+        os: [windows-2022, ubuntu-22.04, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

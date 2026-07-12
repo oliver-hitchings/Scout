@@ -20,7 +20,7 @@ claude auth login
 claude auth status
 ```
 
-Then restart Scout so it inherits updated `PATH`, and run `scout doctor`. On Windows Scout resolves npm-installed `.cmd` shims without asking PowerShell to execute their script wrappers.
+Then restart Scout so it inherits the updated `PATH`, and run `scout doctor`. macOS/Linux launchers include common Homebrew, `/usr/local/bin`, `$HOME/.local/bin` and npm-global locations; custom locations still require PATH configuration. On Windows Scout resolves npm-installed `.cmd` shims safely.
 
 ## Configure
 

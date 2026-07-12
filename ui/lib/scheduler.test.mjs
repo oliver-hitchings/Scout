@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { nextScheduledRun, registerDailySchedule, scheduleSummary, schedulerRegistrationScript, taskXml } from './scheduler.mjs';
+import { linuxSystemdUnits, macLaunchAgent, nextScheduledRun, registerDailySchedule, scheduleSummary, schedulerRegistrationScript, taskXml } from './scheduler.mjs';
 
 test('scheduled task is catch-up enabled, non-overlapping and time limited', () => {
   const xml = taskXml({ command: 'node.exe', args: ['tools/scout.mjs', 'scan'], workingDirectory: 'C:\\Scout', time: '07:30', userId: 'user', now: new Date(2026, 6, 11, 8, 0) });
@@ -46,4 +46,14 @@ test('native registration creates a persistent least-privilege daily task', () =
   const result = registerDailySchedule({ scriptFile: 'register.ps1', command: 'node.exe', argumentsText: 'scan', workingDirectory: 'C:\\Scout', time: '07:30', spawn(command, args) { call = { command, args }; return { status: 0, stdout: '' }; } });
   assert.equal(result.ok, process.platform === 'win32');
   if (process.platform === 'win32') { assert.equal(call.command, 'powershell.exe'); assert.ok(call.args.includes('07:30')); }
+});
+
+test('macOS launch agent uses a daily calendar and argument array', () => {
+  const plist = macLaunchAgent({ command: '/app/node', args: ['/app/scout.mjs', 'scan', '--workspace', '/Users/A User/Scout'], workingDirectory: '/app', time: '07:30' });
+  assert.match(plist, /app\.scout\.daily-scan/); assert.match(plist, /<key>Hour<\/key><integer>7<\/integer>/); assert.match(plist, /<key>Minute<\/key><integer>30<\/integer>/); assert.match(plist, /\/Users\/A User\/Scout/);
+});
+
+test('Linux user timer is persistent, bounded and safely quoted', () => {
+  const units = linuxSystemdUnits({ command: '/opt/scout/runtime/node', args: ['/opt/scout/app/tools/scout.mjs', 'scan', '--workspace', '/home/a/Scout Workspace'], workingDirectory: '/opt/scout/app', time: '07:30' });
+  assert.match(units.timer, /OnCalendar=\*-\*-\* 07:30:00/); assert.match(units.timer, /Persistent=true/); assert.match(units.service, /RuntimeMaxSec=2700/); assert.match(units.service, /"\/home\/a\/Scout Workspace"/);
 });

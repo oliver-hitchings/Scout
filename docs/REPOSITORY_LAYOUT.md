@@ -8,7 +8,7 @@ Scout deliberately separates public application code from private career data.
 | [`oliver-hitchings/scout-workspace`](https://github.com/oliver-hitchings/scout-workspace) | Private | The user's CV, profile, calibration, opportunity tracker, reports and application material | **Yes — only for private search data and its history.** |
 | `oliver-hitchings/StartupFinder` | Private | Legacy mixed-history development archive and the `agent/scout-beta-2` safety branch | **No — do not start new development here.** |
 
-The installed Windows application under `%LOCALAPPDATA%\Programs\Scout` is a build of the public `Scout` repository. It reads private data from `%USERPROFILE%\Documents\Scout Workspace`; it is not another source repository.
+The installed application under `%LOCALAPPDATA%\Programs\Scout`, `/Applications/Scout.app`, or `/opt/scout` is a build of the public `Scout` repository. It reads private data from the user's `Documents/Scout Workspace`; it is not another source repository.
 
 ## Rules for agents
 

@@ -1,6 +1,6 @@
 # Scheduled Scans
 
-Scout can register one Windows Task Scheduler task named `Scout Daily Scan`. Scheduling is optional and should only follow a successful supervised scan.
+Scout registers one per-user scheduler entry: `Scout Daily Scan` on Windows, `app.scout.daily-scan` on macOS, or `scout-daily-scan.timer` on Linux. Scheduling is optional and should only follow a successful supervised scan.
 
 The beta installer does not add `scout` to `PATH`. The examples below use
 `scout` as shorthand; installer users should invoke the bundled CLI as shown in
@@ -16,7 +16,7 @@ scout schedule run-now
 
 Use `claude` if that is the authenticated provider. Time is local 24-hour `HH:MM`. The task runs with the current user's interactive token and least privilege, starts when next available after a missed trigger, ignores overlapping instances, and has a 45-minute execution limit.
 
-The computer must be available and the user signed in. Sleep, provider outages and network failures may delay or fail a scan. `StartWhenAvailable` is catch-up behaviour, not a guarantee of immediate execution.
+The computer must be available and the user session or service manager active. Sleep, provider outages and network failures may delay or fail a scan. Linux systems without systemd user services report scheduling as unsupported while supervised scans remain available.
 
 ## Logs and locking
 

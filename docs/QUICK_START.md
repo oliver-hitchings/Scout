@@ -1,13 +1,13 @@
 # Quick Start
 
-Scout is a Windows-first, local-first opportunity finder. It keeps your career data in a private workspace and uses Codex or Claude to help search and assess opportunities. It never sends applications or outreach.
+Scout is a local-first opportunity finder for Windows, macOS and Linux. It keeps your career data in a private workspace and uses Codex or Claude to help search and assess opportunities. It never sends applications or outreach.
 
 ## 1. Install and launch
 
 Download the Windows installer and its `checksums.txt` from the same GitHub release. Compare the installer SHA-256 hash before running it:
 
 ```powershell
-Get-FileHash .\Scout-0.1.0-beta.4-windows-x64.exe -Algorithm SHA256
+Get-FileHash .\Scout-0.1.0-beta.5-windows-x64.exe -Algorithm SHA256
 ```
 
 The first unsigned beta may trigger Microsoft SmartScreen. A matching checksum proves file integrity, not publisher trust. Scout installs for the current user under `%LOCALAPPDATA%\Programs\Scout` and does not require administrator rights.
@@ -87,4 +87,4 @@ Only schedule scans after a successful supervised run:
 & $ScoutNode $ScoutCli schedule status
 ```
 
-Scheduled scans are Windows-only and run while you are signed in. See [Automation](AUTOMATION.md).
+Scheduled scans use Windows Task Scheduler, macOS launchd, or a Linux systemd user timer. See [Automation](AUTOMATION.md).

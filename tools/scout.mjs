@@ -13,7 +13,7 @@ import { fetchConfiguredPortals } from '../ui/lib/ats.mjs';
 import { fetchHiringCafe } from '../ui/lib/hiringCafe.mjs';
 import { loadEnv } from '../ui/lib/env.mjs';
 import { providerStatus } from '../ui/lib/providers.mjs';
-import { registerDailySchedule, removeSchedule, runScheduledNow, scheduleStatus, schedulerRegistrationScript } from '../ui/lib/scheduler.mjs';
+import { registerDailySchedule, registerUnixSchedule, removeSchedule, runScheduledNow, scheduleStatus, schedulerRegistrationScript } from '../ui/lib/scheduler.mjs';
 import {
   loadWorkspaceConfig, resolveWorkspaceRoot, seedWorkspace as seedWorkspaceFiles,
   syncManagedInstructions, workspacePaths, writeWorkspaceConfig,
@@ -129,13 +129,17 @@ export async function runScan(root, provider, mode) {
 }
 
 export function installSchedule(root, time, provider) {
-  if (process.platform !== 'win32') throw new Error('scheduled scans are currently supported on Windows only');
   if (!['codex', 'claude'].includes(provider)) throw new Error('schedule provider must be codex or claude');
   const config = loadWorkspaceConfig(root);
+  const cli = fileURLToPath(import.meta.url);
+  if (process.platform !== 'win32') {
+    const result = registerUnixSchedule({ platform: process.platform, command: process.execPath, args: [cli, 'scan', '--workspace', root, '--provider', provider, '--mode', 'primary'], workingDirectory: APP_ROOT, time });
+    if (result.ok) { config.schedule = { enabled: true, time, provider }; writeWorkspaceConfig(root, config); }
+    return result;
+  }
   const scriptFile = path.join(os.tmpdir(), `scout-task-${process.pid}.ps1`);
   fs.writeFileSync(scriptFile, schedulerRegistrationScript(), 'utf8');
   try {
-    const cli = fileURLToPath(import.meta.url);
     const argumentsText = `"${cli}" scan --workspace "${root}" --provider ${provider} --mode primary`;
     const result = registerDailySchedule({ scriptFile, command: process.execPath, argumentsText, workingDirectory: APP_ROOT, time });
     if (result.ok) {

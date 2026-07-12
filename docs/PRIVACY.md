@@ -4,7 +4,7 @@ Scout is local-first and has no Scout telemetry or cloud workspace service. Loca
 
 ## What lives where
 
-Application files (UI, CLI, templates and managed skills) install under `%LOCALAPPDATA%\Programs\Scout`. The default private workspace is `%USERPROFILE%\Documents\Scout Workspace` and includes:
+Application files install under `%LOCALAPPDATA%\Programs\Scout` on Windows, `/Applications/Scout.app` on macOS, or `/opt/scout` for the Linux DEB. Portable Linux files remain wherever extracted. The default private workspace is `~/Documents/Scout Workspace` and includes:
 
 - `workspace.json`, `profile/` and `cv/`;
 - `data/`, `reports/`, `applications/`, `imports/` and `logs/`;

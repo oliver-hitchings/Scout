@@ -213,7 +213,7 @@ const Setup = {
     const scheduleText = schedule.enabled
       ? `${this.escape(schedule.provider || 'provider')} daily at ${this.escape(schedule.time || '')}; next run ${this.escape(formatLocalDateTime(schedule.nextRunAt, this.status?.config?.locale))}; last result ${this.escape(schedule.lastResult || 'unknown')}`
       : schedule.configured
-        ? 'A daily scan is saved in the workspace, but the Windows task is not active.'
+        ? 'A daily scan is saved in the workspace, but this computer’s scheduler is not active.'
         : 'Daily scanning is off. Run one supervised scan before enabling it.';
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame setup-scout-welcome" role="img" aria-label="Scout welcomes you"></span></div><div class="scout-bubble tail-left">

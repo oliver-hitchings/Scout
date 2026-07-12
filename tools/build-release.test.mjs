@@ -17,6 +17,8 @@ test('release manifest is allowlisted and excludes private workspace roots', () 
   assert.ok(sources.includes('README.md'));
   assert.ok(sources.includes('docs/QUICK_START.md'));
   assert.ok(sources.includes('docs/INSTALL_WINDOWS.md'));
+  assert.ok(sources.includes('docs/INSTALL_MACOS.md'));
+  assert.ok(sources.includes('docs/INSTALL_LINUX.md'));
   assert.ok(sources.includes('docs/releases'));
   assert.ok(sources.includes('docs/RELEASE.md'));
   assert.ok(!sources.includes('docs/CODEX_HANDOFF.md'));
@@ -88,7 +90,7 @@ test('staging copies only manifest content and bundled runtime', () => {
   fs.mkdirSync(path.join(root, 'profile'), { recursive: true });
   fs.writeFileSync(path.join(root, 'profile', 'context.md'), 'private');
 
-  const staged = stageRelease({ root, stageDir, nodeExecutable, includeDependencies: false });
+  const staged = stageRelease({ root, stageDir, nodeExecutable, includeDependencies: false, platform: 'win32' });
   assert.equal(fs.existsSync(path.join(staged.appDir, 'ui', 'runtime.mjs')), true);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'ui', 'runtime.test.mjs')), false);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'profile')), false);
