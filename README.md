@@ -10,7 +10,7 @@ Scout never submits an application or sends outreach. Your CV, profile, tracker,
 
 ## Status
 
-Scout `0.1.x` is a cross-platform public beta. Windows SmartScreen and macOS Gatekeeper may warn because packages are unsigned. Verify the SHA-256 checksum published with every release.
+Scout `0.1.x` is a cross-platform public beta. The desktop application is a Wails v3 native host around Scout's existing local Node service; it is not Electron. Windows SmartScreen and macOS Gatekeeper may warn because packages are unsigned. Verify the SHA-256 checksum published with every release.
 
 ## What Scout does
 
@@ -21,7 +21,7 @@ Scout `0.1.x` is a cross-platform public beta. Windows SmartScreen and macOS Gat
 - Builds searches from the CV and preferences you explicitly approve; it does not inspect unrelated AI conversations or provider history.
 - Searches configured ATS boards and public sources. Adzuna is optional.
 - Tracks evidence, verdicts, follow-ups, applications, and dated reports in a private local Git repository.
-- Runs supervised or scheduled daily scans on Windows.
+- Runs supervised or scheduled daily scans as independent CLI processes; they do not require the desktop window to remain open.
 - Keeps model choice optional, using the provider's supported default unless you select an override.
 
 Scout is not an auto-apply tool. It does not invent qualifications, infer positive facts from missing evidence, or send anything on your behalf.
@@ -50,6 +50,23 @@ release documentation              applications/ and imports/
 ```
 
 Application upgrades replace application files and managed instructions. They do not delete or publish the workspace. Uninstalling Scout leaves the workspace in place.
+
+## Desktop host
+
+The Wails host starts the bundled Node service on loopback, waits for its health
+endpoint, and renders the unchanged Scout dashboard in a native WebView. Existing
+relative `/api/*` requests continue to use the Node service through the host proxy.
+The Node service is not exposed to the network.
+
+Scout runs as a single desktop instance. Closing the main window hides it to the
+tray/menu bar where supported. The menu provides **Open Scout**, **Restart Scout**,
+**Check for updates**, **Settings**, and **Quit**. At quit, choose whether to keep
+scheduled scans enabled, disable them, or cancel. Desktop settings and update state
+are stored in platform application-data paths, outside the private workspace.
+
+On Linux, KDE Plasma is a first-class target. If the session has no usable tray,
+Scout remains a normal window-only application. Launch-at-login starts Scout with
+`--background` using the platform's normal registration mechanism.
 
 You can select a non-default workspace with either:
 
@@ -81,11 +98,14 @@ Run `scout` without arguments for command help.
 
 ## Development setup
 
-Requirements: Windows 10/11, Node.js 20 or later, Git, and at least one authenticated provider CLI.
+Requirements: Node.js 20 or later, Go 1.25, Git, the pinned Wails v3 submodule,
+and at least one authenticated provider CLI. Native packaging also requires the
+platform WebView/toolchain.
 
 ```powershell
 git clone https://github.com/oliver-hitchings/Scout.git
 cd Scout
+git submodule update --init --recursive
 npm install
 $env:SCOUT_WORKSPACE = "$HOME\Documents\Scout Workspace"
 node tools/scout.mjs workspace init
@@ -94,6 +114,17 @@ npm start
 ```
 
 Open `http://127.0.0.1:8459`. Use a synthetic workspace for development and never copy private workspace content into tests, screenshots or commits.
+
+To compile the native host from the reviewed Wails source:
+
+```powershell
+cd desktop
+go test ./...
+go build ./cmd/scout-host
+```
+
+Do not substitute `go install github.com/wailsapp/wails/...`; `desktop/go.mod`
+uses the exact Wails source pinned at `third_party/wails-v3`.
 
 ## Documentation
 

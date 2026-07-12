@@ -6,17 +6,24 @@ Scout supports Ubuntu 22.04+ and Debian 12+ on x64. Other x64 distributions can 
 2. Run `sha256sum Scout-*-linux-x64.*` and compare it with the published checksum.
 3. On Ubuntu/Debian, run `sudo apt install ./Scout-*-linux-x64.deb`, then open Scout from the application menu or run `scout-dashboard`.
 4. For the portable build, extract it and run `./Scout-*-linux-x64/scout-dashboard`.
-5. Complete provider setup, onboarding and the supervised first scan in the browser window Scout opens.
+5. Complete provider setup, onboarding and the supervised first scan in Scout's native window.
 
 Private data defaults to `~/Documents/Scout Workspace`. `sudo apt remove scout` removes application files but preserves that workspace. Daily scans use the current user’s systemd service manager; systems without systemd user services retain supervised manual scans.
-# Native desktop host and KDE
+## Native desktop host and KDE
 
 The Linux desktop entry starts the bundled Wails host, which starts the bundled
 loopback-only Node service and displays the existing UI in the system WebView.
 KDE Plasma is supported with tray/menu actions (Open, Restart, Check for updates,
 Settings, Quit). On a desktop without a usable StatusNotifier tray, Scout remains
-fully usable as a normal window; closing it may leave it window-only rather than
-in the tray.
+fully usable as a normal window; closing it remains window-only rather than
+depending on an unavailable tray.
 
 `scout` remains the CLI entry point for scans and scheduled scans; schedules run
 independent CLI processes and do not require the desktop host.
+
+Private data defaults to `~/Documents/Scout Workspace`. `sudo apt remove scout`
+removes application files but preserves that workspace. Daily scans use the current
+user's systemd service manager; systems without systemd user services retain
+supervised manual scans. The Settings launch-at-login option creates a per-user XDG
+autostart entry. AUR/pacman installs retain package-manager ownership: update with
+`paru -Syu scout` or `yay -Syu scout`, rather than self-updating from Scout.

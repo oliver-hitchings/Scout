@@ -7,7 +7,7 @@ Scout is an unsigned Windows 10/11 public beta. It keeps its workspace on your c
 1. Open [Scout releases](https://github.com/oliver-hitchings/Scout/releases), choose the newest beta, and download its Windows `.exe` plus `checksums.txt`.
 2. In PowerShell, verify the download with `Get-FileHash .\Scout-0.1.0-beta.9-windows-x64.exe -Algorithm SHA256` and compare it with `checksums.txt`.
 3. Run the installer. Windows SmartScreen may warn because the beta is not code-signed; use **More info → Run anyway** only after the checksum matches this repository's release.
-4. Leave **Launch Scout** selected, or double-click the Scout shortcut later. Scout starts a local server and opens `http://127.0.0.1:8459` in your browser.
+4. Leave **Launch Scout** selected, or double-click the Scout shortcut later. Scout opens its native Wails window; the bundled Node dashboard remains loopback-only and is not opened as a browser tab.
 
 ## First setup
 
@@ -17,17 +17,20 @@ Scout is an unsigned Windows 10/11 public beta. It keeps its workspace on your c
 4. Talk to Scout, review the staged profile/CV/search changes, and explicitly approve them. Nothing is activated silently.
 5. Run the supervised first scan inside Settings and review the dashboard. Only then enable an optional daily scan.
 
-Scout runs as `Scout.exe` in the Windows notification area. Use its arrow-menu icon to open, restart, check for updates, or quit Scout. The supporting local server appears as `ScoutRuntime.exe`, not a generic Node process.
+Scout runs as a single `Scout.exe` Wails host and owns the bundled `ScoutRuntime.exe`
+Node process. Closing the main window hides Scout to the notification area by default.
+Use its menu to open, restart, check for updates, open Settings, or quit. At quit,
+choose **Keep scheduled scans enabled**, **Disable scans and quit**, or **Cancel**.
+Scheduled scans are separate CLI processes and continue when you keep them enabled.
 
 ## Privacy and recovery
 
 The default private workspace is `%USERPROFILE%\Documents\Scout Workspace`. It survives upgrades and uninstall. Do not put it in a public repository or share its logs. If Scout does not open, launch it again and use **Settings → Restart Scout**; diagnostic logs are in the workspace's `logs` folder.
 
-To upgrade, use the tray menu to quit Scout, then install a newer release over the existing application. To uninstall, use Windows Installed Apps; remove any scheduled scan first. Your workspace is deliberately preserved.
-# Native host
+To upgrade, use the tray menu to check for updates or quit Scout and install a
+newer release over the existing application. To uninstall, use Windows Installed
+Apps; remove any scheduled scan first. Your workspace is deliberately preserved.
 
-The installed `Scout.exe` is now the Wails v3 native host. It owns the bundled
-Node dashboard and shows it in a native WebView; closing Scout hides it to the
-tray by default. The tray provides Open Scout, Restart Scout, Check for updates,
-Settings and Quit. Quit offers to keep scheduled CLI scans enabled, disable them,
-or cancel. Launch at login starts the same host with `--background`.
+Enable **Start Scout at sign-in** in Settings to register the installed host under
+your user account with `--background`; it does not start a browser or create a
+second dashboard server.
