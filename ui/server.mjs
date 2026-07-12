@@ -183,6 +183,7 @@ function handleRead(req, res, url) {
       trackerExists: fs.existsSync(TRACKER),
       established: readiness.established,
       ready: readiness.ready,
+      setupComplete: Boolean(config.setup?.completedAt),
       readiness: readiness.checks,
       scanHealth: readScanHealth(),
       schedule: readScheduleSummary(config),
@@ -448,9 +449,20 @@ routes['POST /api/setup/config'] = (req, res, body) => {
       commute: { ...current.commute, ...(b.commute || {}) },
       ai: { ...current.ai, ...(b.ai || {}) },
       schedule: { ...current.schedule, ...(b.schedule || {}) },
+      setup: { ...current.setup, ...(b.setup || {}) },
     };
     writeWorkspaceConfig(WORKSPACE_ROOT, next);
     return replyJson(res, 200, { ok: true, config: next });
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
+routes['POST /api/setup/complete'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  try {
+    const config = loadWorkspaceConfig(WORKSPACE_ROOT);
+    config.setup = { ...config.setup, completedAt: new Date().toISOString() };
+    writeWorkspaceConfig(WORKSPACE_ROOT, config);
+    return replyJson(res, 200, { ok: true, completedAt: config.setup.completedAt });
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 

@@ -65,9 +65,11 @@ export function formatLocalDateTime(value, locale = 'en-GB') {
 }
 
 export function handoffAction(ready) {
-  return ready
-    ? { label: 'Continue to first scan', defer: false }
-    : { label: 'Finish for now', defer: true };
+  return { label: 'Continue to first scan', defer: false, ready: Boolean(ready) };
+}
+
+export function shouldAutoRunFirstScan(scanHealth = {}) {
+  return !scanHealth.lastRunAt;
 }
 
 export function buildOnboardingPrompt({ workspaceRoot, provider, imported, config } = {}) {
@@ -128,7 +130,7 @@ const Setup = {
         ? 'Review or retune your existing private workspace.'
         : 'A private workspace, tuned to your search.';
       const skipped = this.status.trackerExists && localStorage.getItem(SETUP_DEFERRED_KEY) === 'true';
-      if (!keepOpen && (this.status.ready || skipped)) {
+      if (!keepOpen && (this.status.setupComplete || this.status.established || this.status.ready || skipped)) {
         this.el('setup-overlay').classList.add('hidden');
         return;
       }
@@ -192,6 +194,9 @@ const Setup = {
     this.busy = busy;
     this.el('setup-next').disabled = busy;
     this.el('setup-back').disabled = busy;
+    for (const id of ['setup-run-scan', 'setup-schedule-save', 'setup-schedule-disable']) {
+      const button = this.el(id); if (button) button.disabled = busy;
+    }
   },
 
   renderProgress() {
@@ -363,12 +368,13 @@ const Setup = {
       <h2>${healthy ? 'Your first scan is ready to review' : 'Run your first search with me'}</h2>
       <p>I search using your approved role families and search lanes, then apply your locations, exclusions, compensation preferences and evidence-based scoring. I do not use unrelated AI conversations.</p>
       <div class="setup-callout"><strong>${healthy ? 'Healthy supervised scan completed' : 'Supervised first'}</strong><p>${healthy ? `Last run: ${this.escape(formatLocalDateTime(health.lastRunAt, this.status?.config?.locale))}. Review the dashboard before enabling automation.` : 'Keep this window open. A full source check can take several minutes and no application will be sent.'}</p></div>
-      <p><button id="setup-run-scan" class="act primary" type="button" ${this.busy ? 'disabled' : ''}>${healthy ? 'Run another supervised scan' : 'Run supervised scan'}</button></p>
-      <div class="setup-callout"><strong>Optional daily scan</strong><p>${schedule.enabled ? `Enabled at ${this.escape(schedule.time || '')} using ${this.escape(schedule.provider || '')}.` : 'Disabled until you choose to enable it after reviewing a healthy scan.'}</p>
+      <p><button id="setup-run-scan" class="act primary" type="button" ${this.busy ? 'disabled' : ''}>${healthy ? 'Scan now' : 'Run first scan now'}</button></p>
+      <div class="setup-callout"><strong>Daily scan schedule</strong><p>${schedule.enabled ? `Enabled at ${this.escape(schedule.time || '')} using ${this.escape(schedule.provider || '')}. Change the time below and save to update it.` : 'Choose when Scout should scan each day. It can be enabled after the first healthy scan.'}</p>
       <label class="setup-field">Daily time<input id="setup-schedule-time" type="time" value="${this.escape(schedule.time || '07:30')}"></label>
-      <p><button id="setup-schedule-toggle" class="act" type="button" ${healthy ? '' : 'disabled'}>${schedule.enabled ? 'Disable daily scan' : 'Enable daily scan'}</button></p></div></div>`;
+      <p><button id="setup-schedule-save" class="act" type="button" ${healthy ? '' : 'disabled'}>${schedule.enabled ? 'Save daily scan time' : 'Enable daily scan'}</button>${schedule.enabled ? ' <button id="setup-schedule-disable" class="act" type="button">Disable daily scan</button>' : ''}</p></div></div>`;
     this.el('setup-run-scan').addEventListener('click', () => this.runSupervisedScan());
-    this.el('setup-schedule-toggle').addEventListener('click', () => this.toggleSchedule());
+    this.el('setup-schedule-save').addEventListener('click', () => this.saveSchedule());
+    this.el('setup-schedule-disable')?.addEventListener('click', () => this.disableSchedule());
     this.el('setup-next').textContent = 'Finish';
   },
 
@@ -382,12 +388,20 @@ const Setup = {
     finally { this.setBusy(false); }
   },
 
-  async toggleSchedule() {
+  async saveSchedule() {
     this.setBusy(true);
     try {
-      const enabled = this.status?.schedule?.enabled;
-      await requestJson('/api/schedule', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: enabled ? 'remove' : 'install', time: fieldValue('setup-schedule-time') || '07:30', provider: this.status?.config?.ai?.provider }) });
-      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage(enabled ? 'Daily scan disabled.' : 'Daily scan enabled and verified.', 'good');
+      await requestJson('/api/schedule', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'install', time: fieldValue('setup-schedule-time') || '07:30', provider: this.status?.config?.ai?.provider }) });
+      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage('Daily scan time saved and verified.', 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+    finally { this.setBusy(false); }
+  },
+
+  async disableSchedule() {
+    this.setBusy(true);
+    try {
+      await requestJson('/api/schedule', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'remove' }) });
+      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage('Daily scan disabled.', 'good');
     } catch (error) { this.setMessage(error.message, 'error'); }
     finally { this.setBusy(false); }
   },
@@ -489,12 +503,18 @@ const Setup = {
       }
       if (this.step === 5) {
         await this.refreshStatus({ keepOpen: true });
-        const action = handoffAction(this.status.ready);
-        if (!action.defer) { this.step += 1; this.render(); }
-        else this.deferSetup();
+        this.step += 1;
+        this.render();
+        if (shouldAutoRunFirstScan(this.status?.scanHealth)) setTimeout(() => this.runSupervisedScan(), 0);
         return;
       }
-      if (this.step === STEPS.length - 1) { this.el('setup-overlay').classList.add('hidden'); return; }
+      if (this.step === STEPS.length - 1) {
+        const result = await requestJson('/api/setup/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+        this.status.setupComplete = Boolean(result.completedAt);
+        localStorage.removeItem(SETUP_DEFERRED_KEY);
+        this.el('setup-overlay').classList.add('hidden');
+        return;
+      }
       this.step += 1;
       this.render();
     } catch (error) {

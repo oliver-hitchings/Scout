@@ -52,6 +52,9 @@ export const DEFAULT_WORKSPACE_CONFIG = Object.freeze({
     time: '07:30',
     provider: null,
   },
+  setup: {
+    completedAt: null,
+  },
 });
 
 export function defaultWorkspaceRoot(home = os.homedir()) {
@@ -116,6 +119,7 @@ export function mergeWorkspaceDefaults(value = {}) {
       hiringCafe: { ...defaults.sources.hiringCafe, ...(value.sources?.hiringCafe || {}) },
     },
     commute: { ...defaults.commute, ...(value.commute || {}) },
+    setup: { ...defaults.setup, ...(value.setup || {}) },
     ai: { ...defaults.ai, ...(value.ai || {}) },
     schedule: { ...defaults.schedule, ...(value.schedule || {}) },
   };
