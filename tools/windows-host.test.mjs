@@ -9,9 +9,19 @@ test('Windows host owns tray lifecycle and named runtime', () => {
   for (const label of ['Open Scout', 'Check for updates', 'Restart Scout', 'Settings', 'Quit Scout', 'Keep scheduled scans enabled', 'Disable scans and quit', 'Cancel']) assert.match(host, new RegExp(label));
   assert.match(host, /SingleInstance/);
   assert.match(host, /ProxyHandler/);
+  assert.match(host, /go:embed scout-icon\.ico/);
+  assert.match(host, /Icon: scoutIcon/);
+  assert.match(host, /tray\.SetIcon\(scoutIcon\)/);
   assert.match(installer, /Source: "\{#StageDir\}\\Scout\.exe"/);
   assert.match(installer, /runtime\\ScoutRuntime\.exe/);
+  assert.match(installer, /SetupIconFile=\.\.\\ui\\assets\\scout-icon\.ico/);
   assert.doesNotMatch(installer, /PowerShell|ScoutLauncher\.ps1/);
+});
+
+test('the native host embeds the established favicon unchanged', () => {
+  const source = fs.readFileSync(new URL('../ui/assets/scout-icon.ico', import.meta.url));
+  const embedded = fs.readFileSync(new URL('../desktop/cmd/scout-host/scout-icon.ico', import.meta.url));
+  assert.deepEqual(embedded, source);
 });
 
 test('Windows host checks updates after launch and on a recurring timer', () => {

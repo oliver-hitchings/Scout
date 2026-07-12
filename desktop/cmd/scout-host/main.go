@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"github.com/oliver-hitchings/scout/desktop/internal/host"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -14,6 +15,11 @@ import (
 	"strings"
 	"time"
 )
+
+// The existing Scout favicon is the single native application/tray icon source.
+//
+//go:embed scout-icon.ico
+var scoutIcon []byte
 
 var key = [32]byte{0x53, 0x63, 0x6f, 0x75, 0x74, 0x57, 0x61, 0x69, 0x6c, 0x73, 0x56, 0x33}
 
@@ -28,7 +34,7 @@ func main() {
 	if err := sup.Start(context.Background()); err != nil {
 		log.Fatal(err)
 	}
-	app := application.New(application.Options{Name: "Scout", Description: "Local-first opportunity finder", Assets: application.AssetOptions{Handler: host.ProxyHandler(sup.Port)}, Mac: application.MacOptions{ApplicationShouldTerminateAfterLastWindowClosed: false}, SingleInstance: &application.SingleInstanceOptions{UniqueID: "app.scout.local", EncryptionKey: key, OnSecondInstanceLaunch: func(application.SecondInstanceData) {
+	app := application.New(application.Options{Name: "Scout", Description: "Local-first opportunity finder", Icon: scoutIcon, Assets: application.AssetOptions{Handler: host.ProxyHandler(sup.Port)}, Mac: application.MacOptions{ApplicationShouldTerminateAfterLastWindowClosed: false}, SingleInstance: &application.SingleInstanceOptions{UniqueID: "app.scout.local", EncryptionKey: key, OnSecondInstanceLaunch: func(application.SecondInstanceData) {
 		if mainWindow != nil {
 			mainWindow.Restore()
 			mainWindow.Show().Focus()
@@ -52,6 +58,7 @@ func main() {
 		quit.Show()
 	})
 	tray.SetTooltip("Scout")
+	tray.SetIcon(scoutIcon)
 	tray.SetMenu(menu)
 	tray.OnClick(func() { mainWindow.Show().Focus() })
 	app.OnShutdown(func() { sup.Stop(); control.Close() })

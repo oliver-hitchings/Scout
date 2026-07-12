@@ -27,6 +27,7 @@ OutputBaseFilename=Scout-{#MyAppVersion}-windows-x64
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\ui\assets\scout-icon.ico
 UninstallDisplayName=Scout
 LicenseFile={#StageDir}\app\LICENSE
 ChangesEnvironment=no
