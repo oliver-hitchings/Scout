@@ -46,7 +46,7 @@ export function providerStatus(provider, {
   runtimePath = process.execPath,
   timeoutMs = 10_000,
 } = {}) {
-  const providerEnv = providerEnvironment(env, platform);
+  const providerEnv = providerEnvironment(env, platform, runtimePath);
   const attempts = [];
   let installed = null;
   for (const candidate of providerCandidates(provider, { platform, env: providerEnv, resolve, exists, runtimePath })) {
@@ -69,7 +69,17 @@ export function providerStatus(provider, {
       encoding: 'utf8', windowsHide: true, shell: false, timeout: timeoutMs,
       windowsVerbatimArguments: authCommand.windowsVerbatimArguments, env: providerEnv,
     });
-    const item = { command: candidate, version, auth, authenticated: auth.status === 0 };
+    const helpArgs = provider === 'codex' ? ['exec', '--help'] : ['--help'];
+    const helpCommand = commandInvocation(candidate, helpArgs, { platform, env: providerEnv, resolve: (value) => value });
+    const help = spawn(helpCommand.command, helpCommand.args, {
+      encoding: 'utf8', windowsHide: true, shell: false, timeout: timeoutMs,
+      windowsVerbatimArguments: helpCommand.windowsVerbatimArguments, env: providerEnv,
+    });
+    const helpText = String(help.stdout || help.stderr || '');
+    const structuredOutput = help.status === 0 && (provider === 'codex'
+      ? helpText.includes('--output-schema')
+      : helpText.includes('--json-schema'));
+    const item = { command: candidate, version, auth, authenticated: auth.status === 0, structuredOutput };
     attempts.push({ source: providerSource(candidate, providerEnv), result: item.authenticated ? 'authenticated' : 'signed-out' });
     if (item.authenticated) { installed = item; break; }
     if (!installed) installed = item;
@@ -79,6 +89,7 @@ export function providerStatus(provider, {
   const result = {
     provider, command: providerCommand(provider, platform), installed: true, authenticated: installed.authenticated,
     version: String(installed.version.stdout || installed.version.stderr || '').trim(),
+    capabilities: { structuredOutput: installed.structuredOutput },
     source: providerSource(installed.command, providerEnv), attempts,
     // Some provider CLIs return account email/org identifiers as JSON. The UI
     // needs readiness, not account metadata, so never expose that raw output.
@@ -136,10 +147,24 @@ function providerSource(command, env) {
   return String(command).replace(home, '%USERPROFILE%');
 }
 
-export function providerEnvironment(env = process.env, platform = process.platform) {
+export function providerEnvironment(env = process.env, platform = process.platform, runtimePath = process.execPath) {
   const next = { ...env };
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
-  const home = envValue(env, 'USERPROFILE') || envValue(env, 'HOME') || os.homedir();
+  const runtimeLocal = platform === 'win32' ? installedLocalAppData(runtimePath) : null;
+  const home = runtimeLocal
+    ? path.win32.resolve(runtimeLocal, '..', '..')
+    : envValue(env, 'USERPROFILE') || envValue(env, 'HOME') || os.homedir();
+  if (platform === 'win32') {
+    // The packaged tray host can provide a restricted or system-profile
+    // environment even though it runs with the interactive user's token.
+    // Provider CLIs use these variables to find their OAuth state.
+    next.USERPROFILE = home;
+    next.HOME = home;
+    next.HOMEDRIVE = path.win32.parse(home).root.slice(0, 2);
+    next.HOMEPATH = home.slice(next.HOMEDRIVE.length) || '\\';
+    if (!envValue(next, 'LOCALAPPDATA')) next.LOCALAPPDATA = runtimeLocal || path.win32.join(home, 'AppData', 'Local');
+    if (!envValue(next, 'APPDATA')) next.APPDATA = path.win32.join(home, 'AppData', 'Roaming');
+  }
   const pathKey = Object.keys(next).find((key) => key.toLowerCase() === 'path') || (platform === 'win32' ? 'Path' : 'PATH');
   const separator = platform === 'win32' ? ';' : ':';
   const existing = String(next[pathKey] || '');

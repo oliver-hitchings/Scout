@@ -2,35 +2,33 @@
 
 This is the provider-neutral contract for manual and scheduled scans.
 
-## Coordination and context
+## Trusted runtime ownership
 
-Every run declares `agent=codex|claude` and `mode=primary|second-pass`. Acquire the private workspace lock with `scout lock acquire <agent> <mode>`, retain its token, and release it in a final step. Stop without writes when a live lock exists; locks older than two hours may be recovered.
+Every run declares `agent=codex|claude` and `mode=primary|second-pass`. Scout's trusted runtime owns the private workspace lock, source collection, normalisation, deduplication, mandatory gates, score arithmetic, tracker merge, report generation and scan-run record. A live lock stops an overlapping run; stale locks older than two hours may be recovered.
 
-Read `workspace.json`, `profile/context.md`, `profile/calibration.md`, the tracker, source configuration, employer list, commute policy, scan-run log, and today's report. Never copy the private workspace into the public application repository or another external service.
+The provider receives only the private scoring configuration, bounded profile/CV evidence and at most 40 normalised candidates with capped descriptions. It returns schema-constrained assessments from one non-resumable, no-tools turn. It never invokes Scout, browses independently, writes workspace files, applies for a role or sends outreach. When sources yield zero candidates, Scout skips the provider entirely and still writes a truthful healthy-empty or degraded run.
 
-## Search coverage
+Direct developer workflows may inspect or commit workspace changes separately. Git is not part of installed scan health: missing Git, a non-Git workspace or a commit failure cannot make otherwise valid scan artifacts unhealthy.
 
-A primary pass:
+## Search coverage and health
 
-- runs configured ATS, Adzuna, and hiring.cafe sources with `scout source <name>`;
-- treats missing Adzuna credentials and individual source failures as degraded coverage, not total failure;
-- runs varied queries from every configured search lane, respecting each lane's priority and keeper rule;
-- checks the least-recently-reviewed configured employers, watch entries, and hidden-opportunity sources;
-- verifies each advert is current before reporting it.
+Scout runs configured ATS, Adzuna and hiring.cafe sources. Missing optional configuration is reported as not configured. A successful empty response is healthy; partial query/portal failure is degraded; a blocked or failed configured source is unavailable. Hiring.cafe retryable network/HTTP failures receive at most three bounded attempts, and Scout refreshes its build ID once after a 404 or endpoint-shape change.
 
-A second pass reads the primary run and uses different queries, sources, employers, and watch entries. It verifies and merges rather than replaces. With no successful primary result, it becomes a full primary-equivalent fallback.
+Only healthy completed coverage enables scheduling. A degraded run states that its results are not evidence that no suitable roles exist.
 
-## Screening, location, and scoring
+## Mandatory requirements and scoring
 
-Apply the user's explicit hard exclusions first. Missing facts are uncertainty, not positive evidence. Use the scoring dimensions, weights, gates, and action bands in the profile; the breakdown must sum to the total. Change an existing score only for a cited fact or a named newer precedent.
+Scout applies configured hard exclusions before keeping a result. Employer language such as `required`, `essential`, `must`, `mandatory` and `non-negotiable` receives stable advert-evidence IDs that the provider must assess.
 
-For location-sensitive keepers, use the configured origin, travel modes, time boundary, remote preference, and relocation position. Record practical route evidence, destination, checked date, notes, and URLs. Preserve distant historical entries even when they no longer pass the active filter.
+- A hard exclusion or confirmed unmet mandatory requirement discards the candidate.
+- An unknown mandatory requirement can appear only in **One check from unlocking** and is capped below the action threshold.
+- **Action today** requires advert evidence and supporting profile evidence for every mandatory requirement.
 
-## Tracker and report
+Scout recomputes dimension totals, scores and bands; provider totals are never trusted directly. New tracker entries may store backward-compatible `eligibility` and `mandatoryRequirements` evidence. Existing status, tags, sources, notes, contacts, logs and application history are preserved.
 
-Make per-entry edits and preserve user-authored status, notes, contacts, events, and application history. Deduplicate by stable ID, company/role, and source URL. New IDs use `company-role-YYYY-MM`.
+## Runtime artifacts
 
-Write `reports/YYYY-MM-DD.md` with:
+Scout writes `reports/YYYY-MM-DD.md` with:
 
 1. `## Headline`
 2. `## Action today`
@@ -40,10 +38,6 @@ Write `reports/YYYY-MM-DD.md` with:
 6. `## Discarded`
 7. `## Verdicts`
 
-Derive score bands and follow-up intervals from the profile/configuration. When today's report exists, preserve richer verified facts and regenerate action sections from current tracker state. State degraded coverage prominently.
+It appends one canonical JSON object to `data/scan-runs.jsonl` containing `schemaVersion`, timestamp/start time, agent, mode, `degraded`, `sources_checked`, `queries_checked`, candidate/keeper counts, discarded reasons, errors and `source_health`. Readers remain compatible with beta.9 aliases including nested `degradation`, `checked_sources`, `candidate_count`, `keeper_count` and `discarded_reasons`.
 
-If fresh map or directions verification is blocked, preserve the newest previously audited commute value and its checked date. Mark the commute check degraded; never replace a verified value with a guess or erase it merely because the current provider is unavailable.
-
-Append one JSON object to `data/scan-runs.jsonl` containing timestamp, agent, mode, degradation, checked sources and queries, watch/employer coverage, candidate/keeper counts, discarded reasons, errors, and per-source counts. New runs must also include `source_health`, keyed by stable source name, with `{ "status": "healthy|degraded|unavailable", "count": number|null, "reason": string|null }`. A successful empty response is healthy; blocked or failed endpoints are unavailable; partial query or portal failures are degraded.
-
-Commit only files changed by this scan with `scan: YYYY-MM-DD <agent> <mode>`. Never stage unrelated workspace files. Release the lock even after degraded search or commit failure.
+Before reporting success, Scout reads back and validates the tracker, all seven report sections and the matching final run record. The lock is released after completed, healthy-empty, degraded or failed runs.

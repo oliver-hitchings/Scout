@@ -70,7 +70,7 @@ export function runTurn({
       for (const ev of events) {
         if (ev.kind === 'session') state.sessionId = ev.sessionId;
         if (ev.kind === 'delta') state.deltas.push(ev.text);
-        if (ev.kind === 'tool' && ev.file) {
+        if (ev.kind === 'tool' && ev.file && ev.mutatesFile === true) {
           const rel = relativeToRepo(cwd, ev.file);
           if (rel) state.files.add(rel);
         }

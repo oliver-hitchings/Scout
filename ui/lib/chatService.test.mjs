@@ -165,7 +165,7 @@ test('handoff route persists the switch and summary when the replacement turn fa
       try { event = JSON.parse(line); } catch { return []; }
       if (event.type === 'result') return [
         { kind: 'session', sessionId: 'replacement-session' },
-        { kind: 'tool', label: 'Edit: applications/acme/failed.typ', file: 'applications/acme/failed.typ' },
+        { kind: 'tool', label: 'Edit: applications/acme/failed.typ', file: 'applications/acme/failed.typ', mutatesFile: true },
         { kind: 'done', text: 'replacement failed', ok: false, usage: {} },
       ];
       return [];
@@ -255,7 +255,7 @@ test('a failed send preserves emitted session and file metadata for retry', { co
       if (event.type !== 'result') return [];
       return [
         { kind: 'session', sessionId: 'failed-session' },
-        { kind: 'tool', label: 'Edit: applications/acme/partial.typ', file: 'applications/acme/partial.typ' },
+        { kind: 'tool', label: 'Edit: applications/acme/partial.typ', file: 'applications/acme/partial.typ', mutatesFile: true },
         { kind: 'done', text: 'failed after editing', ok: false, usage: {} },
       ];
     },
@@ -296,6 +296,42 @@ test('a CV writing turn triggers installed-app quality validation when evidence 
   } finally {
     ENGINES.claude = oldClaude;
   }
+});
+
+test('bounded fit assessment receives the selected job, identifies its provider and persists without touched files', async () => {
+  const root = tmpRoot();
+  let captured;
+  const routes = routeFixture(root, {
+    runStructuredTurnFn: async (options) => {
+      captured = options;
+      return {
+        value: { summary: 'Good evidence-led fit.', strengths: ['Software delivery'], evidenceGaps: ['Scale unknown'], mandatoryGaps: [], recommendation: 'Verify scale.' },
+        usage: { input_tokens: 20 },
+      };
+    },
+  });
+  const response = await callRoute(
+    routes['POST /api/chat/send'],
+    JSON.stringify({ id: ID, engine: 'claude', mode: 'fit-assessment', text: 'Assess fit and evidence gaps.' }),
+  );
+  const events = sseEvents(response.text());
+  assert.equal(events.at(-1).event, 'done');
+  assert.equal(events.at(-1).data.engine, 'claude');
+  assert.deepEqual(events.at(-1).data.filesTouched, []);
+  assert.equal(captured.provider, 'claude');
+  assert.match(captured.prompt, /"id":"acme-role-2026-07"/);
+  assert.match(captured.prompt, /"company":"Acme"/);
+
+  const saved = loadChat(root, ID);
+  assert.equal(saved.engine, 'claude');
+  assert.equal(saved.bounded, true);
+  assert.deepEqual(saved.filesTouched, []);
+  assert.match(saved.messages.at(-1).text, /Good evidence-led fit/);
+
+  const get = new MockResponse();
+  routes['GET /api/chat'](new EventEmitter(), get, '', new URL(`http://127.0.0.1/api/chat?id=${ID}`));
+  await get.finished;
+  assert.equal(JSON.parse(get.text()).chat.engine, 'claude');
 });
 
 test('handoff build errors end SSE and release the running slot', { concurrency: false }, async () => {

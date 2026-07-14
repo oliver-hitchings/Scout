@@ -45,6 +45,25 @@ test('Codex candidates include the official OpenAI Windows installation', () => 
   assert.equal(candidates[0], 'C:\\Users\\Oli\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe');
 });
 
+test('provider status exposes bounded structured-output compatibility', () => {
+  const spawn = (command, args) => {
+    if (args.includes('--version')) return { status: 0, stdout: '2.1.205' };
+    if (args[0] === 'auth') return { status: 0, stdout: 'logged in' };
+    return { status: 0, stdout: '--json-schema --no-session-persistence' };
+  };
+  const compatible = providerStatus('claude', { spawn, platform: 'linux' });
+  assert.equal(compatible.authenticated, true);
+  assert.equal(compatible.capabilities.structuredOutput, true);
+
+  const old = providerStatus('claude', {
+    spawn: (command, args) => args.includes('--version') || args[0] === 'auth'
+      ? { status: 0, stdout: 'old' } : { status: 0, stdout: '--print only' },
+    platform: 'linux',
+  });
+  assert.equal(old.authenticated, true);
+  assert.equal(old.capabilities.structuredOutput, false);
+});
+
 test('Windows provider candidates tolerate lowercase packaged-runtime environment keys', () => {
   const candidates = providerCandidates('codex', {
     platform: 'win32',
@@ -74,6 +93,19 @@ test('packaged Scout derives LocalAppData from its own runtime path', () => {
     resolve: () => null,
   });
   assert.equal(candidates[0], 'C:\\Users\\ScoutQA\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe');
+});
+
+test('packaged Scout gives provider turns the interactive user home', () => {
+  const env = providerEnvironment(
+    { Path: 'C:\\Windows\\System32' },
+    'win32',
+    'C:\\Users\\ScoutQA\\AppData\\Local\\Programs\\Scout\\runtime\\ScoutRuntime.exe',
+  );
+  assert.equal(env.USERPROFILE, 'C:\\Users\\ScoutQA');
+  assert.equal(env.HOME, 'C:\\Users\\ScoutQA');
+  assert.equal(env.LOCALAPPDATA, 'C:\\Users\\ScoutQA\\AppData\\Local');
+  assert.equal(env.APPDATA, 'C:\\Users\\ScoutQA\\AppData\\Roaming');
+  assert.match(env.Path, /C:\\Users\\ScoutQA\\\.local\\bin/i);
 });
 
 test('provider checks receive the augmented environment', () => {

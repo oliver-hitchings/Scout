@@ -31,7 +31,7 @@ Scout is not an auto-apply tool. It does not invent qualifications, infer positi
 1. Install Scout from the release page and launch it. For a source checkout, see [Development setup](#development-setup).
 2. Choose or create a workspace. The default is `%USERPROFILE%\Documents\Scout Workspace`.
 3. Install and sign in to either Codex or Claude, then let Scout verify it.
-4. Import a CV and complete the onboarding interview. Review every generated file before accepting it.
+4. Import a CV, answer the setup questions, and generate one bounded proposal. Review every staged file before explicitly activating it.
 5. Optionally add Adzuna credentials, run `scout doctor`, then perform one supervised scan.
 6. Only after reviewing that scan, enable the daily schedule.
 
@@ -81,7 +81,7 @@ Run `scout` without arguments for command help.
 
 ## Development setup
 
-Requirements: Windows 10/11, Node.js 20 or later, Git, and at least one authenticated provider CLI.
+Requirements: Windows 10/11, Node.js 24 LTS, Git for source development, and at least one authenticated compatible provider CLI.
 
 ```powershell
 git clone https://github.com/oliver-hitchings/Scout.git

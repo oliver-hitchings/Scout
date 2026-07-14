@@ -87,6 +87,11 @@ namespace ScoutHost {
     }
 
     void Quit() {
+      if (!HasScheduledScans()) {
+        var choice = MessageBox.Show("Quit Scout? No daily scan is currently scheduled.", "Quit Scout", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+        if (choice != DialogResult.Yes) return;
+        StopServer(); tray.Visible = false; tray.Dispose(); ExitThread(); return;
+      }
       using (var dialog = new QuitDialog()) {
         var choice = dialog.ShowDialog();
         if (choice == DialogResult.Cancel) return;
@@ -96,6 +101,14 @@ namespace ScoutHost {
         }
       }
       StopServer(); tray.Visible = false; tray.Dispose(); ExitThread();
+    }
+
+    bool HasScheduledScans() {
+      try {
+        var status = new JavaScriptSerializer().Deserialize<System.Collections.Generic.Dictionary<string, object>>(Get("api/setup/status"));
+        var schedule = status["schedule"] as System.Collections.Generic.Dictionary<string, object>;
+        return schedule != null && schedule.ContainsKey("enabled") && Convert.ToBoolean(schedule["enabled"]);
+      } catch { return false; }
     }
 
     void StopServer() {

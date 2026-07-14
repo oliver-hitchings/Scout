@@ -63,7 +63,7 @@ export function scanHealthFromText(text, today) {
   const lastDate = String(last.timestamp || '').slice(0, 10);
   const stale = lastDate !== today;
   const runErrors = Array.isArray(last.errors) ? last.errors : [];
-  const degraded = Boolean(last.search_degraded || last.degraded);
+  const degraded = Boolean(last.search_degraded || last.degraded || last.degradation?.degraded);
   const healthy = !stale && !degraded && runErrors.length === 0 && parsed.errors.length === 0;
   let reason = null;
   if (stale) reason = `no run recorded for ${today}`;
@@ -77,11 +77,11 @@ export function scanHealthFromText(text, today) {
     stale,
     degraded,
     reason,
-    sourcesChecked: last.sources_checked || last.sourcesChecked || [],
+    sourcesChecked: last.sources_checked || last.sourcesChecked || last.checked_sources || [],
     atsPortalsChecked: last.ats_portals_checked || last.atsPortalsChecked || 0,
-    candidatesFound: last.candidates_found ?? last.candidatesFound ?? null,
-    keepersAdded: last.keepers_added ?? last.keepersAdded ?? null,
-    discarded: last.discarded || {},
+    candidatesFound: last.candidates_found ?? last.candidatesFound ?? last.candidate_count ?? null,
+    keepersAdded: last.keepers_added ?? last.keepersAdded ?? last.keeper_count ?? null,
+    discarded: last.discarded || last.discarded_reasons || {},
     errors: runErrors,
     sourceHealth: normaliseSourceHealth(last),
     runs: parsed.runs.length,

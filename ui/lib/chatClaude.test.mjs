@@ -37,14 +37,16 @@ test('parseClaudeLine: assistant message yields deltas and tools', () => {
       content: [
         { type: 'text', text: 'Working on it.' },
         { type: 'tool_use', name: 'Edit', input: { file_path: 'C:/repo/applications/acme/cv.typ' } },
+        { type: 'tool_use', name: 'Read', input: { file_path: 'C:/repo/profile/context.md' } },
         { type: 'tool_use', name: 'Bash', input: { command: 'typst compile …' } },
       ],
     },
   });
   assert.deepEqual(parseClaudeLine(line), [
     { kind: 'delta', text: 'Working on it.' },
-    { kind: 'tool', label: 'Edit: C:/repo/applications/acme/cv.typ', file: 'C:/repo/applications/acme/cv.typ', activity: 'writing' },
-    { kind: 'tool', label: 'Bash', file: null, activity: 'thinking' },
+    { kind: 'tool', label: 'Edit: C:/repo/applications/acme/cv.typ', file: 'C:/repo/applications/acme/cv.typ', mutatesFile: true, activity: 'writing' },
+    { kind: 'tool', label: 'Read: C:/repo/profile/context.md', file: 'C:/repo/profile/context.md', mutatesFile: false, activity: 'searching' },
+    { kind: 'tool', label: 'Bash', file: null, mutatesFile: false, activity: 'thinking' },
   ]);
 });
 
@@ -63,6 +65,11 @@ test('parseClaudeLine: error result has ok false', () => {
   const line = JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'boom' });
   const events = parseClaudeLine(line);
   assert.equal(events.at(-1).ok, false);
+});
+
+test('parseClaudeLine: structured output is the authoritative result text', () => {
+  const line = JSON.stringify({ type: 'result', is_error: false, result: 'ignored', structured_output: { answer: 'bounded' } });
+  assert.equal(parseClaudeLine(line).at(-1).text, '{"answer":"bounded"}');
 });
 
 test('parseClaudeLine: malformed and unknown lines yield []', () => {

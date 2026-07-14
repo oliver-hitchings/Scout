@@ -7,12 +7,12 @@ Scout is a local-first opportunity finder for Windows, macOS and Linux. It keeps
 Download the Windows installer and its `checksums.txt` from the same GitHub release. Compare the installer SHA-256 hash before running it:
 
 ```powershell
-Get-FileHash .\Scout-0.1.0-beta.9-windows-x64.exe -Algorithm SHA256
+Get-FileHash .\Scout-0.1.0-beta.10-windows-x64.exe -Algorithm SHA256
 ```
 
 The first unsigned beta may trigger Microsoft SmartScreen. A matching checksum proves file integrity, not publisher trust. Scout installs for the current user under `%LOCALAPPDATA%\Programs\Scout` and does not require administrator rights.
 
-For a source checkout, install Node.js 20+, then run `npm install` and `npm start`.
+For a source checkout, install Node.js 24 LTS, then run `npm ci` and `npm start`.
 
 ## 2. Create a private workspace
 
@@ -59,7 +59,7 @@ See [Providers](PROVIDERS.md) if detection or authentication fails.
 
 The first-run wizard accepts selectable-text PDF, DOCX, Markdown and plain text files up to 10 MB. Scanned PDFs need OCR before import. Review the extracted text and every generated profile/configuration change; Scout must not invent missing facts.
 
-Complete the setup interview with your role families, sectors, locations, minimum salary, commute preferences, exclusions and preferred writing tone. See [AI Setup](AI_SETUP.md) for a guided route or [Configuration](CONFIGURATION.md) for manual editing.
+Complete the setup questions for your role families, sectors, locations, minimum salary, commute preferences, exclusions and preferred writing tone. Scout then makes one schema-constrained proposal from those fields and the imported evidence. Review or discard the five staged files before activation. See [AI Setup](AI_SETUP.md) for details or [Configuration](CONFIGURATION.md) for manual editing.
 
 Scout uses these approved answers, the imported CV and generated search lanes to find and score jobs. It does not inspect unrelated Codex/Claude conversations or automatically infer a career from previous AI usage.
 

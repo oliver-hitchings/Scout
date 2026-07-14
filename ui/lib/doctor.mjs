@@ -26,12 +26,12 @@ export function doctor(workspaceRoot) {
   checks.tracker = { ok: fs.existsSync(paths.tracker), path: paths.tracker };
   const git = binary('git');
   const typst = binary('typst');
-  checks.git = { ok: git.available, ...git };
+  checks.git = { ok: git.available, ...git, optional: true };
   checks.typst = { ok: typst.available, ...typst, optional: true };
   checks.providers = detectProviders();
   const env = { ...loadEnv(workspaceRoot), ...process.env };
   checks.adzuna = { ok: !!(env.ADZUNA_APP_ID && env.ADZUNA_API_KEY), optional: true };
   const providerReady = Object.values(checks.providers).some((p) => p.installed && p.authenticated);
-  const required = checks.config.ok && checks.tracker.ok && checks.git.ok && providerReady;
+  const required = checks.config.ok && checks.tracker.ok && providerReady;
   return { ok: required, workspaceRoot, checks };
 }

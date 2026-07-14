@@ -7,13 +7,14 @@ This page tracks confirmed problems in released Scout packages. Check
 
 - **Affected release:** Scout `0.1.0-beta.9`
 - **First recorded:** 2026-07-14
-- **Status:** Fix prepared; not yet included in a published release.
+- **Status:** Resolved in Scout `0.1.0-beta.10` after installed-VM acceptance.
 
 On the confirmed affected setup, Scout found the correct Codex path but Windows
 returned `ENOENT` when the tray host launched Codex from inside its process Job
 Object. Running the same Scout runtime outside that Job Object detected and
-authenticated Codex normally. The prepared fix replaces Job Object cleanup with
-Scout's explicit local shutdown endpoint.
+authenticated Codex normally. The beta.10 fix replaces Job Object cleanup with
+Scout's explicit local shutdown endpoint and checks official per-user provider
+locations from the packaged runtime environment.
 
 On some Windows installations, Scout's provider check displays:
 

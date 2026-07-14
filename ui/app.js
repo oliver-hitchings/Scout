@@ -654,6 +654,7 @@ const Scout = {
         ${hasOutreach
           ? `<button class="act" onclick="Scout.seeCoverLetter(${slugArg})">see cover letter</button>`
           : `<button class="act bridge" onclick="Scout.openChat(${idArg},'coverLetter')">create custom cover letter</button>`}
+        <button class="act bridge" onclick="Scout.openChat(${idArg},'fit')">fit and evidence gaps</button>
         <button class="act bridge" onclick="Scout.openChat(${idArg},'ask')">ask about this job</button>
       </div>`;
   },
@@ -967,6 +968,7 @@ const Scout = {
       streaming: !!r.busy,
       recovering: !!r.busy,
       pollTimer: null,
+      mode: prefillKey === 'fit' ? 'fit-assessment' : null,
     };
     this.chat = c;
     this.renderChatDrawer();
@@ -1164,7 +1166,7 @@ const Scout = {
       const resp = await fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: c.id, engine: c.engine, text }),
+        body: JSON.stringify({ id: c.id, engine: c.engine, text, mode: c.mode }),
       });
       const ct = resp.headers.get('content-type') || '';
       if (!resp.ok || !ct.includes('event-stream')) {
@@ -1206,6 +1208,7 @@ const Scout = {
       c.data.messages.push({ role: 'user', text }, { role: 'system', text: e.message });
     }
     c.streaming = false;
+    c.mode = null;
     if (this.chat !== c) return;
     if (terminalError && startedWithoutSession) {
       const message = terminalError;

@@ -44,9 +44,12 @@ export function triage(data, today, policy = {}) {
     const due = followUpsDue(e, today, policy);
     if (due.length) followups.push({ entry: e, due });
     const s = e.score;
-    if (e.status === 'new' && typeof s === 'number' && s >= actionScore) action.push(e);
+    const eligibility = e.eligibility?.status;
+    const actionEligible = !eligibility || eligibility === 'eligible';
+    const checkEligible = !eligibility || eligibility === 'check';
+    if (e.status === 'new' && actionEligible && typeof s === 'number' && s >= actionScore) action.push(e);
     else if (e.status === 'new' && typeof s === 'number' && s >= checkScore && s < actionScore
-      && (e.tags || []).some((t) => t.includes('Check'))) unlock.push(e);
+      && checkEligible && (eligibility === 'check' || (e.tags || []).some((t) => t.includes('Check')))) unlock.push(e);
     else other.push(e);
   }
   action.sort((a, b) => b.score - a.score);

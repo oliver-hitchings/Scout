@@ -17,6 +17,9 @@ import { detectProviders } from './lib/providers.mjs';
 import { doctor } from './lib/doctor.mjs';
 import { extractCvText } from './lib/cvImport.mjs';
 import { setupReadiness } from './lib/setupReadiness.mjs';
+import {
+  activateOnboardingProposal, createOnboardingProposal, discardOnboardingProposal, readOnboardingProposal,
+} from './lib/onboardingProposal.mjs';
 import { loadDeviceSettings, pendingDeviceSections, saveDeviceSettings, setWindowsStartup } from './lib/deviceSettings.mjs';
 import { checkForUpdate } from './lib/updates.mjs';
 import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
@@ -136,7 +139,9 @@ function guardLocalRequest(req, res, url) {
     }
   }
 
-  if (url.pathname.startsWith('/api/chat/')) {
+  const requiresJson = url.pathname.startsWith('/api/chat/')
+    || ['POST /api/setup/proposal', 'POST /api/setup/activate', 'DELETE /api/setup/proposal'].includes(`${req.method} ${url.pathname}`);
+  if (requiresJson) {
     const mediaType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
     if (mediaType !== 'application/json') {
       sendJson(res, 415, { error: 'application/json required' });
@@ -195,6 +200,10 @@ function handleRead(req, res, url) {
       device: process.platform === 'win32' ? loadDeviceSettings() : null,
       pendingSetupSections: [...pendingWorkspaceSections(readiness.established ? { ...config.setup, completedAt: config.setup?.completedAt || 'legacy' } : config.setup), ...pendingDeviceSections(loadDeviceSettings())],
     });
+  }
+  if (req.method === 'GET' && url.pathname === '/api/setup/proposal') {
+    try { return sendJson(res, 200, { proposal: readOnboardingProposal(WORKSPACE_ROOT) }); }
+    catch (e) { return sendJson(res, 400, { error: e.message }); }
   }
   if (req.method === 'GET' && url.pathname === '/api/app-info') {
     return sendJson(res, 200, {
@@ -461,6 +470,26 @@ routes['POST /api/cv/quality/override'] = (req, res, body) => {
 };
 
 import { registerChatRoutes } from './lib/chatService.mjs';
+let proposalGenerationRunning = false;
+routes['POST /api/setup/proposal'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  const provider = b.provider || loadWorkspaceConfig(WORKSPACE_ROOT).ai?.provider;
+  if (!['codex', 'claude'].includes(provider)) return replyJson(res, 400, { error: 'choose an authenticated AI provider first' });
+  if (proposalGenerationRunning) return replyJson(res, 409, { error: 'an onboarding proposal is already being generated' });
+  proposalGenerationRunning = true;
+  try { return replyJson(res, 200, await createOnboardingProposal(WORKSPACE_ROOT, provider)); }
+  catch (e) { return replyJson(res, 400, { error: e.message }); }
+  finally { proposalGenerationRunning = false; }
+};
+
+routes['POST /api/setup/activate'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  try { return replyJson(res, 200, activateOnboardingProposal(WORKSPACE_ROOT, b.proposalId || '', b.confirmed)); }
+  catch (e) { return replyJson(res, 409, { error: e.message }); }
+};
+
+routes['DELETE /api/setup/proposal'] = (req, res) => replyJson(res, 200, discardOnboardingProposal(WORKSPACE_ROOT));
+
 routes['POST /api/setup/config'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try {
@@ -492,6 +521,10 @@ routes['POST /api/setup/complete'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try {
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
+    if (!config.setup?.completedAt) {
+      const readiness = setupReadiness(WORKSPACE_ROOT, config, detectProviders(), readTracker());
+      if (!readiness.ready) return replyJson(res, 409, { error: 'review and activate a complete onboarding proposal before finishing setup' });
+    }
     config.setup = { ...config.setup, completedAt: new Date().toISOString(), completedSections: completedWorkspaceSections({ completedAt: new Date().toISOString() }) };
     writeWorkspaceConfig(WORKSPACE_ROOT, config);
     if (process.platform === 'win32') {

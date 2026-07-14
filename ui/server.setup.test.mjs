@@ -5,6 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { deflateSync } from 'node:zlib';
 
 const appRoot = path.resolve(import.meta.dirname, '..');
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-setup-http-'));
@@ -32,6 +33,32 @@ function simplePdf(text = '') {
   pdf += offsets.slice(1).map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(pdf);
+}
+
+function compressedPdf(text) {
+  const escaped = text.replace(/([\\()])/g, '\\$1');
+  const stream = deflateSync(Buffer.from(`BT /F1 12 Tf 50 750 Td (${escaped}) Tj ET`));
+  const objects = [
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'),
+    Buffer.from('<< /Type /Pages /Kids [3 0 R] /Count 1 >>'),
+    Buffer.from('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>'),
+    Buffer.concat([Buffer.from(`<< /Length ${stream.length} /Filter /FlateDecode >>\nstream\n`), stream, Buffer.from('\nendstream')]),
+    Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'),
+  ];
+  const chunks = [Buffer.from('%PDF-1.4\n')];
+  const offsets = [0];
+  let length = chunks[0].length;
+  objects.forEach((object, index) => {
+    offsets.push(length);
+    const value = Buffer.concat([Buffer.from(`${index + 1} 0 obj\n`), object, Buffer.from('\nendobj\n')]);
+    chunks.push(value);
+    length += value.length;
+  });
+  const xref = length;
+  chunks.push(Buffer.from(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`));
+  chunks.push(Buffer.from(offsets.slice(1).map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')));
+  chunks.push(Buffer.from(`trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`));
+  return Buffer.concat(chunks);
 }
 
 function blankPdf() {
@@ -177,15 +204,15 @@ test('saving setup config seeds a fresh generic workspace', async () => {
   assert.doesNotMatch(fs.readFileSync(path.join(workspace, 'profile', 'context.md'), 'utf8'), /Oliver|hardware|electronics/i);
 });
 
-test('setup completion is persisted in the private workspace', async () => {
+test('fresh setup cannot be marked complete before trusted proposal activation', async () => {
   const completed = await request({ method: 'POST', route: '/api/setup/complete', body: {} });
-  assert.equal(completed.status, 200);
-  assert.match(completed.json.completedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(completed.status, 409);
+  assert.match(completed.json.error, /activate a complete onboarding proposal/);
 
   const status = await request({ route: '/api/setup/status' });
-  assert.equal(status.json.setupComplete, true);
+  assert.equal(status.json.setupComplete, false);
   const saved = JSON.parse(fs.readFileSync(path.join(workspace, 'workspace.json'), 'utf8'));
-  assert.equal(saved.setup.completedAt, completed.json.completedAt);
+  assert.equal(saved.setup.completedAt, null);
 });
 
 test('configured categories and triage thresholds flow through the opportunities API', async () => {
@@ -252,6 +279,16 @@ test('CV import extracts a representative selectable-text PDF', async () => {
   });
   assert.equal(response.status, 200, JSON.stringify(response.json));
   assert.match(response.json.text, /Synthetic candidate experience/);
+});
+
+test('CV import extracts a compressed selectable-text PDF on Node 24', async () => {
+  const content = 'Synthetic candidate experience in firmware, software, and product delivery';
+  const response = await request({
+    method: 'POST', route: '/api/setup/import-cv',
+    body: { name: 'compressed-cv.pdf', base64: compressedPdf(content).toString('base64') },
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.json));
+  assert.match(response.json.text, /firmware, software, and product delivery/);
 });
 
 test('CV import extracts a representative DOCX file', async () => {

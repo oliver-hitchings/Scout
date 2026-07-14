@@ -136,6 +136,18 @@ test('restart rejects a cross-origin browser request', async () => {
   assert.equal(response.status, 403);
 });
 
+test('bounded setup mutations require same-origin JSON requests', async () => {
+  const host = `127.0.0.1:${port}`;
+  const wrongType = await request({
+    method: 'POST', path: '/api/setup/proposal', headers: { host, origin: `http://${host}`, 'content-type': 'text/plain' }, body: '{}',
+  });
+  assert.equal(wrongType.status, 415);
+  const crossOrigin = await request({
+    method: 'POST', path: '/api/setup/activate', headers: { host, origin: 'https://attacker.example', 'content-type': 'application/json' }, body: '{}',
+  });
+  assert.equal(crossOrigin.status, 403);
+});
+
 test('shutdown responds before scheduling process exit', async () => {
   const originalExit = shutdownControl.exit;
   let exited = false;

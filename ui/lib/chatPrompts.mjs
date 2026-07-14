@@ -24,6 +24,7 @@ export function buildPrefills(entry, options = {}) {
   ].join(' ');
   return {
     ask: '',
+    fit: `Give me a short, evidence-led fit and gap assessment for ${entry.company} (${entry.role}).`,
     cv: `Create a tailored CV for ${entry.company} (${entry.role}) at ${cvPath}, in Typst, `
       + `${methods} Do not write the CV until I finish or skip the evidence questions. `
       + `Draw only on cv/master-cv.md and the tracker entry for ${entry.id} in data/opportunities.json - invent nothing. `

@@ -10,12 +10,20 @@ export function codexToolActivity(type, value = '') {
 }
 
 export function buildCodexArgs(resumeId, options = {}) {
+  const reasoningEffort = options.reasoningEffort || 'high';
+  if (!['low', 'medium', 'high', 'xhigh'].includes(reasoningEffort)) throw new Error(`invalid reasoning effort: ${reasoningEffort}`);
   const args = [
     'exec', '--json',
-    '-c', 'model_reasoning_effort="high"',
+    '-c', `model_reasoning_effort="${reasoningEffort}"`,
     '--sandbox', 'workspace-write',
     '--skip-git-repo-check',
   ];
+  const platform = options.platform || process.platform;
+  if (platform === 'win32') {
+    const windowsSandbox = options.windowsSandbox || 'unelevated';
+    if (!['elevated', 'unelevated'].includes(windowsSandbox)) throw new Error(`invalid Windows sandbox: ${windowsSandbox}`);
+    args.push('-c', `windows.sandbox="${windowsSandbox}"`);
+  }
   const model = assertSafeModel(options.model);
   if (model) args.push('--model', model);
   if (resumeId) {
@@ -44,7 +52,7 @@ export function parseCodexLine(line) {
       return (it.changes || [])
         .map((c) => c && c.path)
         .filter(Boolean)
-        .map((f) => ({ kind: 'tool', label: `edit: ${f}`, file: f, activity: codexToolActivity('file_change', f) }));
+        .map((f) => ({ kind: 'tool', label: `edit: ${f}`, file: f, mutatesFile: true, activity: codexToolActivity('file_change', f) }));
     }
     if (it.type === 'command_execution') {
       return [{ kind: 'tool', label: `run: ${it.command || ''}`.trim(), file: null, activity: codexToolActivity('command', it.command) }];

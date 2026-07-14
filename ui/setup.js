@@ -65,31 +65,11 @@ export function formatLocalDateTime(value, locale = 'en-GB') {
 }
 
 export function handoffAction(ready) {
-  return { label: 'Continue to first scan', defer: false, ready: Boolean(ready) };
+  return { label: ready ? 'Continue to first scan' : 'Activate a proposal to continue', defer: false, ready: Boolean(ready) };
 }
 
-export function shouldAutoRunFirstScan(scanHealth = {}) {
-  return !scanHealth.lastRunAt;
-}
-
-export function buildOnboardingPrompt({ workspaceRoot, provider, imported, config } = {}) {
-  const cvLine = imported?.extracted
-    ? `Use the locally extracted CV at ${imported.extracted} as evidence.`
-    : 'No CV was imported; ask me for career evidence before drafting profile or CV content.';
-  const interests = [
-    ...(config?.search?.roleFamilies || []),
-    ...(config?.search?.sectors || []),
-  ];
-  return [
-    'Use $onboard-scout to finish setting up and tuning my private Scout workspace.',
-    workspaceRoot ? `Workspace: ${workspaceRoot}` : '',
-    provider ? `Selected AI provider: ${provider}` : '',
-    cvLine,
-    interests.length ? `Initial interests: ${interests.join(', ')}.` : '',
-    'Read workspace.json and the imported evidence, then ask only the targeted questions needed to fill gaps in my experience, desired roles, sectors, salary/equity, locations, remote and commute preferences, dealbreakers, communication tone and employer watchlists.',
-    'Never invent qualifications, achievements, compensation or contact details. Stage the profile, calibration, master CV, search lanes and source configuration for my review; validate them and ask for approval before activation.',
-    'Scout must remain local-first and must never send an application or outreach message.',
-  ].filter(Boolean).join('\n\n');
+export function shouldAutoRunFirstScan(scanHealth = {}, ready = true) {
+  return Boolean(ready && !scanHealth.lastRunAt);
 }
 
 async function requestJson(pathname, options) {
@@ -111,6 +91,7 @@ const Setup = {
   preferenceStep: 0,
   preferenceDraft: null,
   incrementalSection: null,
+  proposal: null,
 
   el(id) { return document.getElementById(id); },
 
@@ -125,6 +106,7 @@ const Setup = {
   async refreshStatus({ keepOpen = false } = {}) {
     try {
       this.status = await requestJson('/api/setup/status');
+      this.proposal = (await requestJson('/api/setup/proposal')).proposal;
       window.Scout?.applyWorkspaceConfig?.(this.status.config);
       this.el('setup-title').textContent = this.status.established ? 'Scout settings' : 'Set up Scout';
       this.el('setup-subtitle').textContent = this.status.established
@@ -280,14 +262,19 @@ const Setup = {
   providerCard(name) {
     const provider = this.status?.providers?.[name] || {};
     const selected = (this.status?.config?.ai?.provider || '') === name;
-    const state = !provider.installed ? 'Not installed' : provider.authenticated ? 'Installed and signed in' : 'Installed; sign-in required';
+    const compatible = Boolean(provider.authenticated && provider.capabilities?.structuredOutput !== false);
+    const state = !provider.installed ? 'Not installed'
+      : !provider.authenticated ? 'Installed; sign-in required'
+        : compatible ? 'Installed, signed in and compatible' : 'Installed and signed in; CLI update required';
     const login = name === 'codex' ? 'codex login' : 'claude auth login';
     const guide = name === 'codex' ? 'https://developers.openai.com/codex/cli/' : 'https://docs.anthropic.com/en/docs/claude-code/setup';
-    return `<label class="setup-provider ${provider.authenticated ? 'available' : ''}">
-      <input type="radio" name="setup-provider" value="${name}" ${selected ? 'checked' : ''} ${provider.authenticated ? '' : 'disabled'}>
+    return `<label class="setup-provider ${compatible ? 'available' : ''}">
+      <input type="radio" name="setup-provider" value="${name}" ${selected ? 'checked' : ''} ${compatible ? '' : 'disabled'}>
       <strong>${name[0].toUpperCase() + name.slice(1)}</strong>
       <span class="meta">${state}</span>
-      ${provider.authenticated ? '' : `<span class="meta"><a href="${guide}" target="_blank" rel="noreferrer">Official installation guide</a>. Open Windows PowerShell or your normal terminal, run <code>${login}</code>, complete its official CLI login flow, then refresh. A desktop-app login may not authenticate the command-line provider Scout uses. Your provider account may have separate usage limits or costs.</span>`}
+      ${compatible ? '' : provider.authenticated
+        ? `<span class="meta">Update this CLI from its <a href="${guide}" target="_blank" rel="noreferrer">official installation guide</a>, then refresh. Scout requires schema-constrained output for bounded workflows.</span>`
+        : `<span class="meta"><a href="${guide}" target="_blank" rel="noreferrer">Official installation guide</a>. Open Windows PowerShell or your normal terminal, run <code>${login}</code>, complete its official CLI login flow, then refresh. A desktop-app login may not authenticate the command-line provider Scout uses. Your provider account may have separate usage limits or costs.</span>`}
     </label>`;
   },
 
@@ -366,26 +353,18 @@ const Setup = {
 
   renderHandoff() {
     const action = handoffAction(this.status?.ready);
-    const prompt = buildOnboardingPrompt({
-      workspaceRoot: this.status?.workspaceRoot,
-      provider: this.status?.config?.ai?.provider,
-      imported: this.imported,
-      config: this.status?.config,
-    });
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame" role="img" aria-label="Scout is ready to talk"></span></div><div class="scout-bubble tail-left">
-      <h2>Would you like me to strengthen your CV and search?</h2>
-      <p>I can ask a few focused questions about the work you want, your experience, achievements and dealbreakers. I’ll use your answers to propose a stronger evidence-led CV and better-matched searches.</p>
-      <p><button id="setup-open-chat" class="act primary" type="button">${this.status?.ready ? 'Talk to Scout again' : 'Start questions'}</button></p>
-      <p class="meta">This is optional. You can finish setup now and return from Settings whenever you are ready. Nothing is activated without your review and approval.</p>
-      <details><summary class="meta">Already started?</summary><p><button id="setup-review-chat" class="act" type="button">Review staged changes</button> <button id="setup-approve-chat" class="act" type="button">Approve after review</button></p></details>
+      <h2>Generate your evidence-led CV and search proposal</h2>
+      <p>Scout will use the answers and evidence you supplied to propose a CV, profile, scoring calibration and search lanes. Activation is required before the first scan.</p>
+      <p><button id="setup-generate-proposal" class="act primary" type="button">${this.proposal ? 'Regenerate proposal' : 'Generate proposal'}</button></p>
+      <p class="meta">Scout sends only your bounded setup answers and imported CV evidence. It stages validated changes for review and never activates them automatically.</p>
+      ${this.proposal ? `<div class="setup-callout"><strong>Proposal ready</strong><p>${this.escape(this.proposal.summary || '')}</p>${(this.proposal.unresolvedQuestions || []).length ? `<p class="bad">Resolve first: ${this.escape(this.proposal.unresolvedQuestions.join('; '))}</p>` : ''}<details><summary>Review staged files</summary>${(this.proposal.files || []).map((file) => `<h3>${this.escape(file.path)}</h3><pre class="setup-preview">${this.escape(file.staged)}</pre>`).join('')}</details><p><button id="setup-activate-proposal" class="act primary" type="button" ${(this.proposal.unresolvedQuestions || []).length ? 'disabled' : ''}>Approve and activate</button> <button id="setup-discard-proposal" class="act" type="button">Discard</button></p></div>` : ''}
       </div></div>
-      <textarea id="setup-ai-prompt" class="setup-prompt hidden" readonly></textarea>
-      <div class="setup-callout"><strong>${this.status?.ready ? 'CV and search enrichment complete' : 'Your initial setup is complete'}</strong><p>${this.status?.ready ? 'Your approved evidence and settings are ready for a supervised first scan.' : 'Scout can already save your preferences. The optional interview makes your CV and opportunity scoring more useful, but it does not block you from finishing setup.'}</p></div>`;
-    this.el('setup-ai-prompt').value = prompt;
-    this.el('setup-open-chat').addEventListener('click', () => this.openScoutChat('ask'));
-    this.el('setup-review-chat').addEventListener('click', () => this.openScoutChat('review'));
-    this.el('setup-approve-chat').addEventListener('click', () => this.openScoutChat('approve'));
+      <div class="setup-callout"><strong>${this.status?.ready ? 'Proposal activated' : 'Review and activation required'}</strong><p>${this.status?.ready ? 'Your approved evidence and settings are ready for a supervised first scan.' : 'Generate a complete proposal, review all five files and activate them before continuing.'}</p></div>`;
+    this.el('setup-generate-proposal').addEventListener('click', () => this.generateProposal());
+    this.el('setup-activate-proposal')?.addEventListener('click', () => this.activateProposal());
+    this.el('setup-discard-proposal')?.addEventListener('click', () => this.discardProposal());
     this.el('setup-next').textContent = action.label;
   },
 
@@ -411,9 +390,40 @@ const Setup = {
   async runSupervisedScan() {
     this.setBusy(true); this.setMessage('Scout is searching and scoring. This can take several minutes…');
     try {
-      await requestJson('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: this.status?.config?.ai?.provider }) });
-      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage('Scan completed. Review the dashboard results before enabling automation.', 'good');
+      const result = await requestJson('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: this.status?.config?.ai?.provider }) });
+      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render();
+      this.setMessage(result.status === 'degraded'
+        ? 'Scan completed with degraded source coverage. Review the source details and retry before enabling automation.'
+        : 'Scan completed. Review the dashboard results before enabling automation.', result.status === 'degraded' ? 'warning' : 'good');
       window.Scout?.loadOpportunities?.();
+    } catch (error) { this.setMessage(error.message, 'error'); }
+    finally { this.setBusy(false); }
+  },
+
+  async generateProposal() {
+    this.setBusy(true); this.setMessage('Scout is generating one bounded, evidence-led proposal…');
+    try {
+      await requestJson('/api/setup/proposal', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: this.status?.config?.ai?.provider }) });
+      await this.refreshStatus({ keepOpen: true }); this.render(); this.setMessage('Proposal ready. Review every staged file before activation.', 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+    finally { this.setBusy(false); }
+  },
+
+  async activateProposal() {
+    if (!this.proposal || !window.confirm('Activate exactly the reviewed staged files? Scout will create backups first.')) return;
+    this.setBusy(true);
+    try {
+      await requestJson('/api/setup/activate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ proposalId: this.proposal.proposalId, confirmed: true }) });
+      await this.refreshStatus({ keepOpen: true }); this.render(); this.setMessage('Proposal activated from trusted Scout controls. No extra AI turn was used.', 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+    finally { this.setBusy(false); }
+  },
+
+  async discardProposal() {
+    this.setBusy(true);
+    try {
+      await requestJson('/api/setup/proposal', { method: 'DELETE', headers: { 'content-type': 'application/json' } });
+      await this.refreshStatus({ keepOpen: true }); this.render(); this.setMessage('Staged proposal discarded.', 'good');
     } catch (error) { this.setMessage(error.message, 'error'); }
     finally { this.setBusy(false); }
   },
@@ -459,7 +469,7 @@ const Setup = {
   },
 
   selectedProvider() {
-    return document.querySelector('input[name="setup-provider"]:checked')?.value || '';
+    return document.querySelector('input[name="setup-provider"]:checked:not(:disabled)')?.value || '';
   },
 
   readPreferences() {
@@ -544,9 +554,10 @@ const Setup = {
       }
       if (this.step === 5) {
         await this.refreshStatus({ keepOpen: true });
+        if (!this.status?.ready) throw new Error('Generate, review and activate a complete proposal before the first scan.');
         this.step += 1;
         this.render();
-        if (shouldAutoRunFirstScan(this.status?.scanHealth)) setTimeout(() => this.runSupervisedScan(), 0);
+        if (shouldAutoRunFirstScan(this.status?.scanHealth, this.status?.ready)) setTimeout(() => this.runSupervisedScan(), 0);
         return;
       }
       if (this.step === STEPS.length - 1) {
