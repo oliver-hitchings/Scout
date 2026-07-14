@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Net;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -29,14 +28,13 @@ namespace ScoutHost {
     const string Url = "http://127.0.0.1:8459/";
     readonly NotifyIcon tray;
     readonly string root;
-    readonly IntPtr job;
+    Process serverProcess;
     System.Windows.Forms.Timer initialTimer;
     System.Windows.Forms.Timer dailyTimer;
     string updateUrl;
 
     public TrayContext(bool background) {
       root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
-      job = Native.CreateKillJob();
       tray = new NotifyIcon();
       tray.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
       tray.Text = "Scout";
@@ -69,8 +67,7 @@ namespace ScoutHost {
       var server = Path.Combine(root, "app", "ui", "server.mjs");
       var startInfo = new ProcessStartInfo(runtime, Quote(server));
       startInfo.WorkingDirectory = Path.Combine(root, "app"); startInfo.UseShellExecute = false; startInfo.CreateNoWindow = true; startInfo.WindowStyle = ProcessWindowStyle.Hidden;
-      var process = Process.Start(startInfo);
-      Native.AssignProcessToJobObject(job, process.Handle);
+      serverProcess = Process.Start(startInfo);
       for (var i = 0; i < 50; i++) { Thread.Sleep(300); try { Get(""); return true; } catch { } }
       MessageBox.Show("Scout did not start. Check the workspace logs.", "Scout", MessageBoxButtons.OK, MessageBoxIcon.Error);
       return false;
@@ -98,7 +95,12 @@ namespace ScoutHost {
           catch (Exception ex) { MessageBox.Show("Daily scans could not be disabled, so Scout remains open. " + ex.Message, "Scout", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
         }
       }
-      tray.Visible = false; tray.Dispose(); Native.CloseHandle(job); ExitThread();
+      StopServer(); tray.Visible = false; tray.Dispose(); ExitThread();
+    }
+
+    void StopServer() {
+      try { Post("api/shutdown", "{}"); return; } catch { }
+      try { if (serverProcess != null && !serverProcess.HasExited) serverProcess.Kill(); } catch { }
     }
 
     static string Quote(string value) { return "\"" + value.Replace("\"", "\\\"") + "\""; }
@@ -121,17 +123,4 @@ namespace ScoutHost {
     }
   }
 
-  static class Native {
-    [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_BASIC_LIMIT_INFORMATION { public long PerProcessUserTimeLimit, PerJobUserTimeLimit; public uint LimitFlags; public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize; public uint ActiveProcessLimit; public UIntPtr Affinity; public uint PriorityClass, SchedulingClass; }
-    [StructLayout(LayoutKind.Sequential)] struct IO_COUNTERS { public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount, ReadTransferCount, WriteTransferCount, OtherTransferCount; }
-    [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION { public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation; public IO_COUNTERS IoInfo; public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed; }
-    [DllImport("kernel32.dll")] static extern IntPtr CreateJobObject(IntPtr attributes, string name);
-    [DllImport("kernel32.dll")] static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length);
-    [DllImport("kernel32.dll")] public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
-    public static IntPtr CreateKillJob() {
-      var job = CreateJobObject(IntPtr.Zero, null); var value = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION(); value.BasicLimitInformation.LimitFlags = 0x2000;
-      var size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)); var ptr = Marshal.AllocHGlobal(size); Marshal.StructureToPtr(value, ptr, false); SetInformationJobObject(job, 9, ptr, (uint)size); Marshal.FreeHGlobal(ptr); return job;
-    }
-  }
 }

@@ -110,6 +110,7 @@ Open `http://127.0.0.1:8459`. Use a synthetic workspace for development and neve
 - [Scheduled scans](docs/AUTOMATION.md)
 - [Upgrades and migrations](docs/UPGRADES.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Known issues](docs/KNOWN_ISSUES.md)
 - [Release process](docs/RELEASE.md)
 - [Repository layout and development boundaries](docs/REPOSITORY_LAYOUT.md)
 

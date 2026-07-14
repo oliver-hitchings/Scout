@@ -45,6 +45,37 @@ test('Codex candidates include the official OpenAI Windows installation', () => 
   assert.equal(candidates[0], 'C:\\Users\\Oli\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe');
 });
 
+test('Windows provider candidates tolerate lowercase packaged-runtime environment keys', () => {
+  const candidates = providerCandidates('codex', {
+    platform: 'win32',
+    env: { userprofile: 'C:\\Users\\ScoutQA', localappdata: 'C:\\Users\\ScoutQA\\AppData\\Local', path: '' },
+    exists: (candidate) => candidate.toLowerCase().endsWith('programs\\openai\\codex\\bin\\codex.exe'),
+    resolve: () => null,
+  });
+  assert.equal(candidates[0], 'C:\\Users\\ScoutQA\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe');
+});
+
+test('Windows provider candidates recover the user home from LocalAppData', () => {
+  const candidates = providerCandidates('claude', {
+    platform: 'win32',
+    env: { LOCALAPPDATA: 'C:\\Users\\ScoutQA\\AppData\\Local', Path: '' },
+    exists: (candidate) => candidate.toLowerCase().endsWith('.local\\bin\\claude.exe'),
+    resolve: () => null,
+  });
+  assert.equal(candidates[0], 'C:\\Users\\ScoutQA\\.local\\bin\\claude.exe');
+});
+
+test('packaged Scout derives LocalAppData from its own runtime path', () => {
+  const candidates = providerCandidates('codex', {
+    platform: 'win32',
+    env: { Path: '' },
+    runtimePath: 'C:\\Users\\ScoutQA\\AppData\\Local\\Programs\\Scout\\runtime\\ScoutRuntime.exe',
+    exists: () => false,
+    resolve: () => null,
+  });
+  assert.equal(candidates[0], 'C:\\Users\\ScoutQA\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe');
+});
+
 test('provider checks receive the augmented environment', () => {
   const calls = [];
   const spawn = (command, args, options) => { calls.push(options); return { status: 0, stdout: 'ok', stderr: '' }; };
@@ -67,6 +98,7 @@ test('Windows provider status uses a resolved native executable directly', () =>
     spawn,
     platform: 'win32',
     env: { USERPROFILE: 'C:\\Users\\example', APPDATA: 'C:\\Users\\example\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\example\\AppData\\Local', Path: 'C:\\Windows\\System32' },
+    exists: () => false,
     resolve: () => 'C:\\Users\\example\\.local\\bin\\claude.exe',
   });
   assert.equal(result.installed, true);

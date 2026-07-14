@@ -5,6 +5,33 @@ import path from 'node:path';
 
 export const PROVIDERS = Object.freeze(['codex', 'claude']);
 
+function envValue(env, name) {
+  const key = Object.keys(env || {}).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+  return key ? env[key] : undefined;
+}
+
+function installedLocalAppData(runtimePath = process.execPath) {
+  const normalized = path.win32.normalize(String(runtimePath || ''));
+  const marker = '\\Programs\\Scout\\runtime\\';
+  const index = normalized.toLowerCase().lastIndexOf(marker.toLowerCase());
+  return index >= 0 ? normalized.slice(0, index) : null;
+}
+
+function windowsHomes(env) {
+  const profile = envValue(env, 'USERPROFILE');
+  const drive = envValue(env, 'HOMEDRIVE');
+  const homePath = envValue(env, 'HOMEPATH');
+  const local = envValue(env, 'LOCALAPPDATA');
+  const roaming = envValue(env, 'APPDATA');
+  return [
+    profile,
+    drive && homePath ? `${drive}${homePath}` : null,
+    local ? path.win32.resolve(local, '..', '..') : null,
+    roaming ? path.win32.resolve(roaming, '..', '..') : null,
+    os.homedir(),
+  ].filter(Boolean);
+}
+
 export function providerCommand(provider, platform = process.platform) {
   if (!PROVIDERS.includes(provider)) throw new Error(`unsupported AI provider: ${provider}`);
   return platform === 'win32' ? `${provider}.cmd` : provider;
@@ -15,18 +42,27 @@ export function providerStatus(provider, {
   platform = process.platform,
   env = process.env,
   resolve = resolveExecutable,
+  exists = fs.existsSync,
+  runtimePath = process.execPath,
   timeoutMs = 10_000,
 } = {}) {
   const providerEnv = providerEnvironment(env, platform);
   const attempts = [];
   let installed = null;
-  for (const candidate of providerCandidates(provider, { platform, env: providerEnv, resolve })) {
+  for (const candidate of providerCandidates(provider, { platform, env: providerEnv, resolve, exists, runtimePath })) {
     const versionCommand = commandInvocation(candidate, ['--version'], { platform, env: providerEnv, resolve: (value) => value });
     const version = spawn(versionCommand.command, versionCommand.args, {
       encoding: 'utf8', windowsHide: true, shell: false, timeout: timeoutMs,
       windowsVerbatimArguments: versionCommand.windowsVerbatimArguments, env: providerEnv,
     });
-    if (version.status !== 0) { attempts.push({ source: providerSource(candidate, providerEnv), result: 'unavailable' }); continue; }
+    if (version.status !== 0) {
+      attempts.push({
+        source: providerSource(candidate, providerEnv), result: 'unavailable',
+        errorCode: version.error?.code || undefined,
+        exitCode: Number.isInteger(version.status) ? version.status : undefined,
+      });
+      continue;
+    }
     const authArgs = provider === 'codex' ? ['login', 'status'] : ['auth', 'status'];
     const authCommand = commandInvocation(candidate, authArgs, { platform, env: providerEnv, resolve: (value) => value });
     const auth = spawn(authCommand.command, authCommand.args, {
@@ -55,17 +91,34 @@ export function providerStatus(provider, {
   return result;
 }
 
-export function providerCandidates(provider, { platform = process.platform, env = process.env, resolve = resolveExecutable, exists = fs.existsSync } = {}) {
-  const home = env.USERPROFILE || env.HOME || os.homedir();
+export function providerCandidates(provider, {
+  platform = process.platform, env = process.env, resolve = resolveExecutable,
+  exists = fs.existsSync, runtimePath = process.execPath,
+} = {}) {
   const list = [];
   const addIfPresent = (candidate) => { if (exists(candidate)) list.push(candidate); };
   if (platform === 'win32') {
-    const local = env.LOCALAPPDATA || path.win32.join(home, 'AppData', 'Local');
-    const roaming = env.APPDATA || path.win32.join(home, 'AppData', 'Roaming');
-    if (provider === 'codex') addIfPresent(path.win32.join(local, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe'));
-    addIfPresent(path.win32.join(roaming, 'npm', `${provider}.cmd`));
-    addIfPresent(path.win32.join(home, '.local', 'bin', `${provider}.exe`));
-    addIfPresent(path.win32.join(home, `.${provider}`, 'bin', `${provider}.exe`));
+    const homes = windowsHomes(env);
+    const runtimeLocal = installedLocalAppData(runtimePath);
+    const locals = [
+      envValue(env, 'LOCALAPPDATA'),
+      runtimeLocal,
+      ...homes.map((home) => path.win32.join(home, 'AppData', 'Local')),
+    ].filter(Boolean);
+    const roamings = [envValue(env, 'APPDATA'), ...homes.map((home) => path.win32.join(home, 'AppData', 'Roaming'))].filter(Boolean);
+    if (provider === 'codex') {
+      // The packaged runtime can receive a restricted environment and has been
+      // observed returning false from existsSync for a sibling per-user app.
+      // Trying this deterministic path is safe: spawn reports it unavailable
+      // when Codex is genuinely absent.
+      if (runtimeLocal) list.push(path.win32.join(runtimeLocal, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe'));
+      for (const local of locals) addIfPresent(path.win32.join(local, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe'));
+    }
+    for (const roaming of roamings) addIfPresent(path.win32.join(roaming, 'npm', `${provider}.cmd`));
+    for (const home of homes) {
+      addIfPresent(path.win32.join(home, '.local', 'bin', `${provider}.exe`));
+      addIfPresent(path.win32.join(home, `.${provider}`, 'bin', `${provider}.exe`));
+    }
   }
   const resolved = resolve(providerCommand(provider, platform), { platform, env });
   if (resolved) list.push(resolved);
@@ -79,22 +132,22 @@ export function providerCandidates(provider, { platform = process.platform, env 
 }
 
 function providerSource(command, env) {
-  const home = env.USERPROFILE || env.HOME || os.homedir();
+  const home = envValue(env, 'USERPROFILE') || envValue(env, 'HOME') || os.homedir();
   return String(command).replace(home, '%USERPROFILE%');
 }
 
 export function providerEnvironment(env = process.env, platform = process.platform) {
   const next = { ...env };
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
-  const home = env.USERPROFILE || env.HOME || os.homedir();
+  const home = envValue(env, 'USERPROFILE') || envValue(env, 'HOME') || os.homedir();
   const pathKey = Object.keys(next).find((key) => key.toLowerCase() === 'path') || (platform === 'win32' ? 'Path' : 'PATH');
   const separator = platform === 'win32' ? ';' : ':';
   const existing = String(next[pathKey] || '');
   const common = platform === 'win32'
     ? [
-        platformPath.join(env.APPDATA || platformPath.join(home, 'AppData', 'Roaming'), 'npm'),
-        platformPath.join(env.ProgramFiles || 'C:\\Program Files', 'nodejs'),
-        platformPath.join(env.LOCALAPPDATA || platformPath.join(home, 'AppData', 'Local'), 'Programs', 'nodejs'),
+        platformPath.join(envValue(env, 'APPDATA') || platformPath.join(home, 'AppData', 'Roaming'), 'npm'),
+        platformPath.join(envValue(env, 'ProgramFiles') || 'C:\\Program Files', 'nodejs'),
+        platformPath.join(envValue(env, 'LOCALAPPDATA') || platformPath.join(home, 'AppData', 'Local'), 'Programs', 'nodejs'),
         platformPath.join(home, '.local', 'bin'),
         platformPath.join(home, '.codex', 'bin'),
       ]

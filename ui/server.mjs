@@ -635,9 +635,18 @@ export const restartControl = {
   },
 };
 
+export const shutdownControl = {
+  exit() { process.exit(0); },
+};
+
 routes['POST /api/restart'] = (req, res) => {
   replyJson(res, 200, { ok: true, restarting: true });
   setTimeout(() => restartControl.respawn(), 200);
+};
+
+routes['POST /api/shutdown'] = (req, res) => {
+  replyJson(res, 200, { ok: true, shuttingDown: true });
+  setTimeout(() => shutdownControl.exit(), 200);
 };
 
 registerChatRoutes({ routes, repoRoot: WORKSPACE_ROOT, readTracker });
