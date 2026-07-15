@@ -67,7 +67,7 @@ test('wrong secrets and modified ciphertext are rejected', () => {
   assert.throws(() => restoreRecoveryBackup(root, fs.mkdtempSync(path.join(os.tmpdir(), 'scout-bad-')), 'wrong but long enough'), /incorrect/);
   const blob = path.join(root, '.scout-backup/v1/files', fs.readdirSync(path.join(root, '.scout-backup/v1/files'))[0]);
   const value = JSON.parse(fs.readFileSync(blob, 'utf8'));
-  value.data = `${value.data.slice(0, -1)}A`;
+  value.data = `${value.data.slice(0, -1)}${value.data.endsWith('A') ? 'B' : 'A'}`;
   fs.writeFileSync(blob, JSON.stringify(value));
   assert.throws(() => restoreRecoveryBackup(root, fs.mkdtempSync(path.join(os.tmpdir(), 'scout-bad-')), 'another sufficiently long passphrase'));
   fs.rmSync(root, { recursive: true, force: true });
