@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildCodexArgs, parseCodexLine } from './chatCodex.mjs';
 
 test('buildCodexArgs: fresh session reads prompt from stdin', () => {
-  assert.deepEqual(buildCodexArgs(null), {
+  assert.deepEqual(buildCodexArgs(null, { platform: 'linux' }), {
     command: process.platform === 'win32' ? 'codex.cmd' : 'codex',
     args: [
       'exec', '--json',
@@ -14,7 +14,7 @@ test('buildCodexArgs: fresh session reads prompt from stdin', () => {
 });
 
 test('buildCodexArgs: resume follows exec-level flags, rejects bad ids', () => {
-  const { args } = buildCodexArgs('thread-42');
+  const { args } = buildCodexArgs('thread-42', { platform: 'linux' });
   assert.deepEqual(args, [
     'exec', '--json',
     '-c', 'model_reasoning_effort="high"',
@@ -23,6 +23,8 @@ test('buildCodexArgs: resume follows exec-level flags, rejects bad ids', () => {
   ]);
   assert.ok(buildCodexArgs(null, { model: 'gpt-example' }).args.includes('gpt-example'));
   assert.throws(() => buildCodexArgs('x; echo pwned'), /invalid session id/i);
+  const windows = buildCodexArgs(null, { platform: 'win32' });
+  assert.ok(windows.args.includes('windows.sandbox="unelevated"'));
 });
 
 test('parseCodexLine: current shape', () => {
@@ -40,8 +42,8 @@ test('parseCodexLine: current shape', () => {
       item: { type: 'file_change', changes: [{ path: 'applications/acme/cv.typ' }, { path: 'applications/acme/outreach.md' }] },
     })),
     [
-      { kind: 'tool', label: 'edit: applications/acme/cv.typ', file: 'applications/acme/cv.typ', activity: 'writing' },
-      { kind: 'tool', label: 'edit: applications/acme/outreach.md', file: 'applications/acme/outreach.md', activity: 'writing' },
+      { kind: 'tool', label: 'edit: applications/acme/cv.typ', file: 'applications/acme/cv.typ', mutatesFile: true, activity: 'writing' },
+      { kind: 'tool', label: 'edit: applications/acme/outreach.md', file: 'applications/acme/outreach.md', mutatesFile: true, activity: 'writing' },
     ],
   );
   assert.deepEqual(

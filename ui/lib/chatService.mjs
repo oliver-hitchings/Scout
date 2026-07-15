@@ -12,6 +12,7 @@ import { runCvQuality } from './cvQuality.mjs';
 import { readUsage } from './usage.mjs';
 import { loadWorkspaceConfig } from './workspace.mjs';
 import { providerStatus } from './providers.mjs';
+import { runStructuredTurn } from './structuredTurn.mjs';
 
 export const ENGINES = {
   claude: { build: buildClaudeArgs, parse: parseClaudeLine },
@@ -20,6 +21,16 @@ export const ENGINES = {
 
 const running = new Map(); // opportunity id -> { stop() }
 export const ONBOARDING_CHAT_ID = 'setup-onboarding';
+
+const FIT_SCHEMA = Object.freeze({
+  type: 'object', additionalProperties: false,
+  properties: {
+    summary: { type: 'string' }, strengths: { type: 'array', items: { type: 'string' } },
+    evidenceGaps: { type: 'array', items: { type: 'string' } },
+    mandatoryGaps: { type: 'array', items: { type: 'string' } },
+    recommendation: { type: 'string' },
+  }, required: ['summary', 'strengths', 'evidenceGaps', 'mandatoryGaps', 'recommendation'],
+});
 
 function replyJson(res, status, obj) {
   const b = JSON.stringify(obj);
@@ -52,6 +63,11 @@ function parseBody(body) {
 
 function nowIso() { return new Date().toISOString(); }
 
+function assistantUpdates(result) {
+  const updates = (result?.updates || []).map((value) => String(value || '').trim()).filter(Boolean);
+  return updates.length ? updates : (result?.text ? [result.text] : []);
+}
+
 function stopTurnOnDisconnect(req, res, id) {
   const stop = () => {
     if (res.writableEnded) return;
@@ -64,20 +80,45 @@ function stopTurnOnDisconnect(req, res, id) {
 
 export function registerChatRoutes({
   routes, repoRoot, readTracker, runTurnFn = runTurn, saveChatFn = saveChat, providerStatusFn = providerStatus,
-  runCvQualityFn = runCvQuality,
+  runCvQualityFn = runCvQuality, runStructuredTurnFn = runStructuredTurn, onCheckpoint = () => {},
 }) {
-  function engineBuild(engine, resumeId) {
+  function checkpoint(reason) { Promise.resolve(onCheckpoint(reason)).catch(() => {}); }
+  function engineStatus(engine) {
     const config = loadWorkspaceConfig(repoRoot);
-    const model = config.ai?.provider === engine ? config.ai?.model : null;
     const status = providerStatusFn(engine);
     if (!status.installed || !status.authenticated) throw new Error(`${engine} CLI is not installed and signed in`);
-    return ENGINES[engine].build(resumeId, { model, command: status.executable, env: status.env });
+    return { config, status, model: config.ai?.provider === engine ? config.ai?.model : null };
+  }
+
+  function engineBuild(engine, resumeId) {
+    const { status, model } = engineStatus(engine);
+    return ENGINES[engine].build(resumeId, {
+      model, command: status.executable, env: status.env,
+      ...(engine === 'codex' ? { reasoningEffort: 'medium' } : {}),
+    });
   }
   function entryOf(id) {
     if (id === ONBOARDING_CHAT_ID) {
       return { id, company: 'Scout', role: 'Workspace setup', sources: [], notes: '' };
     }
     return (readTracker().opportunities || []).find((o) => o.id === id) || null;
+  }
+
+  function selectedEntryContext(entry) {
+    if (!entry || entry.id === ONBOARDING_CHAT_ID) return '';
+    const selected = {
+      id: entry.id, company: entry.company, role: entry.role, score: entry.score,
+      scoreBreakdown: entry.scoreBreakdown || {}, eligibility: entry.eligibility || null,
+      mandatoryRequirements: entry.mandatoryRequirements || [], location: entry.location || entry.commute || null,
+      salary: entry.salary || null, sources: (entry.sources || []).slice(0, 5), notes: String(entry.notes || '').slice(0, 4000),
+    };
+    return `Selected opportunity (authoritative; do not choose another tracker entry):\n${JSON.stringify(selected)}`;
+  }
+
+  function boundedFile(relative, maximum = 30_000) {
+    const file = path.join(repoRoot, relative);
+    if (!fs.existsSync(file)) return '';
+    return fs.readFileSync(file, 'utf8').slice(0, maximum);
   }
 
   function refreshCvQuality(entry, filesTouched = []) {
@@ -119,7 +160,7 @@ export function registerChatRoutes({
     try { chat = loadChat(repoRoot, id); } catch (e) { return replyJson(res, 400, { error: e.message }); }
     // A failed cold start has no resumable CLI session. Keep its error history,
     // but expose an unset engine so the other installed CLI remains selectable.
-    const visibleChat = chat && !chat.cliSessionId ? { ...chat, engine: null } : chat;
+    const visibleChat = chat && !chat.cliSessionId && !chat.bounded ? { ...chat, engine: null } : chat;
     const config = loadWorkspaceConfig(repoRoot);
     const cvOptions = {
       xyz: url.searchParams.get('xyz') !== '0',
@@ -226,9 +267,10 @@ export function registerChatRoutes({
       sseSend(res, 'error', { message: `handoff transcript save failed: ${e.message}` });
       return sseEnd(res);
     }
+    checkpoint(`save chat handoff - ${id}`);
 
     sseSend(res, 'status', { message: `starting ${to} with the summary…` });
-    const opening = handoffOpening(r1.text);
+    const opening = `${selectedEntryContext(entryOf(id))}\n\n${handoffOpening(r1.text)}`;
     let t2;
     try {
       t2 = runTurnFn({
@@ -260,7 +302,7 @@ export function registerChatRoutes({
     addFilesTouched(chat, r2.filesTouched);
     addFilesTouched(chat, refreshCvQuality(entryOf(id), r2.filesTouched));
     if (r2.ok) {
-      appendMessage(chat, 'assistant', r2.text, nowIso());
+      for (const update of assistantUpdates(r2)) appendMessage(chat, 'assistant', update, nowIso());
     } else {
       appendMessage(chat, 'system', r2.error || 'handoff turn failed', nowIso());
     }
@@ -268,6 +310,7 @@ export function registerChatRoutes({
       sseSend(res, 'error', { message: `handoff transcript save failed: ${e.message}` });
       return sseEnd(res);
     }
+    checkpoint(`save completed handoff - ${id}`);
     if (r2.ok) sseSend(res, 'done', { engine: to });
     else sseSend(res, 'error', {
       message: r2.error || 'handoff turn failed',
@@ -283,6 +326,7 @@ export function registerChatRoutes({
     let entry;
     try { entry = entryOf(id); } catch (e) { return replyJson(res, 500, { error: `tracker unreadable: ${e.message}` }); }
     if (!entry) return replyJson(res, 404, { error: 'no such opportunity' });
+    if (id === ONBOARDING_CHAT_ID) return replyJson(res, 410, { error: 'use Scout’s bounded setup proposal control for onboarding' });
     if (running.has(id)) return replyJson(res, 409, { error: 'a turn is already running for this job' });
     let chat;
     try { chat = loadChat(repoRoot, id); } catch (e) { return replyJson(res, 400, { error: e.message }); }
@@ -293,6 +337,8 @@ export function registerChatRoutes({
     if (!chat) chat = emptyChat(engine);
     else chat.engine = engine;
 
+    if (b.mode === 'fit-assessment') return handleFitAssessment(req, res, { id, entry, engine, text, chat });
+
     sseStart(res);
     let built;
     try { built = engineBuild(engine, chat.cliSessionId); } catch (e) {
@@ -301,7 +347,7 @@ export function registerChatRoutes({
     }
     const turn = runTurnFn({
       ...built,
-      prompt: text,
+      prompt: entry.id === ONBOARDING_CHAT_ID ? text : `${selectedEntryContext(entry)}\n\nUser request:\n${text}`,
       cwd: repoRoot,
       parseLine: ENGINES[engine].parse,
       onEvent: (ev) => {
@@ -325,17 +371,18 @@ export function registerChatRoutes({
     addFilesTouched(chat, r.filesTouched);
     addFilesTouched(chat, refreshCvQuality(entry, r.filesTouched));
     if (r.ok) {
-      appendMessage(chat, 'assistant', r.text, nowIso());
+      for (const update of assistantUpdates(r)) appendMessage(chat, 'assistant', update, nowIso());
     } else {
       appendMessage(chat, 'system', r.error || 'turn failed', nowIso());
     }
     try { saveChatFn(repoRoot, id, chat); } catch (e) {
       console.error('chat transcript save failed:', e.message); // transcript loss only - agent session still resumable
     }
+    checkpoint(`save chat - ${id}`);
 
     if (r.ok) {
       sseSend(res, 'done', {
-        text: r.text, sessionId: chat.cliSessionId, usage: r.usage, filesTouched: chat.filesTouched,
+        text: r.text, updates: assistantUpdates(r), sessionId: chat.cliSessionId, usage: r.usage, filesTouched: chat.filesTouched,
       });
     } else {
       sseSend(res, 'error', {
@@ -345,5 +392,50 @@ export function registerChatRoutes({
       });
     }
     sseEnd(res);
+  }
+
+  async function handleFitAssessment(req, res, { id, entry, engine, text, chat }) {
+    sseStart(res);
+    const marker = { stop() {} };
+    running.set(id, marker);
+    stopTurnOnDisconnect(req, res, id);
+    try {
+      const { status, model } = engineStatus(engine);
+      const context = {
+        selectedOpportunity: JSON.parse(selectedEntryContext(entry).split('\n').slice(1).join('\n')),
+        profile: boundedFile(path.join('profile', 'context.md')),
+        calibration: boundedFile(path.join('profile', 'calibration.md')),
+        masterCv: boundedFile(path.join('cv', 'master-cv.md')),
+      };
+      const prompt = [
+        'Assess only the selected opportunity using only the supplied synthetic/private evidence.',
+        'Identify unsupported and employer-declared mandatory gaps. Invent nothing. Do not access files, use tools, apply, or send outreach.',
+        `User request: ${text}`, JSON.stringify(context),
+      ].join('\n\n');
+      const result = await runStructuredTurnFn({ provider: engine, status, schema: FIT_SCHEMA, prompt, model, maxInputTokens: 50_000 });
+      const value = result.value;
+      const answer = [
+        value.summary, '', `Strengths: ${value.strengths.length ? value.strengths.join('; ') : 'none evidenced'}`,
+        `Evidence gaps: ${value.evidenceGaps.length ? value.evidenceGaps.join('; ') : 'none identified'}`,
+        `Mandatory gaps: ${value.mandatoryGaps.length ? value.mandatoryGaps.join('; ') : 'none identified'}`,
+        `Recommendation: ${value.recommendation}`,
+      ].join('\n');
+      chat.bounded = true;
+      appendMessage(chat, 'user', text, nowIso());
+      appendMessage(chat, 'assistant', answer, nowIso());
+      saveChatFn(repoRoot, id, chat);
+      checkpoint(`save fit assessment - ${id}`);
+      sseSend(res, 'delta', { text: answer });
+      sseSend(res, 'done', { text: answer, engine, usage: result.usage, filesTouched: chat.filesTouched });
+    } catch (error) {
+      appendMessage(chat, 'user', text, nowIso());
+      appendMessage(chat, 'system', error.message, nowIso());
+      try { saveChatFn(repoRoot, id, chat); } catch { /* preserve the primary provider error */ }
+      checkpoint(`save failed chat - ${id}`);
+      sseSend(res, 'error', { message: error.message, engine, filesTouched: chat.filesTouched });
+    } finally {
+      running.delete(id);
+      sseEnd(res);
+    }
   }
 }

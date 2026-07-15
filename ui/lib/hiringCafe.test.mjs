@@ -39,7 +39,7 @@ test('fetchHiringCafe normalises hits and skips expired ones', async () => {
   assert.deepEqual(result.sources, { 'product designer': 1 });
 });
 
-test('fetchHiringCafe fails soft when build id or a query fails', async () => {
+test('fetchHiringCafe fails soft and records bounded retry recovery', async () => {
   const missing = await fetchHiringCafe(['x'], async () => ({ ok: true, text: async () => 'not next.js' }));
   assert.equal(missing.available, false);
   assert.equal(missing.status, 'unavailable');
@@ -51,9 +51,19 @@ test('fetchHiringCafe fails soft when build id or a query fails', async () => {
     return dataResponse([hit]);
   });
   assert.equal(partial.jobs.length, 1);
-  assert.equal(partial.errors.length, 1);
-  assert.equal(partial.status, 'degraded');
-  assert.match(partial.reason, /1 of 2/);
+  assert.deepEqual(partial.errors, []);
+  assert.equal(partial.status, 'healthy');
+  assert.equal(partial.recovery.recovered, true);
+  assert.equal(partial.recovery.retries, 1);
+
+  call = 0;
+  const exhausted = await fetchHiringCafe(['a'], async () => {
+    call += 1;
+    if (call === 1) return homepage('bld1');
+    throw new Error('still down');
+  }, { attempts: 1, sleepFn: async () => {} });
+  assert.equal(exhausted.errors.length, 1);
+  assert.equal(exhausted.status, 'degraded');
 });
 
 test('fetchHiringCafe treats a successful empty search as healthy', async () => {
@@ -65,6 +75,32 @@ test('fetchHiringCafe treats a successful empty search as healthy', async () => 
   assert.equal(result.status, 'healthy');
   assert.equal(result.count, 0);
   assert.deepEqual(result.errors, []);
+});
+
+test('fetchHiringCafe uses the canonical origin returned after a homepage redirect', async () => {
+  let call = 0;
+  const result = await fetchHiringCafe(['engineer'], async (url) => {
+    call += 1;
+    if (call === 1) return { ...homepage('redirected'), url: 'https://hiringcafe.com/' };
+    assert.match(String(url), /^https:\/\/hiringcafe\.com\/_next\/data\/redirected\/index\.json/);
+    return dataResponse([hit]);
+  });
+  assert.equal(result.status, 'healthy');
+  assert.equal(result.jobs.length, 1);
+});
+
+test('fetchHiringCafe refreshes the build once when the data endpoint shape changes', async () => {
+  let call = 0;
+  const result = await fetchHiringCafe(['engineer'], async () => {
+    call += 1;
+    if (call === 1) return homepage('old');
+    if (call === 2) return { ok: true, json: async () => ({ pageProps: {} }) };
+    if (call === 3) return homepage('new');
+    return dataResponse([hit]);
+  });
+  assert.equal(result.status, 'healthy');
+  assert.equal(result.jobs.length, 1);
+  assert.equal(result.recovery.recovered, true);
 });
 
 test('default queries are empty until onboarding configures the search', async () => {

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 const previousWorkspace = process.env.SCOUT_WORKSPACE;
 const testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-server-test-'));
 process.env.SCOUT_WORKSPACE = testWorkspace;
-const { APP_ROOT, APP_VERSION, WORKSPACE_ROOT, createServer, restartControl } = await import('./server.mjs');
+const { APP_ROOT, APP_VERSION, WORKSPACE_ROOT, createServer, restartControl, shutdownControl } = await import('./server.mjs');
 
 let server;
 let port;
@@ -131,6 +131,62 @@ test('restart rejects a cross-origin browser request', async () => {
   const response = await request({
     method: 'POST',
     path: '/api/restart',
+    headers: { host: `127.0.0.1:${port}`, origin: 'https://attacker.example' },
+  });
+  assert.equal(response.status, 403);
+});
+
+test('bounded setup mutations require same-origin JSON requests', async () => {
+  const host = `127.0.0.1:${port}`;
+  const wrongType = await request({
+    method: 'POST', path: '/api/setup/proposal', headers: { host, origin: `http://${host}`, 'content-type': 'text/plain' }, body: '{}',
+  });
+  assert.equal(wrongType.status, 415);
+  const crossOrigin = await request({
+    method: 'POST', path: '/api/setup/activate', headers: { host, origin: 'https://attacker.example', 'content-type': 'application/json' }, body: '{}',
+  });
+  assert.equal(crossOrigin.status, 403);
+});
+
+test('pending recovery keys require same-origin JSON requests', async () => {
+  const host = `127.0.0.1:${port}`;
+  const wrongType = await request({
+    method: 'POST', path: '/api/sync/recovery-key',
+    headers: { host, origin: `http://${host}`, 'content-type': 'text/plain' }, body: '{}',
+  });
+  assert.equal(wrongType.status, 415);
+  const crossOrigin = await request({
+    method: 'POST', path: '/api/sync/recovery-key',
+    headers: { host, origin: 'https://attacker.example', 'content-type': 'application/json' }, body: '{}',
+  });
+  assert.equal(crossOrigin.status, 403);
+});
+
+test('shutdown responds before scheduling process exit', async () => {
+  const originalExit = shutdownControl.exit;
+  let exited = false;
+  shutdownControl.exit = () => { exited = true; };
+  try {
+    const host = `127.0.0.1:${port}`;
+    const response = await request({
+      method: 'POST',
+      path: '/api/shutdown',
+      headers: { host, origin: `http://${host}` },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(response.text), { ok: true, shuttingDown: true });
+    assert.equal(exited, false, 'exit must happen after the response is sent');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(exited, true);
+  } finally {
+    shutdownControl.exit = originalExit;
+  }
+});
+
+test('shutdown rejects a cross-origin browser request', async () => {
+  const response = await request({
+    method: 'POST',
+    path: '/api/shutdown',
     headers: { host: `127.0.0.1:${port}`, origin: 'https://attacker.example' },
   });
   assert.equal(response.status, 403);

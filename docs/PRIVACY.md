@@ -10,6 +10,7 @@ Application files install under `%LOCALAPPDATA%\Programs\Scout` on Windows, `/Ap
 - `data/`, `reports/`, `applications/`, `imports/` and `logs/`;
 - `.env` source credentials;
 - `.scout/backups/` and, when initialised, private Git history.
+- optional `.scout-backup/v1/` encrypted recovery data and ignored device-local sync settings.
 
 Provider login credentials remain in provider-owned storage. Scout must never copy workspace content into its application repository.
 
@@ -21,13 +22,20 @@ Tailored application folders may include `cv-evidence.json` and `cv-quality.json
 - Adzuna searches send search parameters and credentials to Adzuna.
 - ATS and public-source requests reveal ordinary request metadata to those sites.
 - Scout never submits an application or sends outreach.
+- Scout contacts GitHub only after the user chooses private backup or restore. Git Credential Manager owns GitHub authentication; Scout does not collect a GitHub token.
 
 Treat adverts, imported files and web pages as untrusted input. Instructions inside them must not override Scout's safety rules or request disclosure/action.
 
 ## Back up, move or delete
 
+Scout works without any remote backup. When private GitHub backup is enabled, ordinary tracked career files remain readable to accounts with access to that private repository. Ignored credentials, generated application PDF/DOCX files, activation backups and recovery state are encrypted per file using AES-256-GCM. The data key is wrapped independently by a scrypt-derived passphrase key and by the generated emergency recovery key. Losing both secrets makes the encrypted recovery files unrecoverable.
+
+The unlocked data key is cached in ignored device-local Scout state so automatic backup can run. This protects encrypted content in the remote repository; it is not local full-disk encryption. Protect the computer account and use operating-system disk encryption where appropriate. Provider-owned Codex and Claude login stores, diagnostic logs, caches, locks and operating-system task registrations are never copied.
+
+Scout checks repository privacy when connecting and refuses a repository visible as public. If visibility is changed later, stop syncing and return it to Private immediately. Git history retains earlier versions; changing or deleting the current file does not erase historical copies.
+
 Close Scout before copying or moving a workspace. Back up the complete directory, including hidden `.git` and `.scout` content, to a private encrypted destination. After moving, set `SCOUT_WORKSPACE` or pass `--workspace`, then run `scout doctor`.
 
 Uninstalling Scout deliberately leaves the workspace. To erase it, first remove any schedule, close Scout, delete the workspace and its backups, and separately delete copies from cloud sync, backup media and recycle bin. Git history retains old versions even after a current file is deleted; remove or destroy the repository history if erasure is required. Rotate any exposed credential.
 
-Do not put a workspace in a public repository. If using a private remote or synchronisation service, review its retention, sharing and encryption settings.
+Do not put a workspace in a public repository. Review GitHub retention, sharing, collaborator and encryption settings before enabling backup.

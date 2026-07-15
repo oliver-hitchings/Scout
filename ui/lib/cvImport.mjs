@@ -4,10 +4,39 @@ import path from 'node:path';
 const ALLOWED = new Set(['.txt', '.md', '.docx', '.pdf']);
 let pdfQueue = Promise.resolve();
 
-function parsePdfSerially(parse, buffer) {
-  const task = pdfQueue.then(() => parse(buffer));
+function parsePdfSerially(PDFParse, buffer) {
+  const task = pdfQueue.then(async () => {
+    const parser = new PDFParse({ data: buffer });
+    try {
+      return await parser.getText();
+    } finally {
+      await parser.destroy();
+    }
+  });
   pdfQueue = task.catch(() => {});
   return task;
+}
+
+function unescapePdfLiteral(value) {
+  return String(value || '')
+    .replace(/\\([0-7]{1,3})/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8)))
+    .replace(/\\([nrtbf()\\])/g, (_, escaped) => ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' }[escaped] || escaped));
+}
+
+// Keep a narrow fallback for small, valid Type 1 PDFs whose text stream is not
+// compressed. It reads only literal strings used
+// by PDF text-showing operators. Image-only/scanned PDFs have no such operators.
+export function extractUncompressedPdfText(buffer) {
+  const source = Buffer.from(buffer).toString('latin1');
+  const streams = [...source.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)].map((match) => match[1]);
+  const text = [];
+  for (const stream of streams) {
+    for (const match of stream.matchAll(/\(((?:\\.|[^\\()])*)\)\s*Tj\b/g)) text.push(unescapePdfLiteral(match[1]));
+    for (const array of stream.matchAll(/\[((?:.|\r|\n)*?)\]\s*TJ\b/g)) {
+      for (const match of array[1].matchAll(/\(((?:\\.|[^\\()])*)\)/g)) text.push(unescapePdfLiteral(match[1]));
+    }
+  }
+  return text.join(' ').replace(/\s+/g, ' ').trim();
 }
 
 export async function extractCvText(file) {
@@ -23,21 +52,23 @@ export async function extractCvText(file) {
     if (!text) throw new Error('DOCX contained no readable text');
     return text;
   }
-  let parser;
-  // Import the library entry directly. pdf-parse 1.x's package entry runs a
-  // debug fixture when loaded through ESM because `module.parent` is unset.
-  try { parser = await import('pdf-parse/lib/pdf-parse.js'); } catch { throw new Error('PDF import support is not installed; run npm install'); }
+  let PDFParse;
+  try { ({ PDFParse } = await import('pdf-parse')); } catch { throw new Error('PDF import support is not installed; run npm install'); }
   let result;
   const buffer = fs.readFileSync(file);
-  try { result = await parsePdfSerially(parser.default || parser, buffer); }
+  try { result = await parsePdfSerially(PDFParse, buffer); }
   catch (e) {
+    const fallback = extractUncompressedPdfText(buffer);
+    if (fallback.length >= 40) return fallback;
     const structure = buffer.toString('latin1');
     if (/xref/i.test(String(e.message)) && structure.startsWith('%PDF-') && /\/Type\s*\/Page\b/.test(structure)) {
       throw new Error('PDF contains little or no selectable text; scanned PDFs need OCR before import');
     }
     throw new Error(`PDF could not be read: ${e.message}`);
   }
-  const text = String(result.text || '').trim();
+  const parsed = String(result.text || '').trim();
+  const fallback = parsed.length < 40 ? extractUncompressedPdfText(buffer) : '';
+  const text = parsed.length >= 40 ? parsed : fallback;
   if (text.length < 40) throw new Error('PDF contains little or no selectable text; scanned PDFs need OCR before import');
   return text;
 }

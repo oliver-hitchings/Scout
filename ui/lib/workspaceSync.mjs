@@ -1,0 +1,341 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import {
+  initializeRecoveryBackup, loadRecoveryHeader, restoreRecoveryBackup, restoreRecoveryBackupWithKey, writeRecoveryBackup,
+} from './recoveryBackup.mjs';
+
+const SETTINGS = '.scout/sync.json';
+const STATUS = new Map();
+
+function runGit(cwd, args, options = {}) {
+  const result = (options.spawn || spawnSync)('git', args, {
+    cwd, encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: options.allowPrompt ? '1' : '0' },
+  });
+  return {
+    ok: result.status === 0,
+    status: result.status,
+    stdout: String(result.stdout || '').trim(),
+    stderr: String(result.stderr || '').trim(),
+    error: String(result.stderr || result.stdout || `git ${args[0]} failed`).trim(),
+  };
+}
+
+function atomicJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(temp, file);
+}
+
+function settingsPath(root) { return path.join(root, ...SETTINGS.split('/')); }
+
+export function loadSyncSettings(root) {
+  const file = settingsPath(root);
+  if (!fs.existsSync(file)) return { version: 1, enabled: false, remoteUrl: null, dataKey: null };
+  try { return { version: 1, enabled: false, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; }
+  catch { return { version: 1, enabled: false, remoteUrl: null, dataKey: null }; }
+}
+
+export function saveSyncSettings(root, value) {
+  atomicJson(settingsPath(root), { version: 1, ...value });
+  return value;
+}
+
+export function pendingRecoveryKey(root) {
+  return loadSyncSettings(root).pendingRecoveryKey || null;
+}
+
+export function confirmRecoveryKey(root) {
+  const settings = loadSyncSettings(root);
+  const hadPendingKey = Boolean(settings.pendingRecoveryKey);
+  delete settings.pendingRecoveryKey;
+  saveSyncSettings(root, settings);
+  return { ok: true, confirmed: hadPendingKey };
+}
+
+export function validateGithubUrl(value) {
+  let url;
+  try { url = new URL(String(value || '').trim()); } catch { throw new Error('Enter a valid GitHub HTTPS repository URL'); }
+  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'github.com' || url.username || url.password || url.search || url.hash) {
+    throw new Error('Use a credential-free https://github.com/owner/repository URL');
+  }
+  const match = url.pathname.match(/^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/);
+  if (!match) throw new Error('Use a credential-free https://github.com/owner/repository URL');
+  return { url: `https://github.com/${match[1]}/${match[2]}.git`, owner: match[1], repo: match[2] };
+}
+
+export function detectGit(options = {}) {
+  const git = runGit(process.cwd(), ['--version'], options);
+  if (!git.ok) return { installed: false, credentialManager: false, error: git.error };
+  const manager = runGit(process.cwd(), ['credential-manager', '--version'], options);
+  return { installed: true, version: git.stdout, credentialManager: manager.ok, credentialManagerVersion: manager.ok ? manager.stdout : null };
+}
+
+export async function verifyPrivateGithubRemote(value, options = {}) {
+  const parsed = (options.validateUrl || validateGithubUrl)(value);
+  const fetchFn = options.fetchFn || globalThis.fetch;
+  if (!fetchFn) throw new Error('Scout could not verify that the repository is private');
+  let visibility;
+  try {
+    visibility = await fetchFn(`https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}`, {
+      headers: { accept: 'application/vnd.github+json', 'user-agent': 'Scout' },
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch {
+    throw new Error('Scout could not verify that the GitHub repository is private');
+  }
+  if (visibility.status === 200) throw new Error('This GitHub repository is public. Change it to Private before connecting Scout');
+  if (visibility.status !== 404) throw new Error(`GitHub privacy check failed (${visibility.status})`);
+  const access = runGit(process.cwd(), ['ls-remote', '--heads', parsed.url], { ...options, allowPrompt: true });
+  if (!access.ok) throw new Error(`GitHub sign-in or repository access failed: ${access.error}`);
+  return { ...parsed, empty: !access.stdout, refs: access.stdout };
+}
+
+function repoReady(root, options = {}) {
+  const result = runGit(root, ['rev-parse', '--is-inside-work-tree'], options);
+  return result.ok && result.stdout === 'true';
+}
+
+function sensitiveTrackedPath(value) {
+  const file = String(value || '').replaceAll('\\', '/');
+  return file === '.env' || file === 'AGENTS.md' || file === 'CLAUDE.md'
+    || file.startsWith('.scout/') || file.startsWith('.agents/') || file.startsWith('.claude/') || file.startsWith('logs/')
+    || (/^applications\/.+\.(?:pdf|docx)$/i.test(file));
+}
+
+function assertNoTrackedSecrets(root, options = {}) {
+  const tracked = runGit(root, ['ls-files', '-z'], options);
+  if (!tracked.ok) throw new Error(tracked.error);
+  const unsafe = tracked.stdout.split('\0').filter(sensitiveTrackedPath);
+  if (unsafe.length) throw new Error(`Private backup cannot continue because sensitive ignored files are already tracked: ${unsafe.slice(0, 5).join(', ')}`);
+}
+
+function ensureRepo(root, options = {}) {
+  if (!repoReady(root, options)) {
+    const init = runGit(root, ['init'], options);
+    if (!init.ok) throw new Error(init.error);
+  }
+  if (!runGit(root, ['config', '--get', 'user.name'], options).ok) runGit(root, ['config', 'user.name', 'Scout'], options);
+  if (!runGit(root, ['config', '--get', 'user.email'], options).ok) runGit(root, ['config', 'user.email', 'scout@local'], options);
+}
+
+function remoteUrl(root, options = {}) {
+  const result = runGit(root, ['remote', 'get-url', 'origin'], options);
+  return result.ok ? result.stdout : null;
+}
+
+function setState(root, state, details = {}) {
+  const value = { state, checkedAt: new Date().toISOString(), ...details };
+  STATUS.set(path.resolve(root), value);
+  return value;
+}
+
+export function syncStatus(root, options = {}) {
+  const settings = loadSyncSettings(root);
+  const git = detectGit(options);
+  if (!settings.enabled) return { state: git.installed ? 'disabled' : 'setup-required', enabled: false, git, remoteUrl: remoteUrl(root, options) };
+  return { state: 'pending', enabled: true, git, remoteUrl: settings.remoteUrl, ...(STATUS.get(path.resolve(root)) || {}) };
+}
+
+function commitAll(root, message, options = {}) {
+  assertNoTrackedSecrets(root, options);
+  const update = runGit(root, ['add', '-u'], options);
+  if (!update.ok) throw new Error(update.error);
+  const untracked = runGit(root, ['ls-files', '--others', '--exclude-standard', '-z'], options);
+  if (!untracked.ok) throw new Error(untracked.error);
+  const files = untracked.stdout.split('\0').filter(Boolean).filter((file) => !sensitiveTrackedPath(file));
+  for (let index = 0; index < files.length; index += 100) {
+    const add = runGit(root, ['add', '--', ...files.slice(index, index + 100)], options);
+    if (!add.ok) throw new Error(add.error);
+  }
+  const commit = runGit(root, ['commit', '-m', message], options);
+  if (commit.ok || /nothing to commit|nothing added|no changes added/i.test(commit.error)) return;
+  throw new Error(commit.error);
+}
+
+function deviceBackupPreferences(settings) {
+  if (settings === undefined) return undefined;
+  return settings ? {
+    startWithWindows: Boolean(settings.startWithWindows),
+    completedSections: settings.completedSections || {},
+  } : null;
+}
+
+function worktreeDirty(root, options = {}) {
+  const status = runGit(root, ['status', '--porcelain', '--untracked-files=normal'], options);
+  if (!status.ok) throw new Error(status.error);
+  return Boolean(status.stdout);
+}
+
+function checkpointLocally(root, settings, options, reason) {
+  if (settings.enabled) {
+    const key = Buffer.from(String(settings.dataKey || ''), 'base64url');
+    if (key.length !== 32) throw new Error('Recovery key cache is missing');
+    const header = loadRecoveryHeader(root);
+    writeRecoveryBackup(root, key, header, { devicePreferences: deviceBackupPreferences(options.deviceSettings) });
+  }
+  commitAll(root, `scout: ${reason}`, options);
+}
+
+export async function runWorkspaceSync(root, reason = 'workspace update', options = {}) {
+  const settings = loadSyncSettings(root);
+  if (!repoReady(root, options)) return setState(root, 'disabled', { enabled: false });
+  ensureRepo(root, options);
+  assertNoTrackedSecrets(root, options);
+  if (!settings.enabled) {
+    commitAll(root, `scout: ${reason}`, options);
+    return setState(root, 'disabled', { enabled: false, committed: true });
+  }
+  const key = Buffer.from(String(settings.dataKey || ''), 'base64url');
+  if (key.length !== 32) return setState(root, 'needs-attention', { enabled: true, error: 'Recovery key cache is missing' });
+
+  setState(root, 'syncing', { enabled: true });
+  const fetch = runGit(root, ['fetch', 'origin'], options);
+  if (!fetch.ok) {
+    checkpointLocally(root, settings, options, reason);
+    return setState(root, 'offline', { enabled: true, pending: true, error: fetch.error });
+  }
+  const branchResult = runGit(root, ['branch', '--show-current'], options);
+  const branch = branchResult.stdout || 'master';
+  const upstream = `refs/remotes/origin/${branch}`;
+  if (!runGit(root, ['show-ref', '--verify', '--quiet', upstream], options).ok) {
+    checkpointLocally(root, settings, options, reason);
+    const pushInitial = runGit(root, ['push', '-u', 'origin', 'HEAD'], { ...options, allowPrompt: true });
+    return pushInitial.ok
+      ? setState(root, 'synced', { enabled: true, pending: false })
+      : setState(root, 'offline', { enabled: true, pending: true, error: pushInitial.error });
+  }
+  const counts = runGit(root, ['rev-list', '--left-right', '--count', `HEAD...${upstream}`], options);
+  if (!counts.ok) return setState(root, 'needs-attention', { enabled: true, error: counts.error });
+  const [ahead, behind] = counts.stdout.split(/\s+/).map(Number);
+  if (ahead > 0 && behind > 0) {
+    checkpointLocally(root, settings, options, reason);
+    return setState(root, 'needs-attention', { enabled: true, pending: true, conflict: true, ahead, behind, error: 'This device and GitHub both contain new changes' });
+  }
+  if (behind > 0) {
+    if (worktreeDirty(root, options)) {
+      checkpointLocally(root, settings, options, reason);
+      return setState(root, 'needs-attention', { enabled: true, pending: true, conflict: true, ahead: Math.max(1, ahead), behind, error: 'This device has unsynced work and GitHub contains newer changes' });
+    }
+    const ff = runGit(root, ['merge', '--ff-only', upstream], options);
+    if (!ff.ok) return setState(root, 'needs-attention', { enabled: true, conflict: true, error: ff.error });
+    try {
+      restoreRecoveryBackupWithKey(root, root, key);
+    } catch (error) {
+      return setState(root, 'needs-attention', { enabled: true, error: `Remote recovery data could not be applied: ${error.message}` });
+    }
+  }
+  checkpointLocally(root, settings, options, reason);
+  const after = runGit(root, ['rev-list', '--left-right', '--count', `HEAD...${upstream}`], options);
+  if (!after.ok) return setState(root, 'needs-attention', { enabled: true, error: after.error });
+  const [aheadAfter] = after.stdout.split(/\s+/).map(Number);
+  if (aheadAfter > 0) {
+    const push = runGit(root, ['push', 'origin', 'HEAD'], { ...options, allowPrompt: true });
+    if (!push.ok) return setState(root, 'offline', { enabled: true, pending: true, error: push.error });
+  }
+  return setState(root, 'synced', {
+    enabled: true, pending: false, pulled: behind > 0,
+    ...(behind > 0 ? { pulledAt: new Date().toISOString() } : {}),
+  });
+}
+
+const QUEUES = new Map();
+export function queueWorkspaceSync(root, reason, options = {}) {
+  const key = path.resolve(root);
+  const previous = QUEUES.get(key) || Promise.resolve();
+  const next = previous.catch(() => {}).then(() => runWorkspaceSync(root, reason, options));
+  const tracked = next.finally(() => { if (QUEUES.get(key) === tracked) QUEUES.delete(key); });
+  QUEUES.set(key, tracked);
+  return next;
+}
+
+export async function connectWorkspaceSync(root, { remoteUrl: value, passphrase }, options = {}) {
+  const git = detectGit(options);
+  if (!git.installed) throw new Error('Install Git before setting up private backup');
+  if (!git.credentialManager) throw new Error('Install Git Credential Manager before setting up private backup');
+  const verified = options.verifyRemote
+    ? await options.verifyRemote(value)
+    : await verifyPrivateGithubRemote(value, options);
+  ensureRepo(root, options);
+  assertNoTrackedSecrets(root, options);
+  const current = remoteUrl(root, options);
+  if (current && current !== verified.url) throw new Error('This workspace is already connected to a different origin');
+  if (!verified.empty && !current) throw new Error('This repository is not empty. Use Restore existing workspace instead');
+  if (!current) {
+    const add = runGit(root, ['remote', 'add', 'origin', verified.url], options);
+    if (!add.ok) throw new Error(add.error);
+  }
+  const created = initializeRecoveryBackup(root, passphrase, { devicePreferences: deviceBackupPreferences(options.deviceSettings) });
+  saveSyncSettings(root, {
+    enabled: true, remoteUrl: verified.url, dataKey: created.dataKey.toString('base64url'),
+    pendingRecoveryKey: created.recoveryKey,
+  });
+  let status;
+  try {
+    status = await runWorkspaceSync(root, 'enable private backup', options);
+  } catch (error) {
+    status = setState(root, 'needs-attention', { enabled: true, pending: true, error: error.message });
+  }
+  return { status, recoveryKey: created.recoveryKey, remoteUrl: verified.url };
+}
+
+export function disableWorkspaceSync(root) {
+  const settings = loadSyncSettings(root);
+  saveSyncSettings(root, { ...settings, enabled: false });
+  return setState(root, 'disabled', { enabled: false, remoteUrl: settings.remoteUrl });
+}
+
+function emptyDirectory(dir) {
+  if (!fs.existsSync(dir)) return true;
+  const stat = fs.lstatSync(dir);
+  if (stat.isSymbolicLink()) throw new Error('Restore target must not be a symbolic link');
+  return stat.isDirectory() && fs.readdirSync(dir).length === 0;
+}
+
+function assertNoSymlinks(root, current = root) {
+  for (const name of fs.readdirSync(current)) {
+    if (current === root && name === '.git') continue;
+    const child = path.join(current, name);
+    const stat = fs.lstatSync(child);
+    if (stat.isSymbolicLink()) throw new Error('The repository contains a symbolic link and cannot be restored safely');
+    if (stat.isDirectory()) assertNoSymlinks(root, child);
+  }
+}
+
+export async function restoreWorkspaceFromGithub({ remoteUrl: value, targetRoot, secret }, options = {}) {
+  if (!emptyDirectory(targetRoot)) throw new Error('Restore requires an empty workspace folder');
+  const git = detectGit(options);
+  if (!git.installed || !git.credentialManager) throw new Error('Install Git and Git Credential Manager before restoring Scout');
+  const verified = options.verifyRemote
+    ? await options.verifyRemote(value)
+    : await verifyPrivateGithubRemote(value, options);
+  if (verified.empty) throw new Error('The repository is empty; there is no Scout workspace to restore');
+  const parent = path.dirname(path.resolve(targetRoot));
+  fs.mkdirSync(parent, { recursive: true });
+  const temp = path.join(parent, `.scout-restore-${crypto.randomUUID()}`);
+  try {
+    const clone = runGit(parent, ['clone', verified.url, temp], { ...options, allowPrompt: true });
+    if (!clone.ok) throw new Error(`Restore clone failed: ${clone.error}`);
+    assertNoSymlinks(temp);
+    for (const relative of ['workspace.json', 'data/opportunities.json']) {
+      if (!fs.existsSync(path.join(temp, ...relative.split('/')))) throw new Error('The repository is not a Scout workspace');
+    }
+    const restored = restoreRecoveryBackup(temp, temp, secret);
+    if (options.validateWorkspace) {
+      const validation = await options.validateWorkspace(temp);
+      if (!validation?.ok) throw new Error('The restored workspace did not pass Scout doctor');
+    }
+    const settings = { enabled: true, remoteUrl: verified.url, dataKey: restored.dataKey.toString('base64url') };
+    saveSyncSettings(temp, settings);
+    if (fs.existsSync(targetRoot)) fs.rmdirSync(targetRoot);
+    fs.renameSync(temp, targetRoot);
+    setState(targetRoot, 'synced', { enabled: true, pending: false });
+    return { ok: true, workspaceRoot: path.resolve(targetRoot), devicePreferences: restored.devicePreferences, files: restored.files };
+  } catch (error) {
+    fs.rmSync(temp, { recursive: true, force: true });
+    throw error;
+  }
+}

@@ -17,3 +17,11 @@ test('tool activity maps to semantic Scout states', () => {
   assert.equal(activityState('editing applications/acme/cv.typ'), 'writing');
   assert.equal(activityState('unknown tool'), 'thinking');
 });
+
+test('every sprite state declares a visual alignment anchor', () => {
+  for (const state of ['idle', 'thinking', 'searching', 'writing', 'found', 'warning']) {
+    const definition = scoutDefinition(state);
+    assert.equal(definition.align.length, 2);
+    assert.ok(definition.align.every(Number.isFinite));
+  }
+});

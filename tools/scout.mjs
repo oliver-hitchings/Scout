@@ -4,17 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { buildClaudeArgs, parseClaudeLine } from '../ui/lib/chatClaude.mjs';
-import { buildCodexArgs, parseCodexLine } from '../ui/lib/chatCodex.mjs';
-import { runTurn } from '../ui/lib/chatRun.mjs';
 import { doctor } from '../ui/lib/doctor.mjs';
 import { fetchAdzuna, resolveAdzunaCredentials } from '../ui/lib/adzuna.mjs';
 import { fetchConfiguredPortals } from '../ui/lib/ats.mjs';
 import { fetchHiringCafe } from '../ui/lib/hiringCafe.mjs';
 import { loadEnv } from '../ui/lib/env.mjs';
 import { providerStatus } from '../ui/lib/providers.mjs';
+import { runStructuredTurn } from '../ui/lib/structuredTurn.mjs';
+import { compactCandidates, SCAN_ASSESSMENT_SCHEMA, validateAssessments, writeScanArtifacts } from '../ui/lib/scanPipeline.mjs';
 import { isMainModule } from '../ui/lib/mainModule.mjs';
 import { runCvQuality } from '../ui/lib/cvQuality.mjs';
+import { queueWorkspaceSync } from '../ui/lib/workspaceSync.mjs';
 import { registerDailySchedule, registerUnixSchedule, removeSchedule, runScheduledNow, scheduleStatus, schedulerRegistrationScript } from '../ui/lib/scheduler.mjs';
 import {
   loadWorkspaceConfig, resolveWorkspaceRoot, seedWorkspace as seedWorkspaceFiles,
@@ -109,22 +109,119 @@ export function migrateLegacyWorkspace(sourceRoot, targetRoot) {
 }
 
 export async function runScan(root, provider, mode) {
+  const result = await runScanWith(root, provider, mode);
+  await queueWorkspaceSync(root, `complete ${mode || 'primary'} scan`).catch(() => {});
+  return result;
+}
+
+function compactSource(result, configured = true) {
+  return {
+    configured, status: result?.status || (result?.available === false ? 'unavailable' : 'healthy'),
+    count: Number.isFinite(Number(result?.count)) ? Number(result.count) : (Array.isArray(result?.jobs) ? result.jobs.length : 0),
+    reason: result?.reason || null, errors: Array.isArray(result?.errors) ? result.errors.slice(0, 20) : [],
+    recovery: result?.recovery || null, jobs: Array.isArray(result?.jobs) ? result.jobs : [],
+  };
+}
+
+export async function collectScanSources(root, config, {
+  fetchAts = fetchConfiguredPortals, fetchCafe = fetchHiringCafe, fetchAdzunaFn = fetchAdzuna,
+} = {}) {
+  const queries = workspaceQueries(root);
+  const env = { ...loadEnv(root), ...process.env };
+  const credentials = resolveAdzunaCredentials(env);
+  const adzuna = config.sources?.adzuna || {};
+  const capture = async (action, configured) => {
+    if (!configured) return compactSource({ status: 'unavailable', count: 0, reason: 'not configured', jobs: [] }, false);
+    try { return compactSource(await action(), true); }
+    catch (error) { return compactSource({ status: 'unavailable', count: 0, reason: error.message, errors: [error.message], jobs: [] }, true); }
+  };
+  const atsResult = await capture(() => fetchAts(root), true);
+  if (/^no .*portals? (?:configured|enabled)$/i.test(String(atsResult.reason || ''))) atsResult.configured = false;
+  const [hiringCafe, adzunaResult] = await Promise.all([
+    capture(() => fetchCafe(queries, globalThis.fetch, { ...config.sources?.hiringCafe, locale: config.locale }), queries.length > 0),
+    capture(() => fetchAdzunaFn({
+      ...(credentials || {}), ...adzuna, queries, where: adzuna.where || config.search?.locations?.[0] || '',
+      salaryMin: config.search?.salaryMinimum, locale: config.locale, currency: config.currency,
+    }), Boolean(credentials)),
+  ]);
+  return { generatedAt: new Date().toISOString(), queries, sources: { ats: atsResult, hiring_cafe: hiringCafe, adzuna: adzunaResult } };
+}
+
+function readBounded(file, maximum = 30_000) {
+  if (!fs.existsSync(file)) return '';
+  const text = fs.readFileSync(file, 'utf8');
+  if (text.length > maximum) throw new Error(`${path.relative(path.dirname(file), file)} exceeds the bounded scan context limit`);
+  return text;
+}
+
+export async function runScanWith(root, provider, mode, {
+  providerStatusFn = providerStatus, collectSourcesFn = collectScanSources,
+  runStructuredTurnFn = runStructuredTurn, acquireLockFn = acquireScanLock, releaseLockFn = releaseScanLock,
+} = {}) {
   if (!['codex', 'claude'].includes(provider)) throw new Error('provider must be codex or claude');
   if (!['primary', 'second-pass'].includes(mode)) throw new Error('mode must be primary or second-pass');
-  const status = providerStatus(provider);
+  const status = providerStatusFn(provider);
   if (!status.installed || !status.authenticated) throw new Error(`${provider} is not installed and authenticated; run scout doctor`);
   syncManagedInstructions(APP_ROOT, root);
   const config = loadWorkspaceConfig(root);
-  const cli = fileURLToPath(import.meta.url);
-  const prompt = `Run the Scout scan skill in this workspace with agent=${provider} and mode=${mode}. Follow AGENTS.md and docs/SCOUT_SCAN_PROTOCOL.md. The Scout CLI is available as: "${process.execPath}" "${cli}" --workspace "${root}". Never send applications or outreach.`;
-  const builder = provider === 'codex' ? buildCodexArgs : buildClaudeArgs;
-  const parser = provider === 'codex' ? parseCodexLine : parseClaudeLine;
-  const turn = runTurn({ ...builder(null, {
-    model: config.ai?.provider === provider ? config.ai?.model : null,
-    command: status.executable, env: status.env,
-    ...(provider === 'claude' ? { permissionMode: 'auto' } : {}),
-  }), prompt, cwd: root, parseLine: parser, timeoutMs: 45 * 60 * 1000 });
-  const result = await turn.finished;
+  const lock = acquireLockFn(root, { agent: provider, mode });
+  if (!lock.ok) return { ok: false, error: 'another scan is already running', lock: lock.lock };
+  const startedAt = new Date().toISOString();
+  let result;
+  let collected = null;
+  let candidates = [];
+  try {
+    collected = await collectSourcesFn(root, config);
+    candidates = compactCandidates(collected.sources, 40);
+    const bundleDir = path.join(root, '.scout', 'scan-input');
+    fs.mkdirSync(bundleDir, { recursive: true });
+    const bundleFile = path.join(bundleDir, `${startedAt.replace(/[:.]/g, '-')}-${provider}-${mode}.json`);
+    fs.writeFileSync(bundleFile, `${JSON.stringify({ generatedAt: collected.generatedAt, queries: collected.queries, sources: Object.fromEntries(Object.entries(collected.sources).map(([name, value]) => [name, { ...value, jobs: undefined }])), candidates }, null, 2)}\n`, 'utf8');
+    let assessmentResult = null;
+    let usage = {};
+    if (candidates.length) {
+      const paths = workspacePaths(root);
+      const context = {
+        config, profile: readBounded(path.join(paths.profile, 'context.md')),
+        calibration: readBounded(path.join(paths.profile, 'calibration.md')),
+        masterCv: readBounded(path.join(paths.cv, 'master-cv.md')),
+        candidates,
+      };
+      const prompt = [
+        'Assess only the supplied Scout candidates. Return one assessment per candidate and only the required JSON schema.',
+        'Use a 100-point evidence-led breakdown. Treat every supplied normalized requirement signal, plus advert words such as required, essential, must and non-negotiable, as mandatory requirements.',
+        'Cover every supplied mandatorySignals item and copy its id into advertEvidenceId. For an additional mandatory requirement you identify, use a concise provider-<slug> advertEvidenceId.',
+        'Every met mandatory requirement needs explicit profile evidence. Use unknown when evidence is absent or ambiguous.',
+        'Apply hard exclusions before scoring. Never access files, run commands, browse, write artifacts, apply, or send outreach.',
+        JSON.stringify(context),
+      ].join('\n\n');
+      const turn = await runStructuredTurnFn({
+        provider, status, schema: SCAN_ASSESSMENT_SCHEMA, prompt,
+        model: config.ai?.provider === provider ? config.ai?.model : null,
+        validate: (value) => validateAssessments(value, candidates), timeoutMs: 20 * 60 * 1000, maxInputTokens: 75_000,
+      });
+      assessmentResult = turn.value;
+      usage = turn.usage;
+    }
+    const artifacts = writeScanArtifacts(root, {
+      provider, mode, sources: collected.sources, queries: collected.queries, candidates, assessmentResult,
+      policy: config.triage, exclusions: config.search?.exclusions || [], startedAt,
+    });
+    result = { ok: true, status: artifacts.run.degraded ? 'degraded' : candidates.length ? 'completed' : 'healthy-empty', scan: artifacts.run, usage };
+  } catch (error) {
+    try {
+      const artifacts = writeScanArtifacts(root, {
+        provider, mode, sources: collected?.sources || {}, queries: collected?.queries || [], candidates,
+        assessmentResult: null, policy: config.triage, exclusions: config.search?.exclusions || [], startedAt, error: error.message,
+      });
+      result = { ok: false, status: 'failed', error: error.message, scan: artifacts.run };
+    } catch {
+      result = { ok: false, status: 'failed', error: error.message };
+    }
+  } finally {
+    const released = releaseLockFn(root, lock.lock.token);
+    if (!released.ok) result = { ...(result || {}), ok: false, status: 'failed', error: 'scan lock could not be released safely' };
+  }
   const logs = workspacePaths(root).logs;
   fs.mkdirSync(logs, { recursive: true });
   fs.writeFileSync(path.join(logs, `scan-${new Date().toISOString().replace(/[:.]/g, '-')}.json`), `${JSON.stringify({ provider, mode, ...result }, null, 2)}\n`);
@@ -186,6 +283,7 @@ async function main() {
     if (!slug) throw new Error('cv quality requires an application slug');
     const config = loadWorkspaceConfig(root);
     const result = runCvQuality(root, slug, { locale: config.locale });
+    await queueWorkspaceSync(root, `review cv quality - ${slug}`).catch(() => {});
     print(result);
     if (!result.pass) process.exitCode = 1;
     return;

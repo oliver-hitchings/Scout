@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
   buildConfig,
-  buildOnboardingPrompt,
   bytesToBase64,
   formatLocalDateTime,
   handoffAction,
@@ -71,26 +71,29 @@ test('formatLocalDateTime returns local readable text and handles missing values
   assert.match(formatLocalDateTime('2026-07-12T07:30:00.000Z', 'en-GB'), /2026/);
 });
 
-test('optional AI enrichment never traps initial setup in an error state', () => {
-  assert.deepEqual(handoffAction(false), { label: 'Continue to first scan', defer: false, ready: false });
+test('bounded proposal activation gates the first scan', () => {
+  assert.deepEqual(handoffAction(false), { label: 'Activate a proposal to continue', defer: false, ready: false });
   assert.deepEqual(handoffAction(true), { label: 'Continue to first scan', defer: false, ready: true });
 });
 
 test('a first scan starts automatically only when the workspace has never scanned', () => {
   assert.equal(shouldAutoRunFirstScan({}), true);
+  assert.equal(shouldAutoRunFirstScan({}, false), false);
   assert.equal(shouldAutoRunFirstScan({ lastRunAt: '2026-07-12T10:00:00.000Z' }), false);
 });
 
-test('AI hand-off prompt is evidence-led and approval-gated', () => {
-  const prompt = buildOnboardingPrompt({
-    workspaceRoot: 'C:\\Users\\Alex\\Documents\\Scout Workspace',
-    provider: 'codex',
-    imported: { extracted: 'imports/cv.txt' },
-    config: { search: { roleFamilies: ['Operations'], sectors: ['Climate tech'] } },
-  });
-  assert.match(prompt, /\$onboard-scout/);
-  assert.match(prompt, /imports\/cv\.txt/);
-  assert.match(prompt, /Never invent/);
-  assert.match(prompt, /ask for approval before activation/);
-  assert.match(prompt, /never send an application or outreach message/);
+test('first-run setup offers optional local create, private backup guidance, and restore', () => {
+  const source = fs.readFileSync(new URL('./setup.js', import.meta.url), 'utf8');
+  assert.match(source, /Set up Scout for the first time/);
+  assert.match(source, /Restore my existing workspace/);
+  assert.match(source, /Scout works fully.*without GitHub/s);
+  assert.match(source, /select <strong>Private<\/strong>/);
+  assert.match(source, />Not now</);
+  assert.match(source, /Save your emergency recovery key/);
+  assert.match(source, /Save key to file/);
+  assert.doesNotMatch(source, /window\.prompt/);
+  assert.match(source, /GitHub copy is still pending/);
+  assert.match(source, /setup-backup-check-git/);
+  assert.match(source, />Retry</);
+  assert.match(source, /api\/sync\/recovery-key\/confirm/);
 });

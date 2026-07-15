@@ -8,7 +8,8 @@ function meaningful(file, minimumBytes) {
 export function setupReadiness(root, config, providers, tracker) {
   const opportunities = Array.isArray(tracker?.opportunities) ? tracker.opportunities : [];
   const provider = config.ai?.provider;
-  const providerReady = Boolean(provider && providers?.[provider]?.installed && providers?.[provider]?.authenticated);
+  const providerReady = Boolean(provider && providers?.[provider]?.installed && providers?.[provider]?.authenticated
+    && providers?.[provider]?.capabilities?.structuredOutput !== false);
   const preferencesReady = Boolean(
     config.profile?.displayName
     && config.search?.roleFamilies?.length
@@ -16,7 +17,7 @@ export function setupReadiness(root, config, providers, tracker) {
     && Array.isArray(config.search?.exclusions)
     && Object.hasOwn(config.search || {}, 'salaryMinimum')
   );
-  const evidenceReady = meaningful(path.join(root, 'profile', 'context.md'), 500)
+  const evidenceReady = meaningful(path.join(root, 'profile', 'context.md'), 150)
     && meaningful(path.join(root, 'profile', 'calibration.md'), 100)
     && meaningful(path.join(root, 'cv', 'master-cv.md'), 500);
   const approvalMarker = path.join(root, '.scout', 'onboarding', 'activated.json');

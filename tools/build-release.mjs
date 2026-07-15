@@ -72,7 +72,7 @@ function normalise(relative) {
 export function includeReleasePath(relative) {
   const value = normalise(relative);
   const base = path.posix.basename(value);
-  if (value.split('/').includes('.bin')) return false;
+  if (value.split('/').some((part) => ['.bin', 'fixtures', 'test', 'tests', 'test-data', '__tests__'].includes(part))) return false;
   if (base === '.DS_Store' || base === 'Thumbs.db') return false;
   if (/\.test\.mjs$/i.test(base)) return false;
   if (value.split('/').includes('__snapshots__')) return false;
@@ -177,6 +177,7 @@ export function writeChecksums(outputDir) {
 function findIscc(env = process.env) {
   const candidates = [
     env.ISCC_PATH,
+    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Programs', 'Inno Setup 6', 'ISCC.exe') : null,
     'C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe',
     'C:\\Program Files\\Inno Setup 6\\ISCC.exe',
   ].filter(Boolean);

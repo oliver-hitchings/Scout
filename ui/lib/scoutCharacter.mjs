@@ -1,16 +1,16 @@
 export const SCOUT_STATES = Object.freeze({
-  idle: { src: '/assets/scout-idle.png', columns: 4, rows: 4, frames: 16, fps: 8, loop: true, reducedMotionFrame: 0, label: 'Scout is ready' },
-  welcome: { src: '/assets/scout-idle.png', columns: 4, rows: 4, frames: 16, fps: 8, loop: false, reducedMotionFrame: 12, label: 'Scout welcomes you' },
-  asking: { src: '/assets/scout-explaining.png', columns: 4, rows: 4, frames: 16, fps: 8, loop: true, reducedMotionFrame: 8, label: 'Scout is asking a question' },
-  listening: { src: '/assets/scout-idle.png', columns: 4, rows: 4, frames: 16, fps: 6, loop: true, reducedMotionFrame: 2, label: 'Scout is listening' },
-  thinking: { src: '/assets/scout-thinking.png', columns: 4, rows: 4, frames: 16, fps: 8, loop: true, reducedMotionFrame: 9, label: 'Scout is thinking' },
-  searching: { src: '/assets/scout-searching.png', columns: 4, rows: 4, frames: 16, fps: 10, loop: true, reducedMotionFrame: 8, label: 'Scout is searching' },
-  writing: { src: '/assets/scout-explaining.png', columns: 4, rows: 4, frames: 16, fps: 10, loop: true, reducedMotionFrame: 6, label: 'Scout is updating your files' },
-  found: { src: '/assets/scout-found.png', columns: 4, rows: 4, frames: 16, fps: 10, loop: false, reducedMotionFrame: 15, label: 'Scout found a strong match' },
-  explaining: { src: '/assets/scout-explaining.png', columns: 4, rows: 4, frames: 16, fps: 9, loop: true, reducedMotionFrame: 7, label: 'Scout is explaining' },
-  success: { src: '/assets/scout-found.png', columns: 4, rows: 4, frames: 16, fps: 12, loop: false, reducedMotionFrame: 15, label: 'Scout finished successfully' },
-  warning: { src: '/assets/scout-warning.png', columns: 4, rows: 4, frames: 16, fps: 8, loop: false, reducedMotionFrame: 12, label: 'Scout needs your attention' },
-  sleeping: { src: '/assets/scout-idle.png', columns: 4, rows: 4, frames: 16, fps: 4, loop: true, reducedMotionFrame: 0, label: 'Scout is resting' },
+  idle: { src: '/assets/scout-idle.png', align: [1.7, 4.8], columns: 4, rows: 4, frames: 16, fps: 8, loop: true, reducedMotionFrame: 0, label: 'Scout is ready' },
+  welcome: { src: '/assets/scout-idle.png', align: [1.7, 4.8], columns: 4, rows: 4, frames: 16, fps: 8, loop: false, reducedMotionFrame: 12, label: 'Scout welcomes you' },
+  asking: { src: '/assets/scout-explaining.png', align: [1.4, -1.8], columns: 4, rows: 4, frames: 16, fps: 8, loop: true, reducedMotionFrame: 8, label: 'Scout is asking a question' },
+  listening: { src: '/assets/scout-idle.png', align: [1.7, 4.8], columns: 4, rows: 4, frames: 16, fps: 6, loop: true, reducedMotionFrame: 2, label: 'Scout is listening' },
+  thinking: { src: '/assets/scout-thinking.png', align: [2.8, 3.2], columns: 4, rows: 4, frames: 16, fps: 8, loop: true, reducedMotionFrame: 9, label: 'Scout is thinking' },
+  searching: { src: '/assets/scout-searching.png', align: [0.6, -1.4], columns: 4, rows: 4, frames: 16, fps: 10, loop: true, reducedMotionFrame: 8, label: 'Scout is searching' },
+  writing: { src: '/assets/scout-explaining.png', align: [1.4, -1.8], columns: 4, rows: 4, frames: 16, fps: 10, loop: true, reducedMotionFrame: 6, label: 'Scout is updating your files' },
+  found: { src: '/assets/scout-found.png', align: [4.5, -1.6], columns: 4, rows: 4, frames: 16, fps: 10, loop: false, reducedMotionFrame: 15, label: 'Scout found a strong match' },
+  explaining: { src: '/assets/scout-explaining.png', align: [1.4, -1.8], columns: 4, rows: 4, frames: 16, fps: 9, loop: true, reducedMotionFrame: 7, label: 'Scout is explaining' },
+  success: { src: '/assets/scout-found.png', align: [4.5, -1.6], columns: 4, rows: 4, frames: 16, fps: 12, loop: false, reducedMotionFrame: 15, label: 'Scout finished successfully' },
+  warning: { src: '/assets/scout-warning.png', align: [0.7, -0.1], columns: 4, rows: 4, frames: 16, fps: 8, loop: false, reducedMotionFrame: 12, label: 'Scout needs your attention' },
+  sleeping: { src: '/assets/scout-idle.png', align: [1.7, 4.8], columns: 4, rows: 4, frames: 16, fps: 4, loop: true, reducedMotionFrame: 0, label: 'Scout is resting' },
 });
 
 export function scoutDefinition(state, definitions = SCOUT_STATES) {
@@ -50,6 +50,8 @@ export function applyScoutState(element, state, { reducedMotion = false } = {}) 
   sprite.style.setProperty('--scout-frames', def.frames);
   sprite.style.setProperty('--scout-duration', `${duration}s`);
   sprite.style.setProperty('--scout-iterations', def.loop ? 'infinite' : '1');
+  sprite.style.setProperty('--scout-align-x', `${def.align?.[0] || 0}%`);
+  sprite.style.setProperty('--scout-align-y', `${def.align?.[1] || 0}%`);
   sprite.style.setProperty('--scout-still-x', `${still.column * 100 / Math.max(1, def.columns - 1)}%`);
   sprite.style.setProperty('--scout-still-y', `${still.row * 100 / Math.max(1, def.rows - 1)}%`);
   sprite.classList.toggle('reduced-motion', reducedMotion);

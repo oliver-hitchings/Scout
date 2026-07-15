@@ -82,6 +82,19 @@ test('triage action and unlock contain only untouched new opportunities', () => 
   assert.deepEqual(out.other.map((e) => e.id).sort(), ['applied', 'rejected', 'watch', 'watch-unlock']);
 });
 
+test('mandatory eligibility gates override stale or provider-supplied scores', () => {
+  const data = { opportunities: [
+    entry({ id: 'eligible', score: 80, eligibility: { status: 'eligible' } }),
+    entry({ id: 'unknown', score: 69, eligibility: { status: 'check' } }),
+    entry({ id: 'blocked-high', score: 95, eligibility: { status: 'ineligible' } }),
+    entry({ id: 'check-too-high', score: 90, eligibility: { status: 'check' } }),
+  ] };
+  const out = triage(data, '2026-07-10');
+  assert.deepEqual(out.action.map((e) => e.id), ['eligible']);
+  assert.deepEqual(out.unlock.map((e) => e.id), ['unknown']);
+  assert.deepEqual(out.other.map((e) => e.id).sort(), ['blocked-high', 'check-too-high']);
+});
+
 test('closed statuses never produce follow-ups', () => {
   const log = [{ date: '2026-07-01', event: 'outreach-sent', note: '' }];
   assert.deepEqual(followUpsDue(entry({ status: 'rejected', log }), '2026-07-20'), []);

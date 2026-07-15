@@ -23,6 +23,10 @@ function fileOfToolInput(input) {
   return input.file_path || input.path || input.notebook_path || null;
 }
 
+function mutatesFile(name) {
+  return /^(?:write|edit|multiedit|notebookedit|applypatch)$/i.test(String(name || '').replace(/[^a-z]/gi, ''));
+}
+
 export function claudeToolActivity(name, file) {
   const value = `${name || ''} ${file || ''}`.toLowerCase();
   if (/web|search|read|fetch|browse/.test(value)) return 'searching';
@@ -44,15 +48,21 @@ export function parseClaudeLine(line) {
         out.push({ kind: 'delta', text: block.text });
       } else if (block.type === 'tool_use') {
         const file = fileOfToolInput(block.input);
-        out.push({ kind: 'tool', label: file ? `${block.name}: ${file}` : String(block.name || 'tool'), file, activity: claudeToolActivity(block.name, file) });
+        out.push({
+          kind: 'tool', label: file ? `${block.name}: ${file}` : String(block.name || 'tool'),
+          file, mutatesFile: mutatesFile(block.name), activity: claudeToolActivity(block.name, file),
+        });
       }
     }
   }
   if (ev.type === 'result') {
     if (ev.session_id) out.push({ kind: 'session', sessionId: ev.session_id });
+    const structured = ev.structured_output && typeof ev.structured_output === 'object'
+      ? JSON.stringify(ev.structured_output)
+      : null;
     out.push({
       kind: 'done',
-      text: typeof ev.result === 'string' ? ev.result : '',
+      text: structured || (typeof ev.result === 'string' ? ev.result : ''),
       ok: ev.is_error !== true,
       usage: { costUsd: ev.total_cost_usd ?? null, ...(ev.usage || {}) },
     });

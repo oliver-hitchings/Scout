@@ -4,16 +4,18 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (c) => { input += c; });
 process.stdin.on('end', () => {
   const prompt = input.trim();
-  if (prompt === 'FAIL') {
+  const command = ['FAIL', 'HANG', 'DONE_THEN_FAIL'].find((value) =>
+    prompt === value || prompt.endsWith(`User request:\n${value}`));
+  if (command === 'FAIL') {
     process.stderr.write('fake failure detail\n');
     process.exit(3);
   }
-  if (prompt === 'HANG') {
+  if (command === 'HANG') {
     // never emit a result; used for stop/timeout tests
     setInterval(() => {}, 1000);
     return;
   }
-  if (prompt === 'DONE_THEN_FAIL') {
+  if (command === 'DONE_THEN_FAIL') {
     console.log(JSON.stringify({
       type: 'result', subtype: 'success', is_error: false, result: 'not actually successful',
       session_id: 'fake-sess-1', usage: {},

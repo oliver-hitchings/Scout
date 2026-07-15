@@ -8,7 +8,8 @@ const installer = fs.readFileSync(new URL('../installer/Scout.iss', import.meta.
 test('Windows host owns tray lifecycle and named runtime', () => {
   for (const label of ['Open Scout', 'Check for updates', 'Restart Scout', 'Quit Scout', 'Keep scans enabled', 'Disable and quit']) assert.match(host, new RegExp(label));
   assert.match(host, /ScoutRuntime\.exe/);
-  assert.match(host, /CreateKillJob/);
+  assert.match(host, /api\/shutdown/);
+  assert.doesNotMatch(host, /AssignProcessToJobObject|CreateKillJob/);
   assert.match(installer, /Source: "\{#StageDir\}\\Scout\.exe"/);
   assert.match(installer, /runtime\\ScoutRuntime\.exe/);
   assert.doesNotMatch(installer, /PowerShell|ScoutLauncher\.ps1/);
