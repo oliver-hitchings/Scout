@@ -28,7 +28,17 @@ test('custom CV recommendations are preselected but remain optional', () => {
   assert.match(html, /id="cv-option-xyz"[^>]*checked/);
   assert.match(html, /id="cv-option-humanize"[^>]*checked/);
   assert.match(html, /recommends both options, but they are optional/i);
-  assert.match(html, /app\.js\?v=beta-10/);
+  assert.match(html, /app\.js\?v=beta-11/);
+});
+
+test('company history keeps real correspondence separate from role-specific Scout chats', () => {
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  assert.match(html, /id="company-drawer"/);
+  assert.match(source, /company relationship history/);
+  assert.match(source, /Saved only in your private Scout workspace/);
+  assert.match(source, /openCompanyRoleChat/);
+  assert.match(source, /\/api\/company\/communication/);
 });
 
 test('configured categories drive labels and legacy category mapping', () => {

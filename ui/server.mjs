@@ -591,6 +591,7 @@ routes['POST /api/cv/quality/override'] = (req, res, body) => {
 };
 
 import { registerChatRoutes } from './lib/chatService.mjs';
+import { registerCompanyRoutes } from './lib/companyService.mjs';
 let proposalGenerationRunning = false;
 routes['POST /api/setup/proposal'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
@@ -822,6 +823,7 @@ routes['POST /api/shutdown'] = (req, res) => {
   setTimeout(() => shutdownControl.exit(), 200);
 };
 
+registerCompanyRoutes({ routes, repoRoot: WORKSPACE_ROOT, readTracker, onCheckpoint: queueCheckpoint });
 registerChatRoutes({ routes, repoRoot: WORKSPACE_ROOT, readTracker, onCheckpoint: queueCheckpoint });
 
 const isMain = isMainModule(import.meta.url);

@@ -74,6 +74,7 @@ const Scout = {
   discoveryTimer: null,
   scanRunning: false,
   lastSyncPullAt: null,
+  companyHistory: null,
 
   async api(pathname, opts) {
     const r = await fetch(pathname, opts);
@@ -666,6 +667,7 @@ const Scout = {
         ${hasOutreach
           ? `<button class="act" onclick="Scout.seeCoverLetter(${slugArg})">see cover letter</button>`
           : `<button class="act bridge" onclick="Scout.openChat(${idArg},'coverLetter')">create custom cover letter</button>`}
+        <button class="act" onclick="Scout.openCompanyHistory(${idArg})">company history</button>
         <button class="act bridge" onclick="Scout.openChat(${idArg},'fit')">fit and evidence gaps</button>
         <button class="act bridge" onclick="Scout.openChat(${idArg},'ask')">ask about this job</button>
       </div>`;
@@ -708,6 +710,160 @@ const Scout = {
       .replace(/&/g, ' and ')
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
+  },
+
+  localToday() {
+    const value = new Date();
+    value.setMinutes(value.getMinutes() - value.getTimezoneOffset());
+    return value.toISOString().slice(0, 10);
+  },
+
+  async openCompanyHistory(id) {
+    if (this.chat?.streaming) return alert('Finish or stop the running Scout turn before opening company history.');
+    await this.closeChat();
+    let data;
+    try { data = await this.api(`/api/company?id=${encodeURIComponent(id)}`); }
+    catch (error) { return alert(`Could not open company history: ${error.message}`); }
+    if (data?.error) return alert(`Could not open company history: ${data.error}`);
+    this.companyHistory = { id, data };
+    this.renderCompanyHistory();
+  },
+
+  closeCompanyHistory() {
+    this.companyHistory = null;
+    document.getElementById('company-drawer')?.classList.add('hidden');
+  },
+
+  companyRoleLabel(id) {
+    const role = this.companyHistory?.data?.opportunities?.find((entry) => entry.id === id);
+    return role?.role || id;
+  },
+
+  companyContactLabel(id) {
+    const contact = this.companyHistory?.data?.contacts?.find((entry) => entry.id === id);
+    return contact?.name || '';
+  },
+
+  companyTimelineItemHtml(item) {
+    const contact = this.companyContactLabel(item.contactId);
+    const roleNames = (item.opportunityIds || []).map((id) => this.companyRoleLabel(id));
+    const labels = [item.kind, item.direction !== 'note' ? item.direction : null, item.channel !== 'other' ? item.channel : null]
+      .filter(Boolean).join(' · ');
+    const roleLine = roleNames.length ? `<div class="meta">${this.esc(roleNames.join(' · '))}</div>` : '';
+    const contactLine = contact ? `<b>${this.esc(contact)}</b> · ` : '';
+    const remove = item.source === 'company'
+      ? `<button class="danger-link company-remove" type="button" onclick="Scout.removeCompanyCommunication(${this.jsArg(item.id)})">remove</button>`
+      : '<span class="chip">tracker</span>';
+    return `<article class="company-event ${this.esc(item.direction || 'note')}">
+      <div class="company-event-head"><span>${this.esc(item.date)}</span><span>${contactLine}${this.esc(labels)}</span>${remove}</div>
+      ${roleLine}<div class="company-event-text">${this.esc(item.text)}</div>
+    </article>`;
+  },
+
+  renderCompanyHistory() {
+    const state = this.companyHistory;
+    const drawer = document.getElementById('company-drawer');
+    if (!state || !drawer) return drawer?.classList.add('hidden');
+    const data = state.data;
+    const roles = (data.opportunities || []).map((entry) => `
+      <div class="company-role">
+        <div><b>${this.esc(entry.role)}</b><span class="chip">${this.esc(entry.status || 'new')}</span></div>
+        <div class="meta">${this.esc([entry.location, entry.appliedDate ? `applied ${entry.appliedDate}` : '', entry.currentStage ? `current: ${entry.currentStage}` : ''].filter(Boolean).join(' · '))}</div>
+        <button class="act bridge" type="button" onclick="Scout.openCompanyRoleChat(${this.jsArg(entry.id)})">open job chat</button>
+      </div>`).join('');
+    const contacts = (data.contacts || []).length
+      ? data.contacts.map((contact) => {
+          const href = this.safeHref(contact.linkedin);
+          return `<div class="company-contact"><b>${this.esc(contact.name)}</b>${contact.role ? `<span>${this.esc(contact.role)}</span>` : ''}${href ? `<a href="${href}" target="_blank" rel="noopener">LinkedIn</a>` : ''}</div>`;
+        }).join('')
+      : '<div class="meta">No company contacts recorded yet.</div>';
+    const timeline = (data.timeline || []).length
+      ? data.timeline.map((item) => this.companyTimelineItemHtml(item)).join('')
+      : '<div class="meta">No company activity recorded yet.</div>';
+    const opportunityOptions = [
+      '<option value="">Company-wide</option>',
+      ...(data.opportunities || []).map((entry) => `<option value="${this.esc(entry.id)}" ${entry.id === state.id ? 'selected' : ''}>${this.esc(entry.role)}</option>`),
+    ].join('');
+    drawer.innerHTML = `
+      <div class="chat-head">
+        <div><b>${this.esc(data.company)}</b><div class="meta">company relationship history</div></div>
+        <button class="act" style="margin-left:auto" type="button" onclick="Scout.closeCompanyHistory()">close</button>
+      </div>
+      <div class="company-body">
+        <div class="label">Related roles</div>${roles}
+        <div class="label">Contacts</div>${contacts}
+        <div class="label">Activity and correspondence</div>${timeline}
+        <form class="company-form" onsubmit="event.preventDefault();Scout.saveCompanyCommunication()">
+          <div class="label">Record an update</div>
+          <div class="company-form-grid">
+            <label>Date<input id="company-event-date" type="date" value="${this.localToday()}" required></label>
+            <label>Role<select id="company-event-opportunity">${opportunityOptions}</select></label>
+            <label>Type<select id="company-event-kind"><option value="message">Message</option><option value="call">Call</option><option value="meeting">Meeting</option><option value="interview">Interview</option><option value="application">Application</option><option value="note">Note</option></select></label>
+            <label>Direction<select id="company-event-direction"><option value="inbound">Received</option><option value="outbound">Sent</option><option value="note">Note</option></select></label>
+            <label>Channel<select id="company-event-channel"><option value="linkedin">LinkedIn</option><option value="email">Email</option><option value="phone">Phone</option><option value="video">Video call</option><option value="in-person">In person</option><option value="other">Other</option></select></label>
+            <label>Contact<input id="company-event-contact" placeholder="e.g. Julian Sheppard"></label>
+            <label>Contact role<input id="company-event-contact-role" placeholder="e.g. Lead Talent Acquisition Partner"></label>
+            <label>Contact link<input id="company-event-contact-link" type="url" placeholder="https://linkedin.com/in/..."></label>
+          </div>
+          <label>Message or notes<textarea id="company-event-text" placeholder="Paste the message verbatim, or record what happened." required></textarea></label>
+          <div class="company-privacy">Saved only in your private Scout workspace. Scout never sends this message.</div>
+          <button class="act primary" type="submit">save to company history</button>
+        </form>
+      </div>`;
+    drawer.classList.remove('hidden');
+  },
+
+  async saveCompanyCommunication() {
+    const state = this.companyHistory;
+    if (!state) return;
+    const opportunityId = document.getElementById('company-event-opportunity').value;
+    const communication = {
+      date: document.getElementById('company-event-date').value,
+      kind: document.getElementById('company-event-kind').value,
+      direction: document.getElementById('company-event-direction').value,
+      channel: document.getElementById('company-event-channel').value,
+      opportunityIds: opportunityId ? [opportunityId] : [],
+      contact: {
+        name: document.getElementById('company-event-contact').value,
+        role: document.getElementById('company-event-contact-role').value,
+        linkedin: document.getElementById('company-event-contact-link').value,
+      },
+      text: document.getElementById('company-event-text').value,
+    };
+    let result;
+    try {
+      result = await this.api('/api/company/communication', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: state.id, communication }),
+      });
+    } catch (error) {
+      return alert(`Could not save company update: ${error.message}`);
+    }
+    if (!result?.ok) return alert(`Could not save company update: ${result?.error || 'unknown error'}`);
+    state.data = result;
+    this.renderCompanyHistory();
+  },
+
+  async removeCompanyCommunication(communicationId) {
+    const state = this.companyHistory;
+    if (!state || !confirm('Remove this manually recorded company update?')) return;
+    let result;
+    try {
+      result = await this.api('/api/company/communication/remove', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: state.id, communicationId }),
+      });
+    } catch (error) {
+      return alert(`Could not remove company update: ${error.message}`);
+    }
+    if (!result?.ok) return alert(`Could not remove company update: ${result?.error || 'unknown error'}`);
+    state.data = result;
+    this.renderCompanyHistory();
+  },
+
+  openCompanyRoleChat(id) {
+    this.closeCompanyHistory();
+    this.openChat(id, 'ask');
   },
 
   waitFor(selector) {
@@ -949,6 +1105,7 @@ const Scout = {
   // --- Embedded chat drawer ---
 
   async openChat(id, prefillKey = 'ask', cvOptions = null) {
+    this.closeCompanyHistory();
     const previous = this.chat;
     if (previous && previous.streaming) {
       if (previous.id === id) {
