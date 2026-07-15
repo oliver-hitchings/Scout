@@ -21,6 +21,7 @@ Scout `0.1.x` is a cross-platform public beta. Windows SmartScreen and macOS Gat
 - Builds searches from the CV and preferences you explicitly approve; it does not inspect unrelated AI conversations or provider history.
 - Searches configured ATS boards and public sources. Adzuna is optional.
 - Tracks evidence, verdicts, follow-ups, applications, and dated reports in a private local Git repository.
+- Optionally backs that workspace up to a private GitHub repository and restores it on another computer; local-only use remains the default.
 - Runs supervised or scheduled daily scans on Windows.
 - Keeps model choice optional, using the provider's supported default unless you select an override.
 
@@ -29,11 +30,12 @@ Scout is not an auto-apply tool. It does not invent qualifications, infer positi
 ## Five-minute start
 
 1. Install Scout from the release page and launch it. For a source checkout, see [Development setup](#development-setup).
-2. Choose or create a workspace. The default is `%USERPROFILE%\Documents\Scout Workspace`.
+2. Create a new local workspace or restore an existing Scout workspace from private GitHub backup. The default local path is `%USERPROFILE%\Documents\Scout Workspace`.
 3. Install and sign in to either Codex or Claude, then let Scout verify it.
 4. Import a CV, answer the setup questions, and generate one bounded proposal. Review every staged file before explicitly activating it.
 5. Optionally add Adzuna credentials, run `scout doctor`, then perform one supervised scan.
-6. Only after reviewing that scan, enable the daily schedule.
+6. Optionally connect a private GitHub repository for automatic backup. Git and Git Credential Manager are required only for backup/restore.
+7. Only after reviewing that scan, enable the daily schedule.
 
 The full walkthrough is in [Quick Start](docs/QUICK_START.md). If you want an AI assistant to guide setup, use [AI Setup](docs/AI_SETUP.md).
 
@@ -50,6 +52,8 @@ release documentation              applications/ and imports/
 ```
 
 Application upgrades replace application files and managed instructions. They do not delete or publish the workspace. Uninstalling Scout leaves the workspace in place.
+
+Private GitHub backup is optional. Scout verifies that a repository is not public before connecting it, keeps normal career files readable in that private repository, and additionally encrypts credentials, generated PDF/DOCX files and recovery state. Keep the passphrase or one-time emergency recovery key safe. Codex and Claude sign-in state remains provider-owned and is not copied.
 
 You can select a non-default workspace with either:
 

@@ -169,6 +169,17 @@ after(async () => {
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('fresh setup waits for an explicit local create or restore choice', async () => {
+  const status = await request({ route: '/api/setup/status' });
+  assert.equal(status.status, 200);
+  assert.equal(status.json.bootstrap, true);
+  assert.equal(status.json.trackerExists, false);
+  const created = await request({ method: 'POST', route: '/api/workspace/create', body: {} });
+  assert.equal(created.status, 200, created.text);
+  assert.equal(fs.existsSync(path.join(workspace, 'workspace.json')), true);
+  assert.equal(fs.existsSync(path.join(workspace, 'data', 'opportunities.json')), true);
+});
+
 test('setup status never echoes saved credentials', async () => {
   const saved = await request({ method: 'POST', route: '/api/setup/credentials', body: { appId: 'synthetic-id', apiKey: ['synthetic', 'secret'].join('-') } });
   assert.deepEqual(saved.json, { ok: true, configured: true });
@@ -215,6 +226,18 @@ test('fresh setup cannot be marked complete before trusted proposal activation',
   assert.equal(saved.setup.completedAt, null);
 });
 
+test('sync status is local-only by default and restore refuses an established workspace', async () => {
+  const status = await request({ route: '/api/sync/status' });
+  assert.equal(status.status, 200);
+  assert.equal(status.json.enabled, false);
+  const restore = await request({
+    method: 'POST', route: '/api/workspace/restore',
+    body: { remoteUrl: 'https://github.com/example/scout-workspace', secret: 'synthetic recovery secret' },
+  });
+  assert.equal(restore.status, 409);
+  assert.match(restore.json.error, /only before a workspace is created/);
+});
+
 test('configured categories and triage thresholds flow through the opportunities API', async () => {
   const configured = await request({
     method: 'POST', route: '/api/setup/config',
@@ -245,6 +268,15 @@ test('configured categories and triage thresholds flow through the opportunities
   assert.deepEqual(response.json.triage.action.map((entry) => entry.id), ['example-action-2026-01']);
   assert.deepEqual(response.json.triage.unlock.map((entry) => entry.id), ['example-check-2026-01']);
   assert.equal(response.json.workspaceConfig.triage.actionScore, 82);
+
+  const saved = await request({
+    method: 'POST', route: '/api/note',
+    body: { id: 'example-action-2026-01', text: 'Synthetic note' },
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.json.savedLocally, true);
+  assert.equal(saved.json.syncQueued, true);
+  assert.equal(Object.hasOwn(saved.json, 'committed'), false);
 });
 
 test('setup rejects inverted triage thresholds', async () => {

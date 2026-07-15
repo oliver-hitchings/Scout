@@ -32,6 +32,7 @@ test('release tree filter omits tests and snapshots', () => {
   assert.equal(includeReleasePath('ui/lib/fixtures/fake-cli.mjs'), false);
   assert.equal(includeReleasePath('ui/__snapshots__/screen.txt'), false);
   assert.equal(includeReleasePath('node_modules/.bin/mammoth'), false);
+  assert.equal(includeReleasePath('node_modules/mammoth/test/test-data/sample.docx'), false);
 });
 
 test('public source manifest includes tests and workflows but excludes private roots and installer output', () => {

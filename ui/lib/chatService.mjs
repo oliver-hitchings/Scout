@@ -63,6 +63,11 @@ function parseBody(body) {
 
 function nowIso() { return new Date().toISOString(); }
 
+function assistantUpdates(result) {
+  const updates = (result?.updates || []).map((value) => String(value || '').trim()).filter(Boolean);
+  return updates.length ? updates : (result?.text ? [result.text] : []);
+}
+
 function stopTurnOnDisconnect(req, res, id) {
   const stop = () => {
     if (res.writableEnded) return;
@@ -75,8 +80,9 @@ function stopTurnOnDisconnect(req, res, id) {
 
 export function registerChatRoutes({
   routes, repoRoot, readTracker, runTurnFn = runTurn, saveChatFn = saveChat, providerStatusFn = providerStatus,
-  runCvQualityFn = runCvQuality, runStructuredTurnFn = runStructuredTurn,
+  runCvQualityFn = runCvQuality, runStructuredTurnFn = runStructuredTurn, onCheckpoint = () => {},
 }) {
+  function checkpoint(reason) { Promise.resolve(onCheckpoint(reason)).catch(() => {}); }
   function engineStatus(engine) {
     const config = loadWorkspaceConfig(repoRoot);
     const status = providerStatusFn(engine);
@@ -261,6 +267,7 @@ export function registerChatRoutes({
       sseSend(res, 'error', { message: `handoff transcript save failed: ${e.message}` });
       return sseEnd(res);
     }
+    checkpoint(`save chat handoff - ${id}`);
 
     sseSend(res, 'status', { message: `starting ${to} with the summary…` });
     const opening = `${selectedEntryContext(entryOf(id))}\n\n${handoffOpening(r1.text)}`;
@@ -295,7 +302,7 @@ export function registerChatRoutes({
     addFilesTouched(chat, r2.filesTouched);
     addFilesTouched(chat, refreshCvQuality(entryOf(id), r2.filesTouched));
     if (r2.ok) {
-      appendMessage(chat, 'assistant', r2.text, nowIso());
+      for (const update of assistantUpdates(r2)) appendMessage(chat, 'assistant', update, nowIso());
     } else {
       appendMessage(chat, 'system', r2.error || 'handoff turn failed', nowIso());
     }
@@ -303,6 +310,7 @@ export function registerChatRoutes({
       sseSend(res, 'error', { message: `handoff transcript save failed: ${e.message}` });
       return sseEnd(res);
     }
+    checkpoint(`save completed handoff - ${id}`);
     if (r2.ok) sseSend(res, 'done', { engine: to });
     else sseSend(res, 'error', {
       message: r2.error || 'handoff turn failed',
@@ -363,17 +371,18 @@ export function registerChatRoutes({
     addFilesTouched(chat, r.filesTouched);
     addFilesTouched(chat, refreshCvQuality(entry, r.filesTouched));
     if (r.ok) {
-      appendMessage(chat, 'assistant', r.text, nowIso());
+      for (const update of assistantUpdates(r)) appendMessage(chat, 'assistant', update, nowIso());
     } else {
       appendMessage(chat, 'system', r.error || 'turn failed', nowIso());
     }
     try { saveChatFn(repoRoot, id, chat); } catch (e) {
       console.error('chat transcript save failed:', e.message); // transcript loss only - agent session still resumable
     }
+    checkpoint(`save chat - ${id}`);
 
     if (r.ok) {
       sseSend(res, 'done', {
-        text: r.text, sessionId: chat.cliSessionId, usage: r.usage, filesTouched: chat.filesTouched,
+        text: r.text, updates: assistantUpdates(r), sessionId: chat.cliSessionId, usage: r.usage, filesTouched: chat.filesTouched,
       });
     } else {
       sseSend(res, 'error', {
@@ -415,12 +424,14 @@ export function registerChatRoutes({
       appendMessage(chat, 'user', text, nowIso());
       appendMessage(chat, 'assistant', answer, nowIso());
       saveChatFn(repoRoot, id, chat);
+      checkpoint(`save fit assessment - ${id}`);
       sseSend(res, 'delta', { text: answer });
       sseSend(res, 'done', { text: answer, engine, usage: result.usage, filesTouched: chat.filesTouched });
     } catch (error) {
       appendMessage(chat, 'user', text, nowIso());
       appendMessage(chat, 'system', error.message, nowIso());
       try { saveChatFn(repoRoot, id, chat); } catch { /* preserve the primary provider error */ }
+      checkpoint(`save failed chat - ${id}`);
       sseSend(res, 'error', { message: error.message, engine, filesTouched: chat.filesTouched });
     } finally {
       running.delete(id);

@@ -7,6 +7,10 @@ const SCOUT_RUNTIME_STATES = {
   found: ['/assets/scout-found.png', 'Scout found a strong match'], success: ['/assets/scout-found.png', 'Scout finished successfully'],
   warning: ['/assets/scout-warning.png', 'Scout needs your attention'],
 };
+const SCOUT_RUNTIME_ALIGNMENT = {
+  idle: [1.7, 4.8], listening: [1.7, 4.8], thinking: [2.8, 3.2], searching: [0.6, -1.4],
+  writing: [1.4, -1.8], explaining: [1.4, -1.8], found: [4.5, -1.6], success: [4.5, -1.6], warning: [0.7, -0.1],
+};
 function activityState(activity) {
   const value = String(activity || '').toLowerCase();
   if (/search|read|fetch|browse|source|advert/.test(value)) return 'searching';
@@ -29,6 +33,8 @@ function applyScoutState(element, state, { reducedMotion = false } = {}) {
   sprite.style.setProperty('--scout-columns', 4); sprite.style.setProperty('--scout-rows', 4);
   sprite.style.setProperty('--scout-frames', 16); sprite.style.setProperty('--scout-duration', '2s');
   sprite.style.setProperty('--scout-iterations', ['found','success','warning'].includes(state) ? '1' : 'infinite');
+  const align = SCOUT_RUNTIME_ALIGNMENT[state] || [0, 0];
+  sprite.style.setProperty('--scout-align-x', `${align[0]}%`); sprite.style.setProperty('--scout-align-y', `${align[1]}%`);
   sprite.style.setProperty('--scout-still-x', '0%'); sprite.style.setProperty('--scout-still-y', '0%');
   sprite.classList.toggle('reduced-motion', reducedMotion);
 }
@@ -43,6 +49,11 @@ function discoveryStorageKey(identity = 'default') {
 }
 function mergeAcknowledged(current, entries) {
   return [...new Set([...(current || []), ...(entries || []).map((entry) => entry.id).filter(Boolean)])];
+}
+function codexTaskUrl(sessionId) {
+  const value = String(sessionId || '').trim();
+  if (!/^[A-Za-z0-9-]+$/.test(value)) return null;
+  return `codex://threads/${encodeURIComponent(value)}`;
 }
 
 const Scout = {
@@ -62,6 +73,7 @@ const Scout = {
   discoveries: [],
   discoveryTimer: null,
   scanRunning: false,
+  lastSyncPullAt: null,
 
   async api(pathname, opts) {
     const r = await fetch(pathname, opts);
@@ -666,7 +678,6 @@ const Scout = {
       body: JSON.stringify(payload),
     });
     if (r && r.ok) {
-      if (r.committed === false) alert('Saved, but not committed to git - mention it to Claude.');
       const activeTab = this.state.tab;
       await this.loadOpportunities();
       this.showTab(activeTab);
@@ -1031,6 +1042,9 @@ const Scout = {
         ${c.engine && c.data.cliSessionId
           ? '<button class="act" onclick="Scout.handoffChat()">summarise &amp; switch</button>'
           : ''}
+        ${c.engine === 'codex' && codexTaskUrl(c.data.cliSessionId)
+          ? '<button class="act" onclick="Scout.openCodexTask()">open in Codex</button>'
+          : ''}
         <button class="act" style="margin-left:auto" onclick="Scout.closeChat()">close</button>
       </div>
       <div class="chat-companion">${scoutMarkup(c.streaming ? 'thinking' : 'listening')}<div class="scout-bubble tail-left"><span id="scout-chat-status">${c.streaming ? 'I’m thinking…' : 'Ask me anything about this opportunity.'}</span></div></div>
@@ -1064,7 +1078,43 @@ const Scout = {
 
   chatBubble(role, text) {
     const avatar = role === 'assistant' ? scoutMarkup('explaining', 'scout-chat-avatar') : '';
+    if (role === 'system' && /(?:error|failed|could not|couldn.t|timed out|not found|spawn|sandbox|refusing|cancelled)/i.test(String(text || ''))) {
+      return `<div class="chat-row system"><div class="chat-msg system chat-error"><span>Scout couldn’t complete that step. Your saved work is still available.</span><details><summary>Technical details</summary><pre>${this.esc(text)}</pre></details></div></div>`;
+    }
     return `<div class="chat-row ${this.esc(role)}">${avatar}<div class="chat-msg ${this.esc(role)}">${this.esc(text)}</div></div>`;
+  },
+
+  async refreshSyncStatus({ retry = false } = {}) {
+    try {
+      let retryStatus = null;
+      if (retry) {
+        const response = await fetch('/api/sync/retry', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+        retryStatus = await response.json().catch(() => null);
+      }
+      const status = await this.api('/api/sync/status');
+      const el = document.getElementById('sync-status');
+      if (!el || !status) return;
+      const labels = {
+        disabled: 'Local only', 'setup-required': 'Local only', synced: 'Synced', syncing: 'Backing up…',
+        offline: 'Offline — saved locally', pending: 'Backup pending', 'needs-attention': 'Backup needs attention',
+      };
+      el.textContent = labels[status.state] || 'Backup status';
+      el.dataset.state = status.state || 'disabled';
+      el.title = status.error || (status.enabled ? 'Open Backup & sync settings' : 'Private backup is optional');
+      const pulledAt = retryStatus?.pulledAt || status.pulledAt;
+      if (pulledAt && pulledAt !== this.lastSyncPullAt) {
+        this.lastSyncPullAt = pulledAt;
+        await this.loadOpportunities();
+      }
+    } catch { /* backup status never blocks the local dashboard */ }
+  },
+
+  openCodexTask() {
+    const href = codexTaskUrl(this.chat?.engine === 'codex' ? this.chat?.data?.cliSessionId : null);
+    if (!href) return alert('This Scout chat does not have a resumable Codex task yet.');
+    const link = document.createElement('a');
+    link.href = href;
+    link.click();
   },
 
   setChatScoutState(state, message) {
@@ -1179,17 +1229,25 @@ const Scout = {
         const liveEl = active ? body.querySelector('#chat-live') : null;
         if (event === 'delta' && liveEl) {
           this.setChatScoutState('explaining', 'I’m putting the answer together…');
-          live += (live ? '\n\n' : '') + data.text;
-          liveEl.textContent = live;
+          if (live) {
+            liveEl.removeAttribute('id');
+            liveEl.closest('.chat-row')?.insertAdjacentHTML('afterend', `<div class="chat-row assistant">${scoutMarkup('explaining', 'scout-chat-avatar')}<div class="chat-msg assistant" id="chat-live"></div></div>`);
+            this.initScoutSprites(body);
+          }
+          live = data.text;
+          const nextLive = body.querySelector('#chat-live');
+          if (nextLive) nextLive.textContent = data.text;
         }
         if (event === 'tool' && liveEl) {
           const state = activityState(data.activity || data.label);
           this.setChatScoutState(state, state === 'searching' ? 'I’m checking the advert…' : state === 'writing' ? 'I’m updating your files…' : 'I’m working on it…');
-          liveEl.insertAdjacentHTML('beforebegin', `<div class="chat-msg tool">${this.esc(data.label)}</div>`);
         }
         if (event === 'done') {
           this.setChatScoutState('success', 'Done. Have a look.');
-          c.data.messages.push({ role: 'user', text }, { role: 'assistant', text: data.text });
+          c.data.messages.push(
+            { role: 'user', text },
+            ...(data.updates?.length ? data.updates : [data.text]).filter(Boolean).map((update) => ({ role: 'assistant', text: update })),
+          );
           c.data.cliSessionId = data.sessionId;
           if (data.filesTouched) c.data.filesTouched = data.filesTouched;
         }
@@ -1383,7 +1441,12 @@ const Scout = {
         else if (b.dataset.tab) this.showTab(b.dataset.tab);
       }));
     document.getElementById?.('scan-now')?.addEventListener('click', () => this.scanNow());
+    document.getElementById?.('sync-status')?.addEventListener('click', () => window.ScoutSetup?.openSettings?.());
+    window.addEventListener?.('focus', () => this.refreshSyncStatus({ retry: true }));
+    document.addEventListener?.('visibilitychange', () => { if (!document.hidden) this.refreshSyncStatus({ retry: true }); });
     this.loadOpportunities();
+    this.refreshSyncStatus();
+    window.setInterval?.(() => this.refreshSyncStatus(), 5 * 60 * 1000);
   },
 };
 window.Scout = Scout;

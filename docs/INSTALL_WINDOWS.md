@@ -16,11 +16,14 @@ Scout is an unsigned Windows 10/11 public beta. It keeps its workspace on your c
 3. Import a selectable-text PDF, DOCX, Markdown or text CV. Scanned PDFs need OCR first.
 4. Generate one bounded proposal, review all five staged profile/CV/search files, then explicitly choose **Approve and activate**. Approval uses no AI operation and nothing is activated silently.
 5. Run the supervised first scan inside Settings and review the dashboard. Only then enable an optional daily scan.
+6. Optionally choose **Set up private backup**. Scout explains how to create an empty private GitHub repository, checks Git and Git Credential Manager, and signs in through your browser. You can choose **Not now** and enable backup later in Settings without losing any Scout features.
 
 Scout runs as `Scout.exe` in the Windows notification area. Use its arrow-menu icon to open, restart, check for updates, or quit Scout. The supporting local server appears as `ScoutRuntime.exe`, not a generic Node process.
 
 ## Privacy and recovery
 
-The default private workspace is `%USERPROFILE%\Documents\Scout Workspace`. It survives upgrades and uninstall. Do not put it in a public repository or share its logs. If Scout does not open, launch it again and use **Settings → Restart Scout**; diagnostic logs are in the workspace's `logs` folder.
+The default workspace is `%USERPROFILE%\Documents\Scout Workspace`. It survives upgrades and uninstall, and local-only use needs neither Git nor GitHub. If you enable backup, use only the private workspace repository Scout guides you to create—never the public Scout application repository and never a public repository. Scout keeps ordinary career files readable in that private repository and adds encryption for credentials and generated documents. Keep the one-time recovery key somewhere outside the computer.
+
+On a new computer, choose **Restore my existing Scout workspace** on the first screen, paste the private repository's HTTPS URL, sign in through Git Credential Manager, and enter either the recovery passphrase or recovery key. Scout validates the restored workspace before installing it and will not overwrite an existing non-empty workspace. If Scout does not open, launch it again and use **Settings → Restart Scout**; diagnostic logs are in the workspace's `logs` folder and are never backed up.
 
 To upgrade, use the tray menu to quit Scout, then install a newer release over the existing application. To uninstall, use Windows Installed Apps; remove any scheduled scan first. Your workspace is deliberately preserved.

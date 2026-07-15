@@ -28,7 +28,7 @@ test('custom CV recommendations are preselected but remain optional', () => {
   assert.match(html, /id="cv-option-xyz"[^>]*checked/);
   assert.match(html, /id="cv-option-humanize"[^>]*checked/);
   assert.match(html, /recommends both options, but they are optional/i);
-  assert.match(html, /app\.js\?v=beta-9/);
+  assert.match(html, /app\.js\?v=beta-10/);
 });
 
 test('configured categories drive labels and legacy category mapping', () => {
@@ -56,6 +56,15 @@ test('configured triage thresholds drive score presentation', () => {
   assert.equal(scout.fitClass(81), 'fit-medium');
   assert.equal(scout.fitClass(64), 'fit-medium');
   assert.equal(scout.fitClass(63), 'fit-weak');
+});
+
+test('Codex chats use the canonical desktop task deep link and raw tool commands stay hidden', () => {
+  const { context } = loadScout();
+  assert.equal(context.codexTaskUrl('019f1234-abcd-7890'), 'codex://threads/019f1234-abcd-7890');
+  assert.equal(context.codexTaskUrl('../unsafe'), null);
+  const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /chat-msg tool/);
+  assert.match(source, /Technical details/);
 });
 
 test('rendered category lanes escape configured labels', () => {

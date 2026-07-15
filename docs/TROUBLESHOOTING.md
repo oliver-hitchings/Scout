@@ -30,6 +30,18 @@ Check `scout schedule status`, confirm the native scheduler entry points to the 
 
 Scout serves the UI on loopback at `http://127.0.0.1:8459`. Close stale Scout processes before retrying. Do not expose the port to the network. From source, run `npm test` before `npm start` and inspect terminal output.
 
+## Private backup cannot be enabled
+
+Backup is optional. Confirm Git and Git Credential Manager are installed, restart Scout after installation, and use a credential-free `https://github.com/owner/repository` URL. Connecting a local workspace requires an empty Private repository; use **Restore my existing workspace** for a repository that already contains Scout data. Scout refuses public repositories and refuses to push `.env`, generated PDF/DOCX files or other sensitive ignored paths when they are already tracked in Git.
+
+## Backup is offline, pending, or needs attention
+
+**Offline — saved locally** means Scout made a local commit and will retry later. **Needs attention** means both the computer and GitHub have new history; Scout deliberately does not reset, rebase, merge or force-push. Preserve both copies and resolve the Git history manually before selecting **Retry**. Never delete `.git`, `.scout/sync.json` or `.scout-backup/` as a conflict workaround.
+
+## Restore fails
+
+Restore requires an empty target folder, the private repository HTTPS URL, and either the passphrase or emergency recovery key. Scout rejects malformed/tampered recovery data, symlinks, unsupported workspace schemas and workspaces that fail `scout doctor`. Codex/Claude authentication is not restored; sign in to the provider separately. Startup and scheduled scans require explicit confirmation on the new computer.
+
 ## SmartScreen or checksum mismatch
 
 Unsigned beta installers may trigger SmartScreen. Compare `Get-FileHash -Algorithm SHA256` with the release checksum. If it differs, do not run the file; download again from the official release. A matching checksum does not replace antivirus scanning or code signing.

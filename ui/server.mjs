@@ -22,6 +22,10 @@ import {
 } from './lib/onboardingProposal.mjs';
 import { loadDeviceSettings, pendingDeviceSections, saveDeviceSettings, setWindowsStartup } from './lib/deviceSettings.mjs';
 import { checkForUpdate } from './lib/updates.mjs';
+import {
+  confirmRecoveryKey, connectWorkspaceSync, detectGit, disableWorkspaceSync, pendingRecoveryKey,
+  queueWorkspaceSync, restoreWorkspaceFromGithub, syncStatus,
+} from './lib/workspaceSync.mjs';
 import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
 import { loadEnv, saveEnv } from './lib/env.mjs';
 import {
@@ -40,17 +44,26 @@ const TRACKER = WORKSPACE.tracker;
 const REPORTS_DIR = WORKSPACE.reports;
 const SCAN_RUNS = WORKSPACE.scanRuns;
 
-// The dashboard requests opportunities in parallel with setup status. Seed a
-// fresh workspace before accepting requests so that first launch cannot crash
-// when the tracker does not exist yet.
-if (!fs.existsSync(TRACKER)) seedWorkspace(APP_ROOT, WORKSPACE_ROOT);
-else if (path.resolve(APP_ROOT) !== path.resolve(WORKSPACE_ROOT)) syncManagedInstructions(APP_ROOT, WORKSPACE_ROOT);
+// Fresh installations remain uninitialised until the person chooses either a
+// new local workspace or Restore. Existing workspaces keep the legacy fast path.
+if (fs.existsSync(TRACKER) && path.resolve(APP_ROOT) !== path.resolve(WORKSPACE_ROOT)) syncManagedInstructions(APP_ROOT, WORKSPACE_ROOT);
+
+function workspaceInitialised() { return fs.existsSync(TRACKER) && fs.existsSync(WORKSPACE.config); }
+
+function queueCheckpoint(reason, { includeDevicePreferences = false } = {}) {
+  const options = includeDevicePreferences && process.platform === 'win32'
+    ? { deviceSettings: loadDeviceSettings() }
+    : {};
+  return queueWorkspaceSync(WORKSPACE_ROOT, reason, options)
+    .catch((error) => ({ state: 'needs-attention', error: error.message }));
+}
 
 export function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
 export function readTracker() {
+  if (!workspaceInitialised()) return { updated: today(), opportunities: [] };
   return JSON.parse(fs.readFileSync(TRACKER, 'utf8'));
 }
 
@@ -140,6 +153,8 @@ function guardLocalRequest(req, res, url) {
   }
 
   const requiresJson = url.pathname.startsWith('/api/chat/')
+    || url.pathname.startsWith('/api/sync/')
+    || url.pathname.startsWith('/api/workspace/')
     || ['POST /api/setup/proposal', 'POST /api/setup/activate', 'DELETE /api/setup/proposal'].includes(`${req.method} ${url.pathname}`);
   if (requiresJson) {
     const mediaType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
@@ -178,6 +193,31 @@ function handleRead(req, res, url) {
     return serveStatic(res, fs.existsSync(requested) ? requested : fallback, type);
   }
   if (req.method === 'GET' && url.pathname === '/api/setup/status') {
+    if (!workspaceInitialised()) {
+      const config = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'templates', 'workspace', 'workspace.json'), 'utf8'));
+      const env = loadEnv(WORKSPACE_ROOT);
+      return sendJson(res, 200, {
+        bootstrap: true,
+        workspaceRoot: WORKSPACE_ROOT,
+        appRoot: APP_ROOT,
+        appVersion: APP_VERSION,
+        config,
+        providers: {},
+        adzunaConfigured: !!(env.ADZUNA_APP_ID && env.ADZUNA_API_KEY),
+        trackerExists: false,
+        established: false,
+        ready: false,
+        setupComplete: false,
+        readiness: {},
+        scanHealth: { healthy: false, lastRunAt: null },
+        schedule: { enabled: false, configured: false, lastResult: 'never' },
+        doctor: { ok: false, workspaceRoot: WORKSPACE_ROOT, checks: {} },
+        device: process.platform === 'win32' ? loadDeviceSettings() : null,
+        git: detectGit(),
+        sync: syncStatus(WORKSPACE_ROOT),
+        pendingSetupSections: [],
+      });
+    }
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
     const providers = detectProviders();
     const env = loadEnv(WORKSPACE_ROOT);
@@ -197,6 +237,8 @@ function handleRead(req, res, url) {
       scanHealth: readScanHealth(),
       schedule: readScheduleSummary(config),
       doctor: doctor(WORKSPACE_ROOT),
+      git: detectGit(),
+      sync: syncStatus(WORKSPACE_ROOT),
       device: process.platform === 'win32' ? loadDeviceSettings() : null,
       pendingSetupSections: [...pendingWorkspaceSections(readiness.established ? { ...config.setup, completedAt: config.setup?.completedAt || 'legacy' } : config.setup), ...pendingDeviceSections(loadDeviceSettings())],
     });
@@ -211,6 +253,12 @@ function handleRead(req, res, url) {
     });
   }
   if (req.method === 'GET' && url.pathname === '/api/opportunities') {
+    if (!workspaceInitialised()) return sendJson(res, 200, {
+      updated: today(), opportunities: [], triage: { action: [], unlock: [], hold: [] },
+      pipeline: {}, scanHealth: { healthy: false, lastRunAt: null },
+      schedule: { enabled: false, configured: false }, categories: JOB_CATEGORIES,
+      workspaceConfig: null, bootstrap: true,
+    });
     const data = readTracker();
     const todayValue = today();
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
@@ -230,6 +278,9 @@ function handleRead(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/scan-health') {
     return sendJson(res, 200, readScanHealth());
+  }
+  if (req.method === 'GET' && url.pathname === '/api/sync/status') {
+    return sendJson(res, 200, syncStatus(WORKSPACE_ROOT));
   }
   if (req.method === 'GET' && url.pathname === '/api/ats-portals') {
     return sendJson(res, 200, { portals: portalSummary(loadPortals(WORKSPACE_ROOT)) });
@@ -348,7 +399,6 @@ import {
   markApplied, markRejected, addApplicationStage, completeApplicationStage,
   setCategory, setCommute,
 } from './lib/tracker.mjs';
-import { gitCommit } from './lib/git.mjs';
 import { renderCv } from './lib/cv.mjs';
 
 const TRACKER_FILE = TRACKER;
@@ -363,6 +413,70 @@ function parseBody(body) {
   try { return JSON.parse(body || '{}'); } catch { return null; }
 }
 
+routes['POST /api/workspace/create'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (workspaceInitialised()) return replyJson(res, 409, { error: 'This Scout workspace already exists' });
+  try {
+    seedWorkspace(APP_ROOT, WORKSPACE_ROOT);
+    return replyJson(res, 200, { ok: true, workspaceRoot: WORKSPACE_ROOT });
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
+routes['POST /api/workspace/restore'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (workspaceInitialised()) return replyJson(res, 409, { error: 'Restore is available only before a workspace is created' });
+  try {
+    const result = await restoreWorkspaceFromGithub({
+      remoteUrl: b.remoteUrl, targetRoot: WORKSPACE_ROOT, secret: b.secret,
+    }, { validateWorkspace: (root) => doctor(root, { requireProvider: false }) });
+    syncManagedInstructions(APP_ROOT, WORKSPACE_ROOT);
+    const health = doctor(WORKSPACE_ROOT, { requireProvider: false });
+    if (!health.ok) return replyJson(res, 409, { error: 'The restored workspace did not pass Scout doctor', doctor: health });
+    return replyJson(res, 200, { ...result, doctor: health });
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
+routes['POST /api/sync/connect'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create the local workspace before setting up backup' });
+  try {
+    const result = await connectWorkspaceSync(WORKSPACE_ROOT, {
+      remoteUrl: b.remoteUrl, passphrase: b.passphrase,
+    }, { deviceSettings: process.platform === 'win32' ? loadDeviceSettings() : null });
+    return replyJson(res, 200, result);
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
+routes['POST /api/sync/backup'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  try { return replyJson(res, 200, await queueCheckpoint(b.reason || 'manual backup')); }
+  catch (e) { return replyJson(res, 500, { error: e.message }); }
+};
+
+routes['POST /api/sync/retry'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  try { return replyJson(res, 200, await queueCheckpoint('retry backup')); }
+  catch (e) { return replyJson(res, 500, { error: e.message }); }
+};
+
+routes['POST /api/sync/disable'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create or restore the workspace first' });
+  return replyJson(res, 200, disableWorkspaceSync(WORKSPACE_ROOT));
+};
+
+routes['POST /api/sync/recovery-key'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  res.setHeader('Cache-Control', 'no-store');
+  return replyJson(res, 200, { recoveryKey: pendingRecoveryKey(WORKSPACE_ROOT) });
+};
+
+routes['POST /api/sync/recovery-key/confirm'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create or restore the workspace first' });
+  return replyJson(res, 200, confirmRecoveryKey(WORKSPACE_ROOT));
+};
+
 function applyTrackerMutation(res, mutate, commitMessage) {
   let data;
   try { data = readTracker(); } catch (e) { return replyJson(res, 500, { error: `tracker unreadable: ${e.message}` }); }
@@ -370,8 +484,8 @@ function applyTrackerMutation(res, mutate, commitMessage) {
   try { next = mutate(data); } catch (e) { return replyJson(res, 400, { error: e.message }); }
   try { fs.writeFileSync(TRACKER_FILE, serializeTracker(next)); }
   catch (e) { return replyJson(res, 500, { error: `write failed: ${e.message}` }); }
-  const commit = gitCommit(WORKSPACE_ROOT, [TRACKER_FILE], commitMessage);
-  return replyJson(res, 200, { ok: true, committed: commit.ok, error: commit.ok ? undefined : commit.error });
+  void queueCheckpoint(commitMessage);
+  return replyJson(res, 200, { ok: true, savedLocally: true, syncQueued: true });
 }
 
 function company(data, id) { try { return findEntry(data, id).company; } catch { return id; } }
@@ -445,13 +559,14 @@ routes['POST /api/cv/save'] = (req, res, body) => {
   try { abs = safeCvPath(WORKSPACE_ROOT, b.path); } catch (e) { return replyJson(res, 400, { error: e.message }); }
   if (typeof b.content !== 'string') return replyJson(res, 400, { error: 'content required' });
   try { fs.writeFileSync(abs, b.content); } catch (e) { return replyJson(res, 500, { error: e.message }); }
-  const commit = gitCommit(WORKSPACE_ROOT, [abs], `ui: edit cv - ${b.path}`);
-  replyJson(res, 200, { ok: true, committed: commit.ok, error: commit.ok ? undefined : commit.error });
+  void queueCheckpoint(`edit cv - ${b.path}`);
+  replyJson(res, 200, { ok: true, savedLocally: true, syncQueued: true });
 };
 
 routes['POST /api/cv/render'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   const r = renderCv(WORKSPACE_ROOT, b.slug || '');
+  if (r.ok) void queueCheckpoint(`render cv - ${b.slug || 'application'}`);
   replyJson(res, 200, r);
 };
 
@@ -459,13 +574,19 @@ routes['POST /api/cv/quality'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try {
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
-    return replyJson(res, 200, runCvQuality(WORKSPACE_ROOT, b.slug || '', { locale: config.locale }));
+    const result = runCvQuality(WORKSPACE_ROOT, b.slug || '', { locale: config.locale });
+    void queueCheckpoint(`review cv quality - ${b.slug || 'application'}`);
+    return replyJson(res, 200, result);
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 
 routes['POST /api/cv/quality/override'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  try { return replyJson(res, 200, overrideCvQuality(WORKSPACE_ROOT, b.slug || '', b.cvSha256 || '')); }
+  try {
+    const result = overrideCvQuality(WORKSPACE_ROOT, b.slug || '', b.cvSha256 || '');
+    void queueCheckpoint(`accept cv draft - ${b.slug || 'application'}`);
+    return replyJson(res, 200, result);
+  }
   catch (e) { return replyJson(res, 409, { error: e.message }); }
 };
 
@@ -477,18 +598,30 @@ routes['POST /api/setup/proposal'] = async (req, res, body) => {
   if (!['codex', 'claude'].includes(provider)) return replyJson(res, 400, { error: 'choose an authenticated AI provider first' });
   if (proposalGenerationRunning) return replyJson(res, 409, { error: 'an onboarding proposal is already being generated' });
   proposalGenerationRunning = true;
-  try { return replyJson(res, 200, await createOnboardingProposal(WORKSPACE_ROOT, provider)); }
+  try {
+    const result = await createOnboardingProposal(WORKSPACE_ROOT, provider);
+    void queueCheckpoint('stage setup proposal');
+    return replyJson(res, 200, result);
+  }
   catch (e) { return replyJson(res, 400, { error: e.message }); }
   finally { proposalGenerationRunning = false; }
 };
 
 routes['POST /api/setup/activate'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  try { return replyJson(res, 200, activateOnboardingProposal(WORKSPACE_ROOT, b.proposalId || '', b.confirmed)); }
+  try {
+    const result = activateOnboardingProposal(WORKSPACE_ROOT, b.proposalId || '', b.confirmed);
+    void queueCheckpoint('activate setup proposal');
+    return replyJson(res, 200, result);
+  }
   catch (e) { return replyJson(res, 409, { error: e.message }); }
 };
 
-routes['DELETE /api/setup/proposal'] = (req, res) => replyJson(res, 200, discardOnboardingProposal(WORKSPACE_ROOT));
+routes['DELETE /api/setup/proposal'] = (req, res) => {
+  const result = discardOnboardingProposal(WORKSPACE_ROOT);
+  void queueCheckpoint('discard setup proposal');
+  return replyJson(res, 200, result);
+};
 
 routes['POST /api/setup/config'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
@@ -513,6 +646,7 @@ routes['POST /api/setup/config'] = (req, res, body) => {
       setup: { ...current.setup, ...(b.setup || {}) },
     };
     writeWorkspaceConfig(WORKSPACE_ROOT, next);
+    void queueCheckpoint('update setup');
     return replyJson(res, 200, { ok: true, config: next });
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
@@ -532,6 +666,7 @@ routes['POST /api/setup/complete'] = (req, res, body) => {
       device.completedSections['windows-startup'] = 1;
       saveDeviceSettings(device);
     }
+    void queueCheckpoint('complete setup', { includeDevicePreferences: true });
     return replyJson(res, 200, { ok: true, completedAt: config.setup.completedAt });
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
@@ -549,6 +684,7 @@ routes['POST /api/device/settings'] = (req, res, body) => {
       settings.startWithWindows = enabled;
     }
     saveDeviceSettings(settings);
+    void queueCheckpoint('update device settings', { includeDevicePreferences: true });
     return replyJson(res, 200, { ok: true, settings, pendingSetupSections: pendingDeviceSections(settings) });
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
@@ -563,6 +699,7 @@ routes['POST /api/setup/section'] = (req, res, body) => {
     settings.deferredSections[b.id] = new Date(Date.now() + 7 * 86400000).toISOString();
   } else return replyJson(res, 400, { error: 'action must be complete or defer' });
   saveDeviceSettings(settings);
+  void queueCheckpoint('update device setup', { includeDevicePreferences: true });
   return replyJson(res, 200, { ok: true, pendingSetupSections: pendingDeviceSections(settings) });
 };
 
@@ -592,6 +729,7 @@ routes['POST /api/setup/credentials'] = (req, res, body) => {
       ADZUNA_APP_ID: typeof b.appId === 'string' ? b.appId.trim() : '',
       ADZUNA_API_KEY: typeof b.apiKey === 'string' ? b.apiKey.trim() : '',
     });
+    void queueCheckpoint('update source credentials');
     return replyJson(res, 200, { ok: true, configured: !!(b.appId && b.apiKey) });
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
@@ -613,6 +751,7 @@ routes['POST /api/setup/import-cv'] = (req, res, body) => {
   extractCvText(imported).then((text) => {
     const extracted = path.join(WORKSPACE.imports, `${name}.txt`);
     fs.writeFileSync(extracted, `${text}\n`, 'utf8');
+    void queueCheckpoint(`import cv - ${name}`);
     replyJson(res, 200, { ok: true, source: `imports/${name}`, extracted: `imports/${path.basename(extracted)}`, text });
   }).catch((e) => {
     fs.rmSync(imported, { force: true });
@@ -652,6 +791,7 @@ routes['POST /api/schedule'] = (req, res, body) => {
       if (result.ok) { config.schedule = { ...config.schedule, enabled: false }; writeWorkspaceConfig(WORKSPACE_ROOT, config); }
     } else if (b.action === 'run-now') result = runScheduledNow();
     else return replyJson(res, 400, { error: 'action must be install, remove, or run-now' });
+    if (result.ok) void queueCheckpoint(`schedule ${b.action}`);
     return replyJson(res, result.ok ? 200 : 500, result);
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
@@ -682,7 +822,7 @@ routes['POST /api/shutdown'] = (req, res) => {
   setTimeout(() => shutdownControl.exit(), 200);
 };
 
-registerChatRoutes({ routes, repoRoot: WORKSPACE_ROOT, readTracker });
+registerChatRoutes({ routes, repoRoot: WORKSPACE_ROOT, readTracker, onCheckpoint: queueCheckpoint });
 
 const isMain = isMainModule(import.meta.url);
 if (isMain) {
@@ -698,6 +838,9 @@ if (isMain) {
   });
   server.on('listening', () => {
     console.log(`Scout UI on http://127.0.0.1:${PORT}`);
+    if (workspaceInitialised()) void queueCheckpoint('startup sync');
   });
   server.listen(PORT, '127.0.0.1');
+  const syncTimer = setInterval(() => { if (workspaceInitialised()) void queueCheckpoint('periodic sync'); }, 5 * 60 * 1000);
+  syncTimer.unref();
 }

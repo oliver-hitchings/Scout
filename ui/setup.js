@@ -92,6 +92,8 @@ const Setup = {
   preferenceDraft: null,
   incrementalSection: null,
   proposal: null,
+  restoredPreferences: null,
+  pendingRecoveryKey: null,
 
   el(id) { return document.getElementById(id); },
 
@@ -106,6 +108,18 @@ const Setup = {
   async refreshStatus({ keepOpen = false } = {}) {
     try {
       this.status = await requestJson('/api/setup/status');
+      if (this.status.bootstrap) {
+        this.proposal = null;
+        this.el('setup-overlay').classList.remove('hidden');
+        this.renderBootstrap();
+        return;
+      }
+      if (this.status.sync?.enabled && !this.pendingRecoveryKey) {
+        const pending = await requestJson('/api/sync/recovery-key', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+        });
+        this.pendingRecoveryKey = pending.recoveryKey || null;
+      }
       this.proposal = (await requestJson('/api/setup/proposal')).proposal;
       window.Scout?.applyWorkspaceConfig?.(this.status.config);
       this.el('setup-title').textContent = this.status.established ? 'Scout settings' : 'Set up Scout';
@@ -114,6 +128,11 @@ const Setup = {
         : 'A private workspace, tuned to your search.';
       const skipped = this.status.trackerExists && localStorage.getItem(SETUP_DEFERRED_KEY) === 'true';
       const pending = this.status.pendingSetupSections || [];
+      if (!keepOpen && this.pendingRecoveryKey) {
+        this.el('setup-overlay').classList.remove('hidden');
+        this.render();
+        return;
+      }
       if (!keepOpen && pending.length && (this.status.setupComplete || this.status.established || this.status.ready || skipped)) {
         this.incrementalSection = pending[0];
         this.el('setup-overlay').classList.remove('hidden');
@@ -197,6 +216,7 @@ const Setup = {
 
   render() {
     this.setMessage();
+    this.el('setup-next').classList.remove('hidden');
     if (this.incrementalSection) return this.renderIncrementalSection();
     this.renderProgress();
     this.el('setup-back').classList.toggle('hidden', this.step === 0);
@@ -217,6 +237,7 @@ const Setup = {
 
   renderWelcome() {
     const established = this.status?.established;
+    const restored = this.restoredPreferences;
     const schedule = this.status?.schedule || {};
     const scheduleText = schedule.enabled
       ? `${this.escape(schedule.provider || 'provider')} daily at ${this.escape(schedule.time || '')}; next run ${this.escape(formatLocalDateTime(schedule.nextRunAt, this.status?.config?.locale))}; last result ${this.escape(schedule.lastResult || 'unknown')}`
@@ -234,10 +255,15 @@ const Setup = {
         <div class="setup-callout"><strong>Daily scan</strong><p>${scheduleText}</p></div>
         ${this.status?.device ? `<div class="setup-callout"><strong>Windows startup</strong><label class="setup-field"><span><input id="setup-start-with-windows" type="checkbox" ${this.status.device.startWithWindows ? 'checked' : ''}> Start Scout when I sign into Windows</span></label><p><button id="setup-save-device" class="act" type="button">Save startup setting</button></p></div>` : ''}
       </div>
+      ${restored ? `<div class="setup-callout"><strong>Choose settings for this computer</strong><p>Your work has been restored. Device integrations stay off until you confirm them here.</p>${this.status?.device && restored.startWithWindows ? '<label class="setup-field"><span><input id="restore-start-with-windows" type="checkbox"> Start Scout with Windows on this computer</span></label>' : ''}${this.status?.schedule?.configured ? `<label class="setup-field"><span><input id="restore-daily-schedule" type="checkbox"> Enable the saved ${this.escape(this.status.schedule.time || '')} daily scan on this computer</span></label>` : ''}<p><button id="restore-apply-device" class="act primary" type="button">Apply selected settings</button> <button id="restore-keep-device-local" class="act" type="button">Keep them off</button></p></div>` : ''}
       <p>You can move or back up the workspace independently. API credentials stay in its ignored <code>.env</code> file and are never shown again here.</p>
-      <p class="meta">Something stuck? <button id="setup-restart" class="act" type="button">Restart Scout</button> restarts the local server and reloads this page.</p></div></div>`;
+      <p class="meta">Something stuck? <button id="setup-restart" class="act" type="button">Restart Scout</button> restarts the local server and reloads this page.</p></div></div>
+      ${established ? this.backupPanelHtml() : ''}`;
     this.el('setup-restart').addEventListener('click', () => this.restartServer());
     this.el('setup-save-device')?.addEventListener('click', () => this.saveDeviceSetting());
+    this.el('restore-apply-device')?.addEventListener('click', () => this.applyRestoredPreferences());
+    this.el('restore-keep-device-local')?.addEventListener('click', () => { this.restoredPreferences = null; this.render(); this.setMessage('Device integrations remain off. You can enable them later in Settings.', 'good'); });
+    if (established) this.bindBackupPanel();
     this.el('setup-next').textContent = established ? 'Review settings' : 'Start setup';
   },
 
@@ -380,10 +406,12 @@ const Setup = {
       <p><button id="setup-run-scan" class="act primary" type="button" ${this.busy ? 'disabled' : ''}>${healthy ? 'Scan now' : 'Run first scan now'}</button></p>
       <div class="setup-callout"><strong>Daily scan schedule</strong><p>${schedule.enabled ? `Enabled at ${this.escape(schedule.time || '')} using ${this.escape(schedule.provider || '')}. Change the time below and save to update it.` : 'Choose when Scout should scan each day. It can be enabled after the first healthy scan.'}</p>
       <label class="setup-field">Daily time<input id="setup-schedule-time" type="time" value="${this.escape(schedule.time || '07:30')}"></label>
-      <p><button id="setup-schedule-save" class="act" type="button" ${healthy ? '' : 'disabled'}>${schedule.enabled ? 'Save daily scan time' : 'Enable daily scan'}</button>${schedule.enabled ? ' <button id="setup-schedule-disable" class="act" type="button">Disable daily scan</button>' : ''}</p></div></div>`;
+      <p><button id="setup-schedule-save" class="act" type="button" ${healthy ? '' : 'disabled'}>${schedule.enabled ? 'Save daily scan time' : 'Enable daily scan'}</button>${schedule.enabled ? ' <button id="setup-schedule-disable" class="act" type="button">Disable daily scan</button>' : ''}</p></div></div>
+      ${this.backupPanelHtml()}`;
     this.el('setup-run-scan').addEventListener('click', () => this.runSupervisedScan());
     this.el('setup-schedule-save').addEventListener('click', () => this.saveSchedule());
     this.el('setup-schedule-disable')?.addEventListener('click', () => this.disableSchedule());
+    this.bindBackupPanel();
     this.el('setup-next').textContent = 'Finish';
   },
 
@@ -398,6 +426,182 @@ const Setup = {
       window.Scout?.loadOpportunities?.();
     } catch (error) { this.setMessage(error.message, 'error'); }
     finally { this.setBusy(false); }
+  },
+
+  renderBootstrap() {
+    const git = this.status?.git || {};
+    this.el('setup-title').textContent = 'Welcome to Scout';
+    this.el('setup-subtitle').textContent = 'Start locally or restore your private workspace.';
+    this.el('setup-progress').innerHTML = '';
+    this.el('setup-back').classList.add('hidden');
+    this.el('setup-next').classList.add('hidden');
+    this.el('setup-skip').classList.add('hidden');
+    this.el('setup-body').innerHTML = `
+      <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame setup-scout-welcome" role="img" aria-label="Scout welcomes you"></span></div><div class="scout-bubble tail-left">
+      <h2>How would you like to begin?</h2>
+      <p>Scout stores your CV, job tracker and chats in a private folder on this computer. Online backup is optional; Scout works fully without GitHub.</p>
+      <div class="setup-grid">
+        <div class="setup-callout"><strong>Set up Scout for the first time</strong><p>Create a new local workspace. You can add private backup at the end or later in Settings.</p><button id="setup-create-workspace" class="act primary" type="button">Create my local workspace</button></div>
+        <div class="setup-callout"><strong>Restore my existing workspace</strong><p>Use a private GitHub repository made by Scout backup. Normal career files remain readable in that private repository; credentials and generated documents are additionally encrypted.</p><button id="setup-show-restore" class="act" type="button">Restore existing workspace</button></div>
+      </div>
+      <div id="setup-restore-form" class="setup-callout hidden">
+        <strong>Restore from private GitHub</strong>
+        <p>${git.installed && git.credentialManager ? 'Git and Git Credential Manager are ready. GitHub will open its normal browser sign-in if needed.' : 'Install Git for Windows with Git Credential Manager, then return here and check again.'}</p>
+        ${git.installed && git.credentialManager ? '' : '<p><a href="https://git-scm.com/download/win" target="_blank" rel="noreferrer">Install Git for Windows</a> <button id="setup-check-git" class="act" type="button">Check again</button></p>'}
+        <label class="setup-field">Private repository HTTPS URL<input id="setup-restore-url" type="url" placeholder="https://github.com/your-name/scout-workspace"></label>
+        <label class="setup-field">Recovery passphrase or recovery key<input id="setup-restore-secret" type="password" autocomplete="off"></label>
+        <p><button id="setup-restore-workspace" class="act primary" type="button" ${git.installed && git.credentialManager ? '' : 'disabled'}>Restore securely</button></p>
+        <p class="meta">Restore requires an empty Scout workspace folder and never overwrites existing work.</p>
+      </div></div></div>`;
+    this.el('setup-create-workspace').addEventListener('click', () => this.createWorkspace());
+    this.el('setup-show-restore').addEventListener('click', () => this.el('setup-restore-form').classList.remove('hidden'));
+    this.el('setup-check-git')?.addEventListener('click', () => location.reload());
+    this.el('setup-restore-workspace')?.addEventListener('click', () => this.restoreWorkspace());
+  },
+
+  async createWorkspace() {
+    this.setMessage('Creating your local private workspace…');
+    try {
+      await requestJson('/api/workspace/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      this.el('setup-next').classList.remove('hidden');
+      await this.refreshStatus({ keepOpen: true });
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  async restoreWorkspace() {
+    const remoteUrl = fieldValue('setup-restore-url').trim();
+    const secret = fieldValue('setup-restore-secret').trim();
+    if (!remoteUrl || !secret) return this.setMessage('Enter the private repository URL and a recovery secret.', 'error');
+    this.setMessage('Signing in, validating and restoring your private workspace…');
+    try {
+      const result = await requestJson('/api/workspace/restore', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ remoteUrl, secret }),
+      });
+      this.restoredPreferences = result.devicePreferences || {};
+      this.el('setup-next').classList.remove('hidden');
+      await this.refreshStatus({ keepOpen: true });
+      this.setMessage(result.devicePreferences ? 'Workspace restored. Review this computer’s startup and schedule preferences before enabling them.' : 'Workspace restored successfully.', 'good');
+      window.Scout?.loadOpportunities?.();
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  async applyRestoredPreferences() {
+    this.setMessage('Applying the settings you selected for this computer…');
+    try {
+      if (this.el('restore-start-with-windows')?.checked) {
+        await requestJson('/api/device/settings', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ startWithWindows: true }),
+        });
+      }
+      if (this.el('restore-daily-schedule')?.checked) {
+        await requestJson('/api/schedule', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'install', time: this.status?.schedule?.time || '07:30', provider: this.status?.config?.schedule?.provider || this.status?.config?.ai?.provider }),
+        });
+      }
+      this.restoredPreferences = null;
+      await this.refreshStatus({ keepOpen: true });
+      this.render();
+      this.setMessage('Selected settings are active on this computer.', 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  backupPanelHtml() {
+    const sync = this.status?.sync || { state: 'disabled' };
+    const git = this.status?.git || {};
+    const gitReady = Boolean(git.installed && git.credentialManager);
+    const labels = {
+      synced: 'Synced', syncing: 'Backing up', offline: 'Offline — changes saved locally',
+      pending: 'Backup pending', 'needs-attention': 'Needs attention', disabled: 'Not enabled', 'setup-required': 'Git setup required',
+    };
+    if (this.pendingRecoveryKey) return `<section class="setup-callout recovery-key-panel" role="status" aria-labelledby="recovery-key-title"><strong id="recovery-key-title">Save your emergency recovery key</strong><p>This key can restore Scout if you forget the passphrase. It will disappear after you confirm it is saved.</p><code id="setup-recovery-key" class="recovery-key" tabindex="0">${this.escape(this.pendingRecoveryKey)}</code><p><button id="setup-copy-recovery" class="act" type="button">Copy key</button> <button id="setup-save-recovery" class="act" type="button">Save key to file</button></p><label class="setup-field"><span><input id="setup-confirm-recovery" type="checkbox"> I saved the recovery key somewhere secure</span></label><p><button id="setup-finish-recovery" class="act primary" type="button">Finish backup setup</button></p></section>`;
+    if (sync.enabled) return `<div class="setup-callout"><strong>Private backup: ${this.escape(labels[sync.state] || sync.state)}</strong><p>Your private GitHub repository is connected. Automatic backup can be turned off without deleting local work or GitHub history.</p>${sync.error ? `<details><summary>Technical details</summary><pre class="setup-preview">${this.escape(sync.error)}</pre></details>` : ''}<p><button id="setup-backup-now" class="act" type="button">Back up now</button> ${['offline', 'pending', 'needs-attention'].includes(sync.state) ? '<button id="setup-retry-backup" class="act" type="button">Retry</button> ' : ''}<button id="setup-disable-backup" class="act" type="button">Turn off automatic backup</button></p></div>`;
+    return `<div class="setup-callout"><strong>Optional private backup</strong><p>Scout works fully on this computer without GitHub. A private repository lets you restore on another computer. Normal career files are readable in that private repository; credentials and generated documents are additionally encrypted.</p><p><button id="setup-show-backup" class="act" type="button">Set up private backup</button> <button id="setup-skip-backup" class="act" type="button">Not now</button></p><div id="setup-backup-form" class="hidden"><p>${gitReady ? 'Git and Git Credential Manager are ready. GitHub will use its normal browser sign-in.' : 'Install Git for Windows with Git Credential Manager before connecting a private repository.'}</p>${gitReady ? '' : '<p><a href="https://git-scm.com/download/win" target="_blank" rel="noreferrer">Install Git for Windows</a> <button id="setup-backup-check-git" class="act" type="button">Check again</button></p>'}<p>A repository is a private online folder with version history. On GitHub, create an empty repository named <code>scout-workspace</code>, select <strong>Private</strong>, and do not add a README, licence or .gitignore.</p><p><a href="https://github.com/new" target="_blank" rel="noreferrer">Create a private GitHub repository</a></p><label class="setup-field">Repository HTTPS URL<input id="setup-backup-url" type="url" placeholder="https://github.com/your-name/scout-workspace"></label><label class="setup-field">Recovery passphrase (at least 12 characters)<input id="setup-backup-passphrase" type="password" autocomplete="new-password"></label><label class="setup-field"><span><input id="setup-backup-confirm" type="checkbox"> I understand normal career files are readable in my private repository and I will save the emergency recovery key.</span></label><p><button id="setup-connect-backup" class="act primary" type="button" ${gitReady ? '' : 'disabled'}>Connect and create first backup</button></p></div></div>`;
+  },
+
+  bindBackupPanel() {
+    this.el('setup-show-backup')?.addEventListener('click', () => this.el('setup-backup-form').classList.remove('hidden'));
+    this.el('setup-skip-backup')?.addEventListener('click', () => this.setMessage('Private backup skipped. You can enable it later in Settings.', 'good'));
+    this.el('setup-backup-check-git')?.addEventListener('click', () => location.reload());
+    this.el('setup-connect-backup')?.addEventListener('click', () => this.connectBackup());
+    this.el('setup-backup-now')?.addEventListener('click', () => this.backupNow());
+    this.el('setup-retry-backup')?.addEventListener('click', () => this.retryBackup());
+    this.el('setup-disable-backup')?.addEventListener('click', () => this.disableBackup());
+    this.el('setup-copy-recovery')?.addEventListener('click', () => this.copyRecoveryKey());
+    this.el('setup-save-recovery')?.addEventListener('click', () => this.saveRecoveryKey());
+    this.el('setup-finish-recovery')?.addEventListener('click', () => this.finishRecoveryKey());
+  },
+
+  async connectBackup() {
+    const remoteUrl = fieldValue('setup-backup-url').trim();
+    const passphrase = fieldValue('setup-backup-passphrase');
+    if (!this.el('setup-backup-confirm')?.checked) return this.setMessage('Confirm the private-repository and recovery-key notice first.', 'error');
+    this.setMessage('Checking privacy, signing in and creating the first backup…');
+    try {
+      const result = await requestJson('/api/sync/connect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ remoteUrl, passphrase }) });
+      this.pendingRecoveryKey = result.recoveryKey;
+      await this.refreshStatus({ keepOpen: true }); this.render();
+      this.setMessage(result.status?.state === 'synced'
+        ? 'First backup complete. Save the emergency recovery key to finish.'
+        : 'Private backup is enabled, but the GitHub copy is still pending. Save the emergency recovery key, then use Retry when the connection is available.', result.status?.state === 'synced' ? 'good' : 'error');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  async copyRecoveryKey() {
+    try {
+      await navigator.clipboard.writeText(this.pendingRecoveryKey);
+    } catch {
+      const key = this.el('setup-recovery-key');
+      const range = document.createRange(); range.selectNodeContents(key);
+      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+      document.execCommand('copy'); selection.removeAllRanges();
+    }
+    this.setMessage('Recovery key copied.', 'good');
+  },
+
+  saveRecoveryKey() {
+    const content = `Scout emergency recovery key\n\n${this.pendingRecoveryKey}\n\nKeep this file private. Either this key or your recovery passphrase can restore the encrypted Scout backup.\n`;
+    const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }));
+    const link = document.createElement('a'); link.href = url; link.download = 'scout-recovery-key.txt'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    this.setMessage('Recovery-key file prepared. Store it somewhere secure.', 'good');
+  },
+
+  async finishRecoveryKey() {
+    if (!this.el('setup-confirm-recovery')?.checked) return this.setMessage('Confirm that you saved the recovery key first.', 'error');
+    try {
+      await requestJson('/api/sync/recovery-key/confirm', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      });
+      this.pendingRecoveryKey = null;
+      this.render();
+      this.setMessage(this.status?.sync?.state === 'synced'
+        ? 'Private backup is enabled and up to date.'
+        : 'Recovery key confirmed. Your GitHub backup is still pending; Scout will retry automatically.', this.status?.sync?.state === 'synced' ? 'good' : 'error');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  async backupNow() {
+    try {
+      const result = await requestJson('/api/sync/backup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'manual backup' }) });
+      await this.refreshStatus({ keepOpen: true }); this.render();
+      this.setMessage(result.state === 'synced' ? 'Backup completed.' : 'Saved locally. The GitHub backup is still pending.', result.state === 'synced' ? 'good' : 'error');
+    }
+    catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  async retryBackup() {
+    try {
+      const result = await requestJson('/api/sync/retry', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      await this.refreshStatus({ keepOpen: true }); this.render();
+      this.setMessage(result.state === 'synced' ? 'Backup is synced.' : 'Scout still needs attention. Your work remains saved locally.', result.state === 'synced' ? 'good' : 'error');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  async disableBackup() {
+    if (!window.confirm('Turn off automatic backup on this computer? Local work and existing GitHub history will remain.')) return;
+    try { await requestJson('/api/sync/disable', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); await this.refreshStatus({ keepOpen: true }); this.render(); this.setMessage('Automatic backup is off.', 'good'); }
+    catch (error) { this.setMessage(error.message, 'error'); }
   },
 
   async generateProposal() {

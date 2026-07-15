@@ -1,0 +1,95 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import {
+  initializeRecoveryBackup, loadRecoveryHeader, recoveryFileList, restoreRecoveryBackup,
+  restoreRecoveryBackupWithKey, unlockRecoveryKey, writeRecoveryBackup,
+} from './recoveryBackup.mjs';
+import crypto from 'node:crypto';
+
+function fixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-recovery-'));
+  fs.mkdirSync(path.join(root, 'applications', 'example'), { recursive: true });
+  fs.mkdirSync(path.join(root, '.scout', 'backups'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.env'), 'SECRET=synthetic\n');
+  fs.writeFileSync(path.join(root, 'applications', 'example', 'cv.pdf'), Buffer.from([0, 1, 2, 3]));
+  fs.writeFileSync(path.join(root, 'applications', 'example', 'cv.typ'), 'public source');
+  fs.writeFileSync(path.join(root, '.scout', 'backups', 'before.json'), '{}');
+  return root;
+}
+
+test('recovery backup encrypts only resumable ignored state and restores with either secret', () => {
+  const root = fixture();
+  const passphrase = 'correct horse battery staple';
+  const created = initializeRecoveryBackup(root, passphrase, { devicePreferences: { startWithWindows: true } });
+  const raw = fs.readFileSync(path.join(root, '.scout-backup', 'v1', 'header.json'), 'utf8');
+  assert.doesNotMatch(raw, /synthetic|cv\.pdf|startWithWindows/);
+  assert.deepEqual(recoveryFileList(root), ['.env', '.scout/backups/before.json', 'applications/example/cv.pdf']);
+  assert.deepEqual(unlockRecoveryKey(created.header, passphrase), created.dataKey);
+  assert.deepEqual(unlockRecoveryKey(created.header, created.recoveryKey), created.dataKey);
+
+  const preserved = writeRecoveryBackup(root, created.dataKey, created.header);
+  assert.equal(preserved.changed, false);
+
+  for (const secret of [passphrase, created.recoveryKey]) {
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-restored-'));
+    const restored = restoreRecoveryBackup(root, target, secret);
+    assert.equal(fs.readFileSync(path.join(target, '.env'), 'utf8'), 'SECRET=synthetic\n');
+    assert.deepEqual(fs.readFileSync(path.join(target, 'applications', 'example', 'cv.pdf')), Buffer.from([0, 1, 2, 3]));
+    assert.equal(restored.devicePreferences.startWithWindows, true);
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('unchanged encrypted files retain their blob and changed files rotate only their blob', () => {
+  const root = fixture();
+  const created = initializeRecoveryBackup(root, 'a sufficiently long passphrase');
+  const first = loadRecoveryHeader(root);
+  const firstIndex = JSON.stringify(first.index);
+  const blobsBefore = new Map(fs.readdirSync(path.join(root, '.scout-backup/v1/files')).map((name) => [name, fs.readFileSync(path.join(root, '.scout-backup/v1/files', name), 'utf8')]));
+  fs.writeFileSync(path.join(root, '.env'), 'SECRET=changed\n');
+  writeRecoveryBackup(root, created.dataKey, first);
+  const blobsAfter = new Map(fs.readdirSync(path.join(root, '.scout-backup/v1/files')).map((name) => [name, fs.readFileSync(path.join(root, '.scout-backup/v1/files', name), 'utf8')]));
+  assert.notEqual(JSON.stringify(loadRecoveryHeader(root).index), firstIndex);
+  assert.equal([...blobsAfter].filter(([name, value]) => blobsBefore.get(name) === value).length, 2);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('wrong secrets and modified ciphertext are rejected', () => {
+  const root = fixture();
+  initializeRecoveryBackup(root, 'another sufficiently long passphrase');
+  assert.throws(() => restoreRecoveryBackup(root, fs.mkdtempSync(path.join(os.tmpdir(), 'scout-bad-')), 'wrong but long enough'), /incorrect/);
+  const blob = path.join(root, '.scout-backup/v1/files', fs.readdirSync(path.join(root, '.scout-backup/v1/files'))[0]);
+  const value = JSON.parse(fs.readFileSync(blob, 'utf8'));
+  value.data = `${value.data.slice(0, -1)}A`;
+  fs.writeFileSync(blob, JSON.stringify(value));
+  assert.throws(() => restoreRecoveryBackup(root, fs.mkdtempSync(path.join(os.tmpdir(), 'scout-bad-')), 'another sufficiently long passphrase'));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('authenticated recovery indexes still reject path traversal', () => {
+  const root = fixture();
+  const created = initializeRecoveryBackup(root, 'yet another long passphrase');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', created.dataKey, iv);
+  cipher.setAAD(Buffer.from('scout-recovery-index-v1'));
+  const data = Buffer.concat([cipher.update(Buffer.from(JSON.stringify({
+    files: [{ path: '../../outside.txt', id: 'invalid', sha256: 'invalid', size: 0 }],
+  }))), cipher.final()]);
+  const header = {
+    ...created.header,
+    index: {
+      iv: iv.toString('base64url'),
+      tag: cipher.getAuthTag().toString('base64url'),
+      data: data.toString('base64url'),
+    },
+  };
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-traversal-'));
+  assert.throws(() => restoreRecoveryBackupWithKey(root, target, created.dataKey, header), /Invalid recovery path/);
+  assert.equal(fs.existsSync(path.resolve(target, '..', '..', 'outside.txt')), false);
+  fs.rmSync(target, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
+});

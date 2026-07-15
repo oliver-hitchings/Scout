@@ -334,6 +334,25 @@ test('bounded fit assessment receives the selected job, identifies its provider 
   assert.equal(JSON.parse(get.text()).chat.engine, 'claude');
 });
 
+test('completed assistant updates persist as separate chat messages', async () => {
+  const root = tmpRoot();
+  const checkpoints = [];
+  const runTurnFn = () => ({
+    stop() {},
+    finished: Promise.resolve({
+      ok: true, text: 'First update\n\nSecond update', updates: ['First update', 'Second update'],
+      sessionId: 'session-one', filesTouched: [], usage: {},
+    }),
+  });
+  const routes = routeFixture(root, { runTurnFn, onCheckpoint: (reason) => checkpoints.push(reason) });
+  const response = await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', text: 'Help me' }));
+  const done = sseEvents(response.text()).find((event) => event.event === 'done');
+  assert.deepEqual(done.data.updates, ['First update', 'Second update']);
+  const saved = loadChat(root, ID);
+  assert.deepEqual(saved.messages.filter((message) => message.role === 'assistant').map((message) => message.text), ['First update', 'Second update']);
+  assert.deepEqual(checkpoints, [`save chat - ${ID}`]);
+});
+
 test('handoff build errors end SSE and release the running slot', { concurrency: false }, async () => {
   const root = tmpRoot();
   const chat = emptyChat('claude');

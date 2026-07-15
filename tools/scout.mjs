@@ -14,6 +14,7 @@ import { runStructuredTurn } from '../ui/lib/structuredTurn.mjs';
 import { compactCandidates, SCAN_ASSESSMENT_SCHEMA, validateAssessments, writeScanArtifacts } from '../ui/lib/scanPipeline.mjs';
 import { isMainModule } from '../ui/lib/mainModule.mjs';
 import { runCvQuality } from '../ui/lib/cvQuality.mjs';
+import { queueWorkspaceSync } from '../ui/lib/workspaceSync.mjs';
 import { registerDailySchedule, registerUnixSchedule, removeSchedule, runScheduledNow, scheduleStatus, schedulerRegistrationScript } from '../ui/lib/scheduler.mjs';
 import {
   loadWorkspaceConfig, resolveWorkspaceRoot, seedWorkspace as seedWorkspaceFiles,
@@ -108,7 +109,9 @@ export function migrateLegacyWorkspace(sourceRoot, targetRoot) {
 }
 
 export async function runScan(root, provider, mode) {
-  return runScanWith(root, provider, mode);
+  const result = await runScanWith(root, provider, mode);
+  await queueWorkspaceSync(root, `complete ${mode || 'primary'} scan`).catch(() => {});
+  return result;
 }
 
 function compactSource(result, configured = true) {
@@ -280,6 +283,7 @@ async function main() {
     if (!slug) throw new Error('cv quality requires an application slug');
     const config = loadWorkspaceConfig(root);
     const result = runCvQuality(root, slug, { locale: config.locale });
+    await queueWorkspaceSync(root, `review cv quality - ${slug}`).catch(() => {});
     print(result);
     if (!result.pass) process.exitCode = 1;
     return;

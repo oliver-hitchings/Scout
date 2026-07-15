@@ -93,6 +93,7 @@ export function runTurn({
         resolve({
           ok: true,
           text: state.done.text || state.deltas.join('\n\n'),
+          updates: state.deltas.filter((value) => String(value || '').trim()),
           sessionId: state.sessionId,
           filesTouched,
           usage: state.done.usage || {},

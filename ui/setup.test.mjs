@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
   buildConfig,
@@ -79,4 +80,20 @@ test('a first scan starts automatically only when the workspace has never scanne
   assert.equal(shouldAutoRunFirstScan({}), true);
   assert.equal(shouldAutoRunFirstScan({}, false), false);
   assert.equal(shouldAutoRunFirstScan({ lastRunAt: '2026-07-12T10:00:00.000Z' }), false);
+});
+
+test('first-run setup offers optional local create, private backup guidance, and restore', () => {
+  const source = fs.readFileSync(new URL('./setup.js', import.meta.url), 'utf8');
+  assert.match(source, /Set up Scout for the first time/);
+  assert.match(source, /Restore my existing workspace/);
+  assert.match(source, /Scout works fully.*without GitHub/s);
+  assert.match(source, /select <strong>Private<\/strong>/);
+  assert.match(source, />Not now</);
+  assert.match(source, /Save your emergency recovery key/);
+  assert.match(source, /Save key to file/);
+  assert.doesNotMatch(source, /window\.prompt/);
+  assert.match(source, /GitHub copy is still pending/);
+  assert.match(source, /setup-backup-check-git/);
+  assert.match(source, />Retry</);
+  assert.match(source, /api\/sync\/recovery-key\/confirm/);
 });

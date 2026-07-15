@@ -14,9 +14,15 @@ The first unsigned beta may trigger Microsoft SmartScreen. A matching checksum p
 
 For a source checkout, install Node.js 24 LTS, then run `npm ci` and `npm start`.
 
-## 2. Create a private workspace
+## 2. Create or restore a private workspace
 
-Accept the default `%USERPROFILE%\Documents\Scout Workspace`, or choose another private local folder. Do not select a public repository or a broadly shared/synchronised folder.
+On first launch choose **Set up Scout for the first time** for a new local workspace, or **Restore my existing workspace** when moving to another computer. Accept the default `%USERPROFILE%\Documents\Scout Workspace`, or select another private local folder before launch with `SCOUT_WORKSPACE`.
+
+Scout works fully without GitHub. Optional private backup requires Git and Git Credential Manager. Scout guides a new user to create an empty GitHub repository named `scout-workspace`, select **Private**, and paste its credential-free HTTPS URL. Git Credential Manager performs browser sign-in; Scout never asks for a GitHub token.
+
+When enabling backup, choose a recovery passphrase and save the one-time emergency recovery key. Normal CV, profile, tracker and chat files remain readable in the private repository so Git history remains useful. `.env`, generated PDF/DOCX files and Scout recovery state are stored as authenticated encrypted blobs. Do not make the repository public.
+
+Restore clones into a temporary directory, validates the workspace, decrypts recovery data and installs it only after Scout doctor passes. On the new computer, sign in to Codex or Claude again and explicitly choose whether to re-enable Windows startup and scheduled scans.
 
 From a source checkout:
 
@@ -24,7 +30,7 @@ From a source checkout:
 node tools/scout.mjs workspace init --workspace "$HOME\Documents\Scout Workspace"
 ```
 
-The workspace contains `workspace.json`, your profile, CV, tracker, reports, applications, imports, logs and ignored credentials. It is separate from application files and survives upgrades and uninstall.
+The workspace contains `workspace.json`, your profile, CV, tracker, reports, applications, imports, logs and ignored credentials. It is separate from application files and survives upgrades and uninstall. Automatic backup can be disabled without deleting local work or existing private GitHub history.
 
 ## 3. Connect an AI provider
 

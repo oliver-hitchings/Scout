@@ -15,7 +15,7 @@ function binary(name) {
   return { available: r.status === 0, version: String(r.stdout || r.stderr || '').trim() || null };
 }
 
-export function doctor(workspaceRoot) {
+export function doctor(workspaceRoot, { requireProvider = true, providerDetector = detectProviders } = {}) {
   const paths = workspacePaths(workspaceRoot);
   const checks = {};
   try {
@@ -28,10 +28,10 @@ export function doctor(workspaceRoot) {
   const typst = binary('typst');
   checks.git = { ok: git.available, ...git, optional: true };
   checks.typst = { ok: typst.available, ...typst, optional: true };
-  checks.providers = detectProviders();
+  checks.providers = providerDetector();
   const env = { ...loadEnv(workspaceRoot), ...process.env };
   checks.adzuna = { ok: !!(env.ADZUNA_APP_ID && env.ADZUNA_API_KEY), optional: true };
   const providerReady = Object.values(checks.providers).some((p) => p.installed && p.authenticated);
-  const required = checks.config.ok && checks.tracker.ok && providerReady;
-  return { ok: required, workspaceRoot, checks };
+  const required = checks.config.ok && checks.tracker.ok && (!requireProvider || providerReady);
+  return { ok: required, workspaceRoot, checks, providerSetupRequired: !providerReady };
 }
