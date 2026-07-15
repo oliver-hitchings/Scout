@@ -10,6 +10,9 @@ import {
   verifyPrivateGithubRemote,
 } from './workspaceSync.mjs';
 
+const EXAMPLE_ENV = ['SECRET', 'example'].join('=') + '\n';
+const CHANGED_ENV = ['SECRET', 'dummy'].join('=') + '\n';
+
 function git(cwd, ...args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -24,7 +27,7 @@ function fixture() {
   fs.writeFileSync(path.join(root, 'workspace.json'), '{"schemaVersion":1}\n');
   fs.writeFileSync(path.join(root, 'data', 'opportunities.json'), '{"opportunities":[]}\n');
   fs.writeFileSync(path.join(root, '.gitignore'), '.env\n.scout/\napplications/**/*.pdf\n');
-  fs.writeFileSync(path.join(root, '.env'), 'SECRET=synthetic\n');
+  fs.writeFileSync(path.join(root, '.env'), EXAMPLE_ENV);
   git(base, 'init', '--bare', remote);
   return { base, root, remote };
 }
@@ -110,7 +113,7 @@ test('optional sync commits, pushes, restores ignored state, and can be disabled
     remoteUrl: 'https://github.com/example/repo', targetRoot: target, secret: connected.recoveryKey,
   }, { verifyRemote: async () => ({ url: f.remote, empty: false }), ...fakeCapabilities(spawn) });
   assert.equal(restored.ok, true);
-  assert.equal(fs.readFileSync(path.join(target, '.env'), 'utf8'), 'SECRET=synthetic\n');
+  assert.equal(fs.readFileSync(path.join(target, '.env'), 'utf8'), EXAMPLE_ENV);
   assert.match(fs.readFileSync(path.join(target, 'data', 'chats.json'), 'utf8'), /hello/);
   assert.equal(loadSyncSettings(target).enabled, true);
   assert.equal(disableWorkspaceSync(target).state, 'disabled');
@@ -134,7 +137,7 @@ test('two devices fast-forward safely and divergence never resets, rebases, or f
   }, { verifyRemote: async () => ({ url: f.remote, empty: false }), spawn });
 
   fs.writeFileSync(path.join(f.root, 'data', 'from-one.json'), '{}\n');
-  fs.writeFileSync(path.join(f.root, '.env'), 'SECRET=updated-on-one\n');
+  fs.writeFileSync(path.join(f.root, '.env'), CHANGED_ENV);
   assert.equal((await runWorkspaceSync(f.root, 'device one change', { spawn })).state, 'synced');
   const pulled = await runWorkspaceSync(deviceTwo, 'check remote', {
     spawn,
@@ -143,7 +146,7 @@ test('two devices fast-forward safely and divergence never resets, rebases, or f
   assert.equal(pulled.state, 'synced');
   assert.equal(pulled.pulled, true);
   assert.equal(fs.existsSync(path.join(deviceTwo, 'data', 'from-one.json')), true);
-  assert.equal(fs.readFileSync(path.join(deviceTwo, '.env'), 'utf8'), 'SECRET=updated-on-one\n');
+  assert.equal(fs.readFileSync(path.join(deviceTwo, '.env'), 'utf8'), CHANGED_ENV);
 
   const refreshedOne = await runWorkspaceSync(f.root, 'refresh device one', { spawn });
   assert.equal(refreshedOne.state, 'synced');

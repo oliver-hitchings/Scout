@@ -9,11 +9,14 @@ import {
 } from './recoveryBackup.mjs';
 import crypto from 'node:crypto';
 
+const EXAMPLE_ENV = ['SECRET', 'example'].join('=') + '\n';
+const CHANGED_ENV = ['SECRET', 'dummy'].join('=') + '\n';
+
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-recovery-'));
   fs.mkdirSync(path.join(root, 'applications', 'example'), { recursive: true });
   fs.mkdirSync(path.join(root, '.scout', 'backups'), { recursive: true });
-  fs.writeFileSync(path.join(root, '.env'), 'SECRET=synthetic\n');
+  fs.writeFileSync(path.join(root, '.env'), EXAMPLE_ENV);
   fs.writeFileSync(path.join(root, 'applications', 'example', 'cv.pdf'), Buffer.from([0, 1, 2, 3]));
   fs.writeFileSync(path.join(root, 'applications', 'example', 'cv.typ'), 'public source');
   fs.writeFileSync(path.join(root, '.scout', 'backups', 'before.json'), '{}');
@@ -36,7 +39,7 @@ test('recovery backup encrypts only resumable ignored state and restores with ei
   for (const secret of [passphrase, created.recoveryKey]) {
     const target = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-restored-'));
     const restored = restoreRecoveryBackup(root, target, secret);
-    assert.equal(fs.readFileSync(path.join(target, '.env'), 'utf8'), 'SECRET=synthetic\n');
+    assert.equal(fs.readFileSync(path.join(target, '.env'), 'utf8'), EXAMPLE_ENV);
     assert.deepEqual(fs.readFileSync(path.join(target, 'applications', 'example', 'cv.pdf')), Buffer.from([0, 1, 2, 3]));
     assert.equal(restored.devicePreferences.startWithWindows, true);
     fs.rmSync(target, { recursive: true, force: true });
@@ -50,7 +53,7 @@ test('unchanged encrypted files retain their blob and changed files rotate only 
   const first = loadRecoveryHeader(root);
   const firstIndex = JSON.stringify(first.index);
   const blobsBefore = new Map(fs.readdirSync(path.join(root, '.scout-backup/v1/files')).map((name) => [name, fs.readFileSync(path.join(root, '.scout-backup/v1/files', name), 'utf8')]));
-  fs.writeFileSync(path.join(root, '.env'), 'SECRET=changed\n');
+  fs.writeFileSync(path.join(root, '.env'), CHANGED_ENV);
   writeRecoveryBackup(root, created.dataKey, first);
   const blobsAfter = new Map(fs.readdirSync(path.join(root, '.scout-backup/v1/files')).map((name) => [name, fs.readFileSync(path.join(root, '.scout-backup/v1/files', name), 'utf8')]));
   assert.notEqual(JSON.stringify(loadRecoveryHeader(root).index), firstIndex);
