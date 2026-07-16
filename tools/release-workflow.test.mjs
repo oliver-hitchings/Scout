@@ -29,3 +29,9 @@ test('package, installer and release notes use one beta version', () => {
   assert.match(installer, new RegExp(`MyAppVersion "${pkg.version.replaceAll('.', '\\.')}"`));
   assert.equal(fs.existsSync(new URL(`../docs/releases/${pkg.version}.md`, import.meta.url)), true);
 });
+
+test('Windows setup uses the tracked Scout icon', () => {
+  const installer = fs.readFileSync(new URL('../installer/Scout.iss', import.meta.url), 'utf8');
+  assert.match(installer, /SetupIconFile=\.\.\\ui\\assets\\scout-icon\.ico/);
+  assert.equal(fs.existsSync(new URL('../ui/assets/scout-icon.ico', import.meta.url)), true);
+});
