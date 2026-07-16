@@ -12,6 +12,8 @@ Scout never submits an application or sends outreach. Your CV, profile, tracker,
 
 Scout `0.1.x` is a cross-platform public beta. Windows SmartScreen and macOS Gatekeeper may warn because packages are unsigned. Verify the SHA-256 checksum published with every release.
 
+> **Private-hosting release work:** outstanding live acceptance and publishing tasks are tracked in [REMOTE_HOSTING_TODO.md](REMOTE_HOSTING_TODO.md).
+
 ## What Scout does
 
 - Uses either the Codex CLI or Claude Code as the AI provider; a second provider is optional.
@@ -22,6 +24,7 @@ Scout `0.1.x` is a cross-platform public beta. Windows SmartScreen and macOS Gat
 - Searches configured ATS boards and public sources. Adzuna is optional.
 - Tracks evidence, verdicts, follow-ups, applications, and dated reports in a private local Git repository.
 - Optionally backs that workspace up to a private GitHub repository and restores it on another computer; local-only use remains the default.
+- Optionally hosts that same running workspace and its Scout chats privately to the owner's phone or laptop through Tailscale Serve.
 - Runs supervised or scheduled daily scans on Windows.
 - Keeps model choice optional, using the provider's supported default unless you select an override.
 
@@ -36,6 +39,7 @@ Scout is not an auto-apply tool. It does not invent qualifications, infer positi
 5. Optionally add Adzuna credentials, run `scout doctor`, then perform one supervised scan.
 6. Optionally connect a private GitHub repository for automatic backup. Git and Git Credential Manager are required only for backup/restore.
 7. Only after reviewing that scan, enable the daily schedule.
+8. Optionally open **Settings -> Private Remote Access** to use this same host from your phone or laptop. See [Private Remote Access](docs/PRIVATE_REMOTE_ACCESS.md).
 
 The full walkthrough is in [Quick Start](docs/QUICK_START.md). If you want an AI assistant to guide setup, use [AI Setup](docs/AI_SETUP.md).
 
@@ -74,6 +78,7 @@ See [Privacy and Data](docs/PRIVACY.md) and [Configuration](docs/CONFIGURATION.m
 
 ```text
 scout doctor [--workspace PATH]
+scout remote preflight [--require-enabled] [--url URL]
 scout workspace init [--workspace PATH]
 scout workspace migrate --from PATH --to PATH
 scout cv quality <application-slug> [--workspace PATH]
@@ -108,6 +113,8 @@ Open `http://127.0.0.1:8459`. Use a synthetic workspace for development and neve
 - [AI-assisted setup and retuning](docs/AI_SETUP.md)
 - [Configuration reference](docs/CONFIGURATION.md)
 - [Privacy and data handling](docs/PRIVACY.md)
+- [Private remote access](docs/PRIVATE_REMOTE_ACCESS.md)
+- [Private remote-hosting outstanding tasks](REMOTE_HOSTING_TODO.md)
 - [CV evidence and quality](docs/CV_QUALITY.md)
 - [Codex and Claude providers](docs/PROVIDERS.md)
 - [Adzuna and other sources](docs/ADZUNA_AND_SOURCES.md)

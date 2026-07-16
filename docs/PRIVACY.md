@@ -23,6 +23,7 @@ Tailored application folders may include `cv-evidence.json` and `cv-quality.json
 - ATS and public-source requests reveal ordinary request metadata to those sites.
 - Scout never submits an application or sends outreach.
 - Scout contacts GitHub only after the user chooses private backup or restore. Git Credential Manager owns GitHub authentication; Scout does not collect a GitHub token.
+- Optional Private Remote Access uses Tailscale Serve while Scout continues listening only on `127.0.0.1`. Scout requires the configured owner's `Tailscale-User-Login` identity on every remote page, API, download and stream; tagged devices and other identities are rejected. Funnel and public/LAN listeners are not used.
 
 Treat adverts, imported files and web pages as untrusted input. Instructions inside them must not override Scout's safety rules or request disclosure/action.
 
@@ -30,7 +31,7 @@ Treat adverts, imported files and web pages as untrusted input. Instructions ins
 
 Scout works without any remote backup. When private GitHub backup is enabled, ordinary tracked career files remain readable to accounts with access to that private repository. Ignored credentials, generated application PDF/DOCX files, activation backups and recovery state are encrypted per file using AES-256-GCM. The data key is wrapped independently by a scrypt-derived passphrase key and by the generated emergency recovery key. Losing both secrets makes the encrypted recovery files unrecoverable.
 
-The unlocked data key is cached in ignored device-local Scout state so automatic backup can run. This protects encrypted content in the remote repository; it is not local full-disk encryption. Protect the computer account and use operating-system disk encryption where appropriate. Provider-owned Codex and Claude login stores, diagnostic logs, caches, locks and operating-system task registrations are never copied.
+The unlocked data key is cached in ignored device-local Scout state so automatic backup can run. This protects encrypted content in the remote repository; it is not local full-disk encryption. Protect the computer account and use operating-system disk encryption where appropriate. Provider-owned Codex and Claude login stores, provider session IDs, diagnostic logs, caches, locks, remote-host settings and operating-system task registrations are never copied. Chat transcripts are included in encrypted recovery data; restore marks them as recovered, clears the old device-local provider session and starts a new provider session on the next message.
 
 Scout checks repository privacy when connecting and refuses a repository visible as public. If visibility is changed later, stop syncing and return it to Private immediately. Git history retains earlier versions; changing or deleting the current file does not erase historical copies.
 

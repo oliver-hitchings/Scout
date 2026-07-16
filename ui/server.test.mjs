@@ -6,8 +6,10 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const previousWorkspace = process.env.SCOUT_WORKSPACE;
+const previousDeviceSettings = process.env.SCOUT_DEVICE_SETTINGS;
 const testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-server-test-'));
 process.env.SCOUT_WORKSPACE = testWorkspace;
+process.env.SCOUT_DEVICE_SETTINGS = path.join(testWorkspace, 'device-settings.json');
 const { APP_ROOT, APP_VERSION, WORKSPACE_ROOT, createServer, restartControl, shutdownControl } = await import('./server.mjs');
 
 let server;
@@ -26,6 +28,8 @@ after(async () => {
   if (server) await new Promise((resolve) => server.close(resolve));
   if (previousWorkspace === undefined) delete process.env.SCOUT_WORKSPACE;
   else process.env.SCOUT_WORKSPACE = previousWorkspace;
+  if (previousDeviceSettings === undefined) delete process.env.SCOUT_DEVICE_SETTINGS;
+  else process.env.SCOUT_DEVICE_SETTINGS = previousDeviceSettings;
   fs.rmSync(testWorkspace, { recursive: true, force: true });
 });
 
@@ -35,7 +39,7 @@ function request({ method = 'GET', path = '/', headers = {}, body = '' }) {
       let text = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => { text += chunk; });
-      res.on('end', () => resolve({ status: res.statusCode, text }));
+      res.on('end', () => resolve({ status: res.statusCode, text, headers: res.headers }));
     });
     req.on('error', reject);
     req.end(body);
@@ -45,7 +49,79 @@ function request({ method = 'GET', path = '/', headers = {}, body = '' }) {
 test('local server rejects a non-loopback Host header', async () => {
   const response = await request({ headers: { host: 'attacker.example' } });
   assert.equal(response.status, 403);
-  assert.deepEqual(JSON.parse(response.text), { error: 'loopback host required' });
+  assert.deepEqual(JSON.parse(response.text), { error: 'private remote access is not enabled for this address' });
+});
+
+test('production server remains loopback-only and never configures public Funnel access', () => {
+  const source = fs.readFileSync(new URL('./server.mjs', import.meta.url), 'utf8');
+  assert.match(source, /server\.listen\(PORT, '127\.0\.0\.1'\)/);
+  assert.doesNotMatch(source, /0\.0\.0\.0|tailscale funnel/i);
+});
+
+test('security headers protect pages and private APIs are never cacheable', async () => {
+  const page = await request({ path: '/' });
+  assert.equal(page.status, 200);
+  assert.match(page.headers['content-security-policy'], /frame-ancestors 'none'/);
+  assert.equal(page.headers['x-frame-options'], 'DENY');
+  assert.equal(page.headers['x-content-type-options'], 'nosniff');
+  const api = await request({ path: '/api/app-info' });
+  assert.equal(api.headers['cache-control'], 'no-store');
+});
+
+test('remote pages and APIs require the configured Tailscale owner', async () => {
+  fs.writeFileSync(process.env.SCOUT_DEVICE_SETTINGS, JSON.stringify({
+    schemaVersion: 2,
+    remoteAccess: {
+      enabled: true,
+      ownerLogin: 'owner@example.com',
+      origin: 'https://scout-host.example.ts.net',
+      httpsPort: 443,
+      managedMapping: { protocol: 'https', port: 443, target: 'http://127.0.0.1:8459' },
+    },
+  }));
+  const missing = await request({ headers: { host: 'scout-host.example.ts.net' } });
+  assert.equal(missing.status, 403);
+  const wrong = await request({ headers: { host: 'scout-host.example.ts.net', 'tailscale-user-login': 'other@example.com' } });
+  assert.equal(wrong.status, 403);
+  const owner = await request({ path: '/api/app-info', headers: { host: 'scout-host.example.ts.net', 'tailscale-user-login': 'OWNER@example.com' } });
+  assert.equal(owner.status, 200);
+  assert.equal(JSON.parse(owner.text).name, 'Scout');
+  assert.equal(owner.headers['strict-transport-security'], 'max-age=31536000');
+  const alteredOrigin = await request({ path: '/api/app-info', headers: { host: 'scout-host.example.ts.net', origin: 'https://other.example.ts.net', 'tailscale-user-login': 'owner@example.com' } });
+  assert.equal(alteredOrigin.status, 403);
+});
+
+test('remote owner mutations require HTTPS Origin and administration remains local-only', async () => {
+  const remote = { host: 'scout-host.example.ts.net', 'tailscale-user-login': 'owner@example.com', 'content-type': 'application/json' };
+  const noOrigin = await request({ method: 'POST', path: '/api/chat/stop', headers: remote, body: '{}' });
+  assert.equal(noOrigin.status, 403);
+  const badOrigin = await request({ method: 'POST', path: '/api/chat/stop', headers: { ...remote, origin: 'https://changed.example.ts.net' }, body: '{}' });
+  assert.equal(badOrigin.status, 403);
+  const ownerChat = await request({ method: 'POST', path: '/api/chat/stop', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: JSON.stringify({ id: 'none' }) });
+  assert.equal(ownerChat.status, 200);
+  const localOnly = await request({ method: 'POST', path: '/api/remote-access/disable', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
+  assert.equal(localOnly.status, 403);
+  assert.match(JSON.parse(localOnly.text).error, /only be changed on the Scout host/);
+});
+
+test('streamed chat endpoints reject missing Tailscale identity before opening SSE', async () => {
+  const response = await request({
+    method: 'POST', path: '/api/chat/send',
+    headers: { host: 'scout-host.example.ts.net', origin: 'https://scout-host.example.ts.net', 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'example', engine: 'codex', text: 'hello' }),
+  });
+  assert.equal(response.status, 403);
+  assert.doesNotMatch(response.headers['content-type'] || '', /event-stream/);
+});
+
+test('forwarding headers cannot turn local access into a remote request', async () => {
+  const host = `127.0.0.1:${port}`;
+  const response = await request({
+    method: 'POST', path: '/api/chat/stop',
+    headers: { host, origin: `http://${host}`, 'content-type': 'application/json', 'x-forwarded-host': 'attacker.example', 'tailscale-user-login': 'other@example.com' },
+    body: JSON.stringify({ id: 'none' }),
+  });
+  assert.equal(response.status, 200);
 });
 
 test('chat mutations reject a cross-origin browser request', async () => {

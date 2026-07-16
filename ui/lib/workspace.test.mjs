@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import {
   CURRENT_WORKSPACE_SCHEMA, defaultWorkspaceRoot, mergeWorkspaceDefaults, migrateWorkspace, resolveWorkspaceRoot,
-  validateWorkspaceConfig, workspacePaths,
+  syncManagedInstructions, validateWorkspaceConfig, workspacePaths,
 } from './workspace.mjs';
 
 const roots = [];
@@ -48,4 +48,14 @@ test('workspace defaults are merged deeply for older schema-one files', () => {
   assert.deepEqual(merged.search.locations, []);
   assert.equal(merged.triage.actionScore, 70);
   assert.equal(merged.sources.adzuna.country, 'gb');
+});
+
+test('managed workspace upgrades keep chat transcripts out of Git without replacing user ignores', () => {
+  const appRoot = temp();
+  const workspace = temp();
+  fs.writeFileSync(path.join(workspace, '.gitignore'), 'custom-private-file\n');
+  syncManagedInstructions(appRoot, workspace);
+  const value = fs.readFileSync(path.join(workspace, '.gitignore'), 'utf8');
+  assert.match(value, /^custom-private-file$/m);
+  assert.match(value, /^data\/chats\/$/m);
 });

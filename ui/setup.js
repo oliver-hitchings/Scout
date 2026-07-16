@@ -255,12 +255,14 @@ const Setup = {
         <div class="setup-callout"><strong>Daily scan</strong><p>${scheduleText}</p></div>
         ${this.status?.device ? `<div class="setup-callout"><strong>Windows startup</strong><label class="setup-field"><span><input id="setup-start-with-windows" type="checkbox" ${this.status.device.startWithWindows ? 'checked' : ''}> Start Scout when I sign into Windows</span></label><p><button id="setup-save-device" class="act" type="button">Save startup setting</button></p></div>` : ''}
       </div>
+      ${this.remoteAccessPanelHtml()}
       ${restored ? `<div class="setup-callout"><strong>Choose settings for this computer</strong><p>Your work has been restored. Device integrations stay off until you confirm them here.</p>${this.status?.device && restored.startWithWindows ? '<label class="setup-field"><span><input id="restore-start-with-windows" type="checkbox"> Start Scout with Windows on this computer</span></label>' : ''}${this.status?.schedule?.configured ? `<label class="setup-field"><span><input id="restore-daily-schedule" type="checkbox"> Enable the saved ${this.escape(this.status.schedule.time || '')} daily scan on this computer</span></label>` : ''}<p><button id="restore-apply-device" class="act primary" type="button">Apply selected settings</button> <button id="restore-keep-device-local" class="act" type="button">Keep them off</button></p></div>` : ''}
       <p>You can move or back up the workspace independently. API credentials stay in its ignored <code>.env</code> file and are never shown again here.</p>
       <p class="meta">Something stuck? <button id="setup-restart" class="act" type="button">Restart Scout</button> restarts the local server and reloads this page.</p></div></div>
       ${established ? this.backupPanelHtml() : ''}`;
     this.el('setup-restart').addEventListener('click', () => this.restartServer());
     this.el('setup-save-device')?.addEventListener('click', () => this.saveDeviceSetting());
+    this.bindRemoteAccessPanel();
     this.el('restore-apply-device')?.addEventListener('click', () => this.applyRestoredPreferences());
     this.el('restore-keep-device-local')?.addEventListener('click', () => { this.restoredPreferences = null; this.render(); this.setMessage('Device integrations remain off. You can enable them later in Settings.', 'good'); });
     if (established) this.bindBackupPanel();
@@ -283,6 +285,74 @@ const Setup = {
     const result = await requestJson('/api/device/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ startWithWindows: enabled }) });
     this.status.device = result.settings;
     this.setMessage('Windows startup setting saved.', 'good');
+  },
+
+  remoteAccessPanelHtml() {
+    const remote = this.status?.remoteAccess || { state: 'disabled' };
+    const local = this.status?.requestAccess !== 'remote-owner';
+    if (remote.enabled && remote.origin) {
+      return `<section class="setup-callout"><strong>Private Remote Access: on</strong><p>Only <strong>${this.escape(remote.ownerLogin || 'the configured owner')}</strong> can open Scout through Tailscale.</p><p><a href="${this.escape(remote.origin)}" target="_blank" rel="noreferrer">${this.escape(remote.origin)}</a></p><p>On your phone or laptop, install and sign in to Tailscale with that same login, open this address, then use your browser's <strong>Add to Home Screen</strong> or <strong>Install app</strong> action.</p><p class="meta">The host computer must be awake and signed in. Scout remains bound to this computer only; this is not a public internet address.</p>${local ? '<p><button id="setup-copy-remote-url" class="act" type="button">Copy address</button> <button id="setup-disable-remote" class="act" type="button">Turn off remote access</button></p>' : '<p class="meta">Remote hosting settings can only be changed on the Scout host computer.</p>'}</section>`;
+    }
+    if (!local) {
+      return `<section class="setup-callout"><strong>Private Remote Access: ${this.escape(remote.state || 'off')}</strong><p>Finish setup on the Scout host computer.</p></section>`;
+    }
+    if (!remote.installed) {
+      return `<section class="setup-callout"><strong>Private Remote Access (optional)</strong><p>Use this Scout workspace and its chats from your phone and laptop without exposing Scout to the public internet.</p><p><a href="https://tailscale.com/download" target="_blank" rel="noreferrer">Install Tailscale from its official site</a>, sign in, then return here.</p><p><button id="setup-refresh-remote" class="act" type="button">Check again</button></p></section>`;
+    }
+    if (remote.state === 'setup-required') {
+      return `<section class="setup-callout"><strong>Private Remote Access needs setup</strong><p>${this.escape(remote.blocker || 'Sign in to Tailscale on this computer.')}</p><p><button id="setup-refresh-remote" class="act" type="button">Check again</button></p></section>`;
+    }
+    const authorization = remote.state === 'authorizing' && remote.authorizationUrl
+      ? `<p><a href="${this.escape(remote.authorizationUrl)}" target="_blank" rel="noreferrer">Authorize HTTPS in Tailscale</a>, then retry the same setup.</p>` : '';
+    const portHelp = remote.customPortRequired
+      ? '<p class="meta">HTTPS ports 443 and 8443 already have Serve mappings. Enter a different free port; Scout will not alter those mappings.</p>'
+      : `<p class="meta">Scout will use HTTPS port ${this.escape(remote.suggestedPort || 443)} unless you choose another free port.</p>`;
+    return `<section class="setup-callout"><strong>Private Remote Access (optional)</strong><p>Tailscale detected ${remote.ownerLogin ? `the signed-in owner <strong>${this.escape(remote.ownerLogin)}</strong>` : 'a signed-in account'}. Only this exact login will be accepted.</p>${remote.blocker ? `<p>${this.escape(remote.blocker)}</p>` : ''}${authorization}${portHelp}<label class="setup-field">HTTPS port (leave blank for automatic)<input id="setup-remote-port" type="number" min="1" max="65535" placeholder="${this.escape(remote.suggestedPort || '')}"></label>${this.status?.device ? '<label class="setup-field"><span><input id="setup-remote-startup" type="checkbox" checked> Start Scout automatically with Windows</span></label>' : ''}<label class="setup-field"><span><input id="setup-remote-confirm" type="checkbox"> I confirm only the detected Tailscale owner should have access</span></label><p><button id="setup-enable-remote" class="act primary" type="button">${remote.state === 'authorizing' ? 'Retry setup' : 'Enable private remote access'}</button> <button id="setup-refresh-remote" class="act" type="button">Check again</button></p><p class="meta">Scout inspects existing Tailscale Serve settings first and manages only its own mapping. It never enables Funnel, LAN access or router forwarding.</p></section>`;
+  },
+
+  bindRemoteAccessPanel() {
+    this.el('setup-refresh-remote')?.addEventListener('click', () => this.refreshRemoteAccess());
+    this.el('setup-enable-remote')?.addEventListener('click', () => this.enableRemoteAccess());
+    this.el('setup-disable-remote')?.addEventListener('click', () => this.disableRemoteAccess());
+    this.el('setup-copy-remote-url')?.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(this.status?.remoteAccess?.origin || '');
+      this.setMessage('Remote address copied.', 'good');
+    });
+  },
+
+  async refreshRemoteAccess() {
+    this.setMessage('Checking Tailscale and existing Serve mappings...');
+    try {
+      this.status.remoteAccess = await requestJson('/api/remote-access/status');
+      this.render();
+      this.setMessage('Remote access status refreshed.', 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  async enableRemoteAccess() {
+    if (!this.el('setup-remote-confirm')?.checked) return this.setMessage('Confirm the detected owner before enabling remote access.', 'error');
+    const port = fieldValue('setup-remote-port').trim();
+    this.setMessage('Configuring Scout\'s private Tailscale address...');
+    try {
+      const result = await requestJson('/api/remote-access/enable', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ httpsPort: port || null, confirmOwner: true, startWithWindows: this.el('setup-remote-startup')?.checked !== false }),
+      });
+      this.status.remoteAccess = result;
+      if (result.state !== 'authorizing') await this.refreshStatus({ keepOpen: true });
+      this.render();
+      this.setMessage(result.state === 'authorizing' ? 'Approve HTTPS with Tailscale, then select Retry setup.' : result.startupWarning || 'Private remote access is ready.', result.startupWarning ? 'warning' : 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  async disableRemoteAccess() {
+    if (!confirm('Turn off Scout private remote access? Local use will continue.')) return;
+    try {
+      await requestJson('/api/remote-access/disable', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      await this.refreshStatus({ keepOpen: true });
+      this.render();
+      this.setMessage('Private remote access is off. Unrelated Tailscale mappings were left unchanged.', 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
   },
 
   providerCard(name) {
@@ -442,7 +512,7 @@ const Setup = {
       <p>Scout stores your CV, job tracker and chats in a private folder on this computer. Online backup is optional; Scout works fully without GitHub.</p>
       <div class="setup-grid">
         <div class="setup-callout"><strong>Set up Scout for the first time</strong><p>Create a new local workspace. You can add private backup at the end or later in Settings.</p><button id="setup-create-workspace" class="act primary" type="button">Create my local workspace</button></div>
-        <div class="setup-callout"><strong>Restore my existing workspace</strong><p>Use a private GitHub repository made by Scout backup. Normal career files remain readable in that private repository; credentials and generated documents are additionally encrypted.</p><button id="setup-show-restore" class="act" type="button">Restore existing workspace</button></div>
+        <div class="setup-callout"><strong>Restore my existing workspace</strong><p>Use a private GitHub repository made by Scout backup. Tracked career files remain readable in that private repository; credentials, generated documents and chat transcripts are encrypted.</p><button id="setup-show-restore" class="act" type="button">Restore existing workspace</button></div>
       </div>
       <div id="setup-restore-form" class="setup-callout hidden">
         <strong>Restore from private GitHub</strong>
@@ -516,7 +586,7 @@ const Setup = {
     };
     if (this.pendingRecoveryKey) return `<section class="setup-callout recovery-key-panel" role="status" aria-labelledby="recovery-key-title"><strong id="recovery-key-title">Save your emergency recovery key</strong><p>This key can restore Scout if you forget the passphrase. It will disappear after you confirm it is saved.</p><code id="setup-recovery-key" class="recovery-key" tabindex="0">${this.escape(this.pendingRecoveryKey)}</code><p><button id="setup-copy-recovery" class="act" type="button">Copy key</button> <button id="setup-save-recovery" class="act" type="button">Save key to file</button></p><label class="setup-field"><span><input id="setup-confirm-recovery" type="checkbox"> I saved the recovery key somewhere secure</span></label><p><button id="setup-finish-recovery" class="act primary" type="button">Finish backup setup</button></p></section>`;
     if (sync.enabled) return `<div class="setup-callout"><strong>Private backup: ${this.escape(labels[sync.state] || sync.state)}</strong><p>Your private GitHub repository is connected. Automatic backup can be turned off without deleting local work or GitHub history.</p>${sync.error ? `<details><summary>Technical details</summary><pre class="setup-preview">${this.escape(sync.error)}</pre></details>` : ''}<p><button id="setup-backup-now" class="act" type="button">Back up now</button> ${['offline', 'pending', 'needs-attention'].includes(sync.state) ? '<button id="setup-retry-backup" class="act" type="button">Retry</button> ' : ''}<button id="setup-disable-backup" class="act" type="button">Turn off automatic backup</button></p></div>`;
-    return `<div class="setup-callout"><strong>Optional private backup</strong><p>Scout works fully on this computer without GitHub. A private repository lets you restore on another computer. Normal career files are readable in that private repository; credentials and generated documents are additionally encrypted.</p><p><button id="setup-show-backup" class="act" type="button">Set up private backup</button> <button id="setup-skip-backup" class="act" type="button">Not now</button></p><div id="setup-backup-form" class="hidden"><p>${gitReady ? 'Git and Git Credential Manager are ready. GitHub will use its normal browser sign-in.' : 'Install Git for Windows with Git Credential Manager before connecting a private repository.'}</p>${gitReady ? '' : '<p><a href="https://git-scm.com/download/win" target="_blank" rel="noreferrer">Install Git for Windows</a> <button id="setup-backup-check-git" class="act" type="button">Check again</button></p>'}<p>A repository is a private online folder with version history. On GitHub, create an empty repository named <code>scout-workspace</code>, select <strong>Private</strong>, and do not add a README, licence or .gitignore.</p><p><a href="https://github.com/new" target="_blank" rel="noreferrer">Create a private GitHub repository</a></p><label class="setup-field">Repository HTTPS URL<input id="setup-backup-url" type="url" placeholder="https://github.com/your-name/scout-workspace"></label><label class="setup-field">Recovery passphrase (at least 12 characters)<input id="setup-backup-passphrase" type="password" autocomplete="new-password"></label><label class="setup-field"><span><input id="setup-backup-confirm" type="checkbox"> I understand normal career files are readable in my private repository and I will save the emergency recovery key.</span></label><p><button id="setup-connect-backup" class="act primary" type="button" ${gitReady ? '' : 'disabled'}>Connect and create first backup</button></p></div></div>`;
+    return `<div class="setup-callout"><strong>Optional private backup</strong><p>Scout works fully on this computer without GitHub. A private repository lets you restore on another computer. Tracked career files are readable in that private repository; credentials, generated documents and chat transcripts are encrypted.</p><p><button id="setup-show-backup" class="act" type="button">Set up private backup</button> <button id="setup-skip-backup" class="act" type="button">Not now</button></p><div id="setup-backup-form" class="hidden"><p>${gitReady ? 'Git and Git Credential Manager are ready. GitHub will use its normal browser sign-in.' : 'Install Git for Windows with Git Credential Manager before connecting a private repository.'}</p>${gitReady ? '' : '<p><a href="https://git-scm.com/download/win" target="_blank" rel="noreferrer">Install Git for Windows</a> <button id="setup-backup-check-git" class="act" type="button">Check again</button></p>'}<p>A repository is a private online folder with version history. On GitHub, create an empty repository named <code>scout-workspace</code>, select <strong>Private</strong>, and do not add a README, licence or .gitignore.</p><p><a href="https://github.com/new" target="_blank" rel="noreferrer">Create a private GitHub repository</a></p><label class="setup-field">Repository HTTPS URL<input id="setup-backup-url" type="url" placeholder="https://github.com/your-name/scout-workspace"></label><label class="setup-field">Recovery passphrase (at least 12 characters)<input id="setup-backup-passphrase" type="password" autocomplete="new-password"></label><label class="setup-field"><span><input id="setup-backup-confirm" type="checkbox"> I understand tracked career files are readable in my private repository and I will save the emergency recovery key.</span></label><p><button id="setup-connect-backup" class="act primary" type="button" ${gitReady ? '' : 'disabled'}>Connect and create first backup</button></p></div></div>`;
   },
 
   bindBackupPanel() {

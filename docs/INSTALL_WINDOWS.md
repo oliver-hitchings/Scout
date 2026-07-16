@@ -20,10 +20,16 @@ Scout is an unsigned Windows 10/11 public beta. It keeps its workspace on your c
 
 Scout runs as `Scout.exe` in the Windows notification area. Use its arrow-menu icon to open, restart, check for updates, or quit Scout. The supporting local server appears as `ScoutRuntime.exe`, not a generic Node process.
 
+## Optional private host
+
+Install [Tailscale](https://tailscale.com/download), sign in, then use **Settings -> Private Remote Access**. Scout inspects existing Serve mappings, confirms the one accepted owner identity and displays the HTTPS address for your phone and laptop. Leave **Start Scout automatically with Windows** selected to create the per-user `\Scout\Scout Host` scheduled task. It uses your interactive token, least privilege and no stored Windows password.
+
+After a reboot, sign in to Windows and allow up to 90 seconds for Windows, Tailscale and Scout to recover. The tray host keeps running if `ScoutRuntime.exe` crashes and checks it every 30 seconds. The host cannot serve while the PC is asleep, powered off or waiting at the Windows sign-in screen. Choosing **Quit Scout** also stops remote access until relaunch or the next sign-in. Full instructions are in [Private Remote Access](PRIVATE_REMOTE_ACCESS.md).
+
 ## Privacy and recovery
 
 The default workspace is `%USERPROFILE%\Documents\Scout Workspace`. It survives upgrades and uninstall, and local-only use needs neither Git nor GitHub. If you enable backup, use only the private workspace repository Scout guides you to create—never the public Scout application repository and never a public repository. Scout keeps ordinary career files readable in that private repository and adds encryption for credentials and generated documents. Keep the one-time recovery key somewhere outside the computer.
 
 On a new computer, choose **Restore my existing Scout workspace** on the first screen, paste the private repository's HTTPS URL, sign in through Git Credential Manager, and enter either the recovery passphrase or recovery key. Scout validates the restored workspace before installing it and will not overwrite an existing non-empty workspace. If Scout does not open, launch it again and use **Settings → Restart Scout**; diagnostic logs are in the workspace's `logs` folder and are never backed up.
 
-To upgrade, use the tray menu to quit Scout, then install a newer release over the existing application. To uninstall, use Windows Installed Apps; remove any scheduled scan first. Your workspace is deliberately preserved.
+To upgrade, use the tray menu to quit Scout, then install a newer release over the existing application. To uninstall, use Windows Installed Apps; remove any scheduled scan first. The uninstaller removes Scout's exact remote mapping and both current and legacy startup registrations while preserving unrelated Tailscale mappings and your workspace.
