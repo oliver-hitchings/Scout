@@ -635,6 +635,7 @@ const Scout = {
     const hasCv = (cvFiles.applications || []).includes(slug);
     const hasOutreach = (cvFiles.outreach || []).includes(slug);
     const applied = ['applied', 'interviewing', 'accepted'].includes(e.status);
+    const prepRecommended = this.interviewPrepRecommended(e.id);
     const extraSources = (e.sources || []).slice(1)
       .map((s) => this.safeHref(s)).filter(Boolean)
       .map((href, i) => `<a href="${href}" target="_blank" rel="noopener">source ${i + 2}</a>`)
@@ -670,6 +671,7 @@ const Scout = {
         <button class="act" onclick="Scout.openCompanyHistory(${idArg})">company history</button>
         <button class="act bridge" onclick="Scout.openChat(${idArg},'fit')">fit and evidence gaps</button>
         <button class="act bridge" onclick="Scout.openChat(${idArg},'ask')">ask about this job</button>
+        <button class="act${prepRecommended ? ' bridge' : ''}" onclick="Scout.openInterviewPrep(${idArg})">interview prep</button>
       </div>`;
   },
 
@@ -1104,11 +1106,11 @@ const Scout = {
 
   // --- Embedded chat drawer ---
 
-  async openChat(id, prefillKey = 'ask', cvOptions = null) {
+  async openChat(id, prefillKey = 'ask', cvOptions = null, purpose = 'job') {
     this.closeCompanyHistory();
     const previous = this.chat;
     if (previous && previous.streaming) {
-      if (previous.id === id) {
+      if (previous.id === id && previous.purpose === purpose) {
         document.getElementById('chat-drawer').classList.remove('hidden');
         return;
       }
@@ -1121,7 +1123,8 @@ const Scout = {
     const optionQuery = cvOptions
       ? `&xyz=${cvOptions.xyz ? '1' : '0'}&humanize=${cvOptions.humanize ? '1' : '0'}`
       : '';
-    try { r = await this.api(`/api/chat?id=${encodeURIComponent(id)}${optionQuery}`); }
+    const purposeQuery = purpose === 'job' ? '' : `&purpose=${encodeURIComponent(purpose)}`;
+    try { r = await this.api(`/api/chat?id=${encodeURIComponent(id)}${purposeQuery}${optionQuery}`); }
     catch (e) {
       if (openSeq === this.chatOpenSeq) alert(`Could not open chat: ${e.message}`);
       return;
@@ -1133,6 +1136,8 @@ const Scout = {
       data: r.chat || { engine: null, cliSessionId: null, messages: [], filesTouched: [] },
       engine: r.chat ? r.chat.engine : null,
       prefills: r.prefills || {},
+      purpose: r.purpose || purpose,
+      artifact: r.artifact || null,
       streaming: !!r.busy,
       recovering: !!r.busy,
       pollTimer: null,
@@ -1150,6 +1155,15 @@ const Scout = {
     if (c.recovering) this.scheduleChatRecovery(c);
   },
 
+  openInterviewPrep(id) {
+    this.openChat(id, 'interviewPrep', null, 'interview-prep');
+  },
+
+  interviewPrepRecommended(id) {
+    return (this.state.data?.pipeline?.flags || [])
+      .some((flag) => flag.id === id && flag.kind === 'interview-prep');
+  },
+
   scheduleChatRecovery(c) {
     if (this.chat !== c || !c.recovering) return;
     if (c.pollTimer) clearTimeout(c.pollTimer);
@@ -1160,7 +1174,8 @@ const Scout = {
     if (this.chat !== c || !c.recovering) return;
     c.pollTimer = null;
     let r;
-    try { r = await this.api(`/api/chat?id=${encodeURIComponent(c.id)}`); }
+    const purposeQuery = c.purpose === 'job' ? '' : `&purpose=${encodeURIComponent(c.purpose)}`;
+    try { r = await this.api(`/api/chat?id=${encodeURIComponent(c.id)}${purposeQuery}`); }
     catch {
       this.scheduleChatRecovery(c);
       return;
@@ -1176,6 +1191,7 @@ const Scout = {
     c.data = r.chat || c.data;
     c.engine = r.chat ? r.chat.engine : c.engine;
     c.prefills = r.prefills || c.prefills;
+    c.artifact = r.artifact || c.artifact;
     c.streaming = false;
     c.recovering = false;
     this.renderChatDrawer();
@@ -1191,9 +1207,16 @@ const Scout = {
     if (!c) return d.classList.add('hidden');
     d.classList.remove('hidden');
     const picker = this.chatPickerHtml();
+    const prep = c.purpose === 'interview-prep';
+    const prepControls = prep ? `<div class="controls" style="padding:8px 12px;flex-wrap:wrap">
+      <button class="act bridge" onclick="Scout.usePrepPrompt('interviewPrep')">generate pack</button>
+      <button class="act" onclick="Scout.usePrepPrompt('prepRefresh')">refresh research</button>
+      <button class="act" onclick="Scout.usePrepPrompt('prepQuestions')">practise questions</button>
+      <button class="act" onclick="Scout.usePrepPrompt('prepMock')">mock interview</button>
+    </div>` : '';
     d.innerHTML = `
       <div class="chat-head">
-        <b>${this.esc(this.company(c.id))}</b>
+        <b>${prep ? 'Interview prep - ' : ''}${this.esc(this.company(c.id))}</b>
         ${c.engine ? `<span class="chip" style="margin-left:0">${this.esc(c.engine)}</span>` : ''}
         <span id="usage-meters" class="meta"></span>
         ${c.engine && c.data.cliSessionId
@@ -1204,7 +1227,8 @@ const Scout = {
           : ''}
         <button class="act" style="margin-left:auto" onclick="Scout.closeChat()">close</button>
       </div>
-      <div class="chat-companion">${scoutMarkup(c.streaming ? 'thinking' : 'listening')}<div class="scout-bubble tail-left"><span id="scout-chat-status">${c.streaming ? 'I’m thinking…' : 'Ask me anything about this opportunity.'}</span></div></div>
+      <div class="chat-companion">${scoutMarkup(c.streaming ? 'thinking' : 'listening')}<div class="scout-bubble tail-left"><span id="scout-chat-status">${c.streaming ? 'I’m thinking…' : prep ? 'Build your prep pack, refresh research, or practise here.' : 'Ask me anything about this opportunity.'}</span></div></div>
+      ${prepControls}
       <div id="chat-body" class="chat-body">${c.engine ? '' : picker}</div>
       <div class="chat-foot" ${c.engine ? '' : 'style="display:none"'}>
         <textarea id="chat-input" placeholder="message ${this.esc(c.engine || '')} - Enter sends, Shift+Enter for a new line" onkeydown="Scout.chatKey(event)"></textarea>
@@ -1226,8 +1250,9 @@ const Scout = {
 
   chatPickerHtml() {
     const onboarding = this.chat?.id === 'setup-onboarding';
+    const prep = this.chat?.purpose === 'interview-prep';
     return `<div class="chat-picker">
-      <div class="label">choose an engine for ${onboarding ? 'setup' : 'this job'}</div>
+      <div class="label">choose an engine for ${onboarding ? 'setup' : prep ? 'interview prep' : 'this job'}</div>
       <button class="act" onclick="Scout.pickEngine('claude')">Claude</button>
       <button class="act" onclick="Scout.pickEngine('codex')">Codex</button>
     </div>`;
@@ -1286,6 +1311,7 @@ const Scout = {
     if (!body || !this.chat) return;
     body.innerHTML = this.chat.data.messages.map((m) => this.chatBubble(m.role, m.text)).join('')
       + this.cvLinkHtml()
+      + this.interviewPrepPackHtml()
       + (this.chat.engine ? '' : this.chatPickerHtml());
     body.scrollTop = body.scrollHeight;
   },
@@ -1304,6 +1330,25 @@ const Scout = {
     return (this.chat.data.filesTouched || []).includes(`applications/${slug}/cv.typ`)
       ? `<div class="chat-msg system"><a href="#" onclick="event.preventDefault();Scout.seeCv(${this.jsArg(slug)},${this.jsArg(this.chat.id)})">view rendered CV</a></div>`
       : '';
+  },
+
+  interviewPrepPackHtml() {
+    if (this.chat?.purpose !== 'interview-prep') return '';
+    const artifact = this.chat.artifact;
+    if (!artifact?.exists) {
+      return '<div class="chat-msg system">No prep pack yet. Choose an engine, then send Generate pack when you are ready.</div>';
+    }
+    const updated = artifact.updatedAt ? ` - updated ${this.esc(new Date(artifact.updatedAt).toLocaleString())}` : '';
+    return `<div class="chat-msg system"><details><summary>View prep pack${updated}</summary><pre style="white-space:pre-wrap">${this.esc(artifact.content || '')}</pre></details></div>`;
+  },
+
+  usePrepPrompt(key) {
+    const c = this.chat;
+    if (!c || c.purpose !== 'interview-prep') return;
+    const input = document.getElementById('chat-input');
+    if (!input) return;
+    input.value = c.prefills[key] || '';
+    input.focus();
   },
 
   pickEngine(engine) {
@@ -1373,7 +1418,7 @@ const Scout = {
       const resp = await fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: c.id, engine: c.engine, text, mode: c.mode }),
+        body: JSON.stringify({ id: c.id, purpose: c.purpose, engine: c.engine, text, mode: c.mode }),
       });
       const ct = resp.headers.get('content-type') || '';
       if (!resp.ok || !ct.includes('event-stream')) {
@@ -1427,7 +1472,7 @@ const Scout = {
     if (this.chat !== c) return;
     if (terminalError && startedWithoutSession) {
       const message = terminalError;
-      await this.openChat(c.id, 'ask');
+      await this.openChat(c.id, c.purpose === 'interview-prep' ? 'interviewPrep' : 'ask', null, c.purpose);
       if (this.chat?.id === c.id
           && !this.chat.data.messages.some((m) => m.role === 'system' && m.text === message)) {
         this.chat.data.messages.push({ role: 'system', text: message });
@@ -1435,6 +1480,7 @@ const Scout = {
       }
       return;
     }
+    if (c.purpose === 'interview-prep') await this.refreshInterviewPrepArtifact(c);
     const draft = document.getElementById('chat-input')?.value || '';
     const following = this.chatNearBottom(body);
     const previousScrollTop = body.scrollTop;
@@ -1444,13 +1490,21 @@ const Scout = {
     this.refreshUsage(c);
   },
 
+  async refreshInterviewPrepArtifact(target = this.chat) {
+    if (!target || target.purpose !== 'interview-prep') return;
+    try {
+      const r = await this.api(`/api/chat?id=${encodeURIComponent(target.id)}&purpose=interview-prep`);
+      if (this.chat === target) target.artifact = r.artifact || target.artifact;
+    } catch { /* a saved transcript remains usable if the pack cannot be read */ }
+  },
+
   async stopChat(target = this.chat) {
     if (!target) return false;
     try {
       const response = await fetch('/api/chat/stop', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: target.id }),
+        body: JSON.stringify({ id: target.id, purpose: target.purpose }),
       });
       if (!response.ok) throw new Error(`request failed (${response.status})`);
       return true;
@@ -1526,7 +1580,7 @@ const Scout = {
       const resp = await fetch('/api/chat/handoff', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: c.id }),
+        body: JSON.stringify({ id: c.id, purpose: c.purpose }),
       });
       const ct = resp.headers.get('content-type') || '';
       if (!resp.ok || !ct.includes('event-stream')) {
@@ -1561,7 +1615,7 @@ const Scout = {
     if (!completed) {
       if (handoffStateChanged) {
         const message = handoffError;
-        await this.openChat(c.id, 'ask');
+        await this.openChat(c.id, c.purpose === 'interview-prep' ? 'interviewPrep' : 'ask', null, c.purpose);
         if (message && this.chat?.id === c.id
             && !this.chat.data.messages.some((m) => m.role === 'system' && m.text === message)) {
           this.chat.data.messages.push({ role: 'system', text: message });
@@ -1574,7 +1628,12 @@ const Scout = {
     }
     const following = this.chatNearBottom(body);
     const previousScrollTop = body.scrollTop;
-    await this.openChat(c.id, 'ask'); // reload transcript, new engine badge, fresh composer
+    await this.openChat(
+      c.id,
+      c.purpose === 'interview-prep' ? 'interviewPrep' : 'ask',
+      null,
+      c.purpose,
+    ); // reload transcript, new engine badge, fresh composer
     if (!following && this.chat?.id === c.id) {
       document.getElementById('chat-body').scrollTop = previousScrollTop;
     }

@@ -77,6 +77,30 @@ test('Codex chats use the canonical desktop task deep link and raw tool commands
   assert.match(source, /Technical details/);
 });
 
+test('interview prep is a manual, separate conversation with escaped saved-pack content', () => {
+  const { scout } = loadScout();
+  let opened;
+  scout.openChat = (...args) => { opened = args; };
+  scout.openInterviewPrep('acme-role-2026-07');
+  assert.deepEqual(Array.from(opened), ['acme-role-2026-07', 'interviewPrep', null, 'interview-prep']);
+  scout.state.data = { pipeline: { flags: [{ id: 'acme-role-2026-07', kind: 'interview-prep' }] } };
+  assert.equal(scout.interviewPrepRecommended('acme-role-2026-07'), true);
+  assert.equal(scout.interviewPrepRecommended('other-role-2026-07'), false);
+
+  scout.chat = {
+    purpose: 'interview-prep',
+    artifact: { exists: true, updatedAt: null, content: '<script>alert(1)</script>' },
+  };
+  const pack = scout.interviewPrepPackHtml();
+  assert.match(pack, /View prep pack/);
+  assert.match(pack, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(pack, /<script>/);
+
+  const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  assert.match(source, />interview prep<\/button>/);
+  assert.doesNotMatch(source, /openInterviewPrep[\s\S]{0,200}sendChat\(/);
+});
+
 test('rendered category lanes escape configured labels', () => {
   const { scout, context } = loadScout();
   const target = { innerHTML: '' };

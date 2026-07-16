@@ -27,3 +27,14 @@ test('packaged, Codex and Claude tailor skills stay identical', () => {
   assert.equal(read('skills/builtin/tailor/SKILL.md'), read('.agents/skills/tailor/SKILL.md'));
   assert.equal(read('skills/builtin/tailor/SKILL.md'), read('.claude/skills/tailor/SKILL.md'));
 });
+
+test('Codex and Claude interview-prep skills stay identical and preserve the safety contract', () => {
+  const codex = read('.agents/skills/interview-prep/SKILL.md');
+  assert.equal(codex, read('.claude/skills/interview-prep/SKILL.md'));
+  assert.equal(codex, read('skills/builtin/interview-prep/SKILL.md'));
+  for (const phrase of [
+    'absolute date checked', 'likely questions', 'STAR stories', 'questions for the interviewer',
+    '## My notes', 'preserve `## My notes` exactly', 'Never switch to another tracker entry',
+    'Never send messages', 'Never', 'change tracker status', 'or commit',
+  ]) assert.match(codex, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+});

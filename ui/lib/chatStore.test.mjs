@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  chatPath, emptyChat, loadChat, saveChat, appendMessage, addFilesTouched, recordHandoff,
+  chatPath, chatPurpose, emptyChat, loadChat, saveChat, appendMessage, addFilesTouched, recordHandoff,
 } from './chatStore.mjs';
 
 function tmpRoot() {
@@ -20,6 +20,11 @@ test('chatPath builds a path under data/chats and rejects bad ids', () => {
   assert.throws(() => chatPath(root, '../evil'), /invalid chat id/i);
   assert.throws(() => chatPath(root, 'Bad Slug'), /invalid chat id/i);
   assert.throws(() => chatPath(root, ''), /invalid chat id/i);
+  assert.equal(
+    chatPath(root, 'acme-avionics-lead-2026-07', 'interview-prep'),
+    path.join(root, 'data', 'chats', 'acme-avionics-lead-2026-07-interview-prep.json'),
+  );
+  assert.throws(() => chatPurpose('other'), /invalid chat purpose/i);
 });
 
 test('loadChat returns null when missing; saveChat round-trips', () => {
@@ -34,6 +39,18 @@ test('loadChat returns null when missing; saveChat round-trips', () => {
   assert.deepEqual(loaded.messages, [{ role: 'user', text: 'hello', ts: '2026-07-10T09:00:00Z' }]);
   assert.deepEqual(loaded.filesTouched, []);
   assert.deepEqual(loaded.handoffs, []);
+});
+
+test('job and interview prep chats persist independently', () => {
+  const root = tmpRoot();
+  const job = emptyChat('claude');
+  const prep = emptyChat('codex');
+  appendMessage(job, 'user', 'tailor my CV', '2026-07-10T09:00:00Z');
+  appendMessage(prep, 'user', 'prepare me', '2026-07-10T10:00:00Z');
+  saveChat(root, 'acme-role-2026-07', job);
+  saveChat(root, 'acme-role-2026-07', prep, 'interview-prep');
+  assert.equal(loadChat(root, 'acme-role-2026-07').messages[0].text, 'tailor my CV');
+  assert.equal(loadChat(root, 'acme-role-2026-07', 'interview-prep').messages[0].text, 'prepare me');
 });
 
 test('addFilesTouched dedupes and skips falsy', () => {

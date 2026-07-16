@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  loadChat, saveChat, emptyChat, appendMessage, addFilesTouched, recordHandoff,
+  loadChat, saveChat, emptyChat, appendMessage, addFilesTouched, recordHandoff, chatPurpose,
 } from './chatStore.mjs';
 import { buildClaudeArgs, parseClaudeLine } from './chatClaude.mjs';
 import { buildCodexArgs, parseCodexLine } from './chatCodex.mjs';
@@ -13,6 +13,9 @@ import { readUsage } from './usage.mjs';
 import { loadWorkspaceConfig } from './workspace.mjs';
 import { providerStatus } from './providers.mjs';
 import { runStructuredTurn } from './structuredTurn.mjs';
+import {
+  interviewPrepAgentPrompt, interviewPrepPrefills, readInterviewPrep,
+} from './interviewPrep.mjs';
 
 export const ENGINES = {
   claude: { build: buildClaudeArgs, parse: parseClaudeLine },
@@ -107,10 +110,11 @@ export function registerChatRoutes({
   function selectedEntryContext(entry) {
     if (!entry || entry.id === ONBOARDING_CHAT_ID) return '';
     const selected = {
-      id: entry.id, company: entry.company, role: entry.role, score: entry.score,
+      id: entry.id, company: entry.company, role: entry.role, status: entry.status, score: entry.score,
       scoreBreakdown: entry.scoreBreakdown || {}, eligibility: entry.eligibility || null,
       mandatoryRequirements: entry.mandatoryRequirements || [], location: entry.location || entry.commute || null,
       salary: entry.salary || null, sources: (entry.sources || []).slice(0, 5), notes: String(entry.notes || '').slice(0, 4000),
+      application: entry.application || null, contacts: (entry.contacts || []).slice(0, 20),
     };
     return `Selected opportunity (authoritative; do not choose another tracker entry):\n${JSON.stringify(selected)}`;
   }
@@ -153,11 +157,14 @@ export function registerChatRoutes({
 
   routes['GET /api/chat'] = (req, res, body, url) => {
     const id = url.searchParams.get('id') || '';
+    let purpose;
+    try { purpose = chatPurpose(url.searchParams.get('purpose') || 'job'); }
+    catch (e) { return replyJson(res, 400, { error: e.message }); }
     let entry;
     try { entry = entryOf(id); } catch (e) { return replyJson(res, 500, { error: `tracker unreadable: ${e.message}` }); }
     if (!entry) return replyJson(res, 404, { error: 'no such opportunity' });
     let chat;
-    try { chat = loadChat(repoRoot, id); } catch (e) { return replyJson(res, 400, { error: e.message }); }
+    try { chat = loadChat(repoRoot, id, purpose); } catch (e) { return replyJson(res, 400, { error: e.message }); }
     // A failed cold start has no resumable CLI session. Keep its error history,
     // but expose an unset engine so the other installed CLI remains selectable.
     const visibleChat = chat && !chat.cliSessionId && !chat.bounded ? { ...chat, engine: null } : chat;
@@ -169,9 +176,13 @@ export function registerChatRoutes({
     return replyJson(res, 200, {
       exists: !!chat,
       chat: visibleChat,
+      purpose,
+      artifact: purpose === 'interview-prep' ? readInterviewPrep(repoRoot, entry) : null,
       prefills: id === ONBOARDING_CHAT_ID
         ? { ask: onboardingPrefill(config), review: 'Review the currently staged onboarding changes. Summarise each proposed change, flag any unsupported claims or missing evidence, and do not activate anything.', approve: 'I have reviewed the staged onboarding changes. Validate them once more, show me the exact files that will be activated, and ask for final confirmation before activation.' }
-        : buildPrefills(entry, { locale: config.locale, tone: config.profile?.tone, cvOptions }),
+        : purpose === 'interview-prep'
+          ? interviewPrepPrefills(entry)
+          : buildPrefills(entry, { locale: config.locale, tone: config.profile?.tone, cvOptions }),
       busy: running.has(id),
     });
   };
@@ -183,6 +194,7 @@ export function registerChatRoutes({
   routes['POST /api/chat/stop'] = (req, res, body) => {
     const b = parseBody(body);
     if (!b) return replyJson(res, 400, { error: 'bad json' });
+    try { chatPurpose(b.purpose || 'job'); } catch (e) { return replyJson(res, 400, { error: e.message }); }
     const turn = running.get(b.id || '');
     if (turn) turn.stop();
     return replyJson(res, 200, { ok: true, stopped: !!turn });
@@ -214,9 +226,12 @@ export function registerChatRoutes({
 
   async function handleHandoff(req, res, b) {
     const id = b.id || '';
+    let purpose;
+    try { purpose = chatPurpose(b.purpose || 'job'); }
+    catch (e) { return replyJson(res, 400, { error: e.message }); }
     if (running.has(id)) return replyJson(res, 409, { error: 'a turn is already running for this job' });
     let chat;
-    try { chat = loadChat(repoRoot, id); } catch (e) { return replyJson(res, 400, { error: e.message }); }
+    try { chat = loadChat(repoRoot, id, purpose); } catch (e) { return replyJson(res, 400, { error: e.message }); }
     if (!chat || !chat.cliSessionId) return replyJson(res, 400, { error: 'no conversation to hand off yet' });
     const from = chat.engine;
     if (!ENGINES[from]) return replyJson(res, 400, { error: 'saved chat engine must be claude or codex' });
@@ -252,7 +267,7 @@ export function registerChatRoutes({
       const message = `summary failed: ${r1.error || 'empty summary'}`;
       addFilesTouched(chat, r1.filesTouched);
       appendMessage(chat, 'system', message, nowIso());
-      try { saveChatFn(repoRoot, id, chat); } catch (e) {
+      try { saveChatFn(repoRoot, id, chat, purpose); } catch (e) {
         sseSend(res, 'error', { message: `${message}; transcript save failed: ${e.message}` });
         return sseEnd(res);
       }
@@ -263,14 +278,18 @@ export function registerChatRoutes({
     addFilesTouched(chat, r1.filesTouched);
     recordHandoff(chat, to, nowIso());
     appendMessage(chat, 'system', `handoff summary:\n${r1.text}`, nowIso());
-    try { saveChatFn(repoRoot, id, chat); } catch (e) {
+    try { saveChatFn(repoRoot, id, chat, purpose); } catch (e) {
       sseSend(res, 'error', { message: `handoff transcript save failed: ${e.message}` });
       return sseEnd(res);
     }
     checkpoint(`save chat handoff - ${id}`);
 
     sseSend(res, 'status', { message: `starting ${to} with the summary…` });
-    const opening = `${selectedEntryContext(entryOf(id))}\n\n${handoffOpening(r1.text)}`;
+    const selected = entryOf(id);
+    const handoff = handoffOpening(r1.text);
+    const opening = purpose === 'interview-prep'
+      ? `${selectedEntryContext(selected)}\n\n${interviewPrepAgentPrompt(selected, handoff)}`
+      : `${selectedEntryContext(selected)}\n\n${handoff}`;
     let t2;
     try {
       t2 = runTurnFn({
@@ -283,7 +302,7 @@ export function registerChatRoutes({
     } catch (e) {
       const message = `handoff turn failed: ${e.message}`;
       appendMessage(chat, 'system', message, nowIso());
-      try { saveChatFn(repoRoot, id, chat); } catch { /* the earlier handoff state is already persisted */ }
+      try { saveChatFn(repoRoot, id, chat, purpose); } catch { /* the earlier handoff state is already persisted */ }
       sseSend(res, 'error', { message, engine: to, sessionId: chat.cliSessionId });
       return sseEnd(res);
     }
@@ -306,7 +325,7 @@ export function registerChatRoutes({
     } else {
       appendMessage(chat, 'system', r2.error || 'handoff turn failed', nowIso());
     }
-    try { saveChatFn(repoRoot, id, chat); } catch (e) {
+    try { saveChatFn(repoRoot, id, chat, purpose); } catch (e) {
       sseSend(res, 'error', { message: `handoff transcript save failed: ${e.message}` });
       return sseEnd(res);
     }
@@ -323,13 +342,16 @@ export function registerChatRoutes({
 
   async function handleSend(req, res, b) {
     const id = b.id || '';
+    let purpose;
+    try { purpose = chatPurpose(b.purpose || 'job'); }
+    catch (e) { return replyJson(res, 400, { error: e.message }); }
     let entry;
     try { entry = entryOf(id); } catch (e) { return replyJson(res, 500, { error: `tracker unreadable: ${e.message}` }); }
     if (!entry) return replyJson(res, 404, { error: 'no such opportunity' });
     if (id === ONBOARDING_CHAT_ID) return replyJson(res, 410, { error: 'use Scout’s bounded setup proposal control for onboarding' });
     if (running.has(id)) return replyJson(res, 409, { error: 'a turn is already running for this job' });
     let chat;
-    try { chat = loadChat(repoRoot, id); } catch (e) { return replyJson(res, 400, { error: e.message }); }
+    try { chat = loadChat(repoRoot, id, purpose); } catch (e) { return replyJson(res, 400, { error: e.message }); }
     const engine = chat && chat.cliSessionId ? chat.engine : b.engine;
     if (!ENGINES[engine]) return replyJson(res, 400, { error: 'engine must be claude or codex' });
     const text = typeof b.text === 'string' ? b.text.trim() : '';
@@ -337,7 +359,10 @@ export function registerChatRoutes({
     if (!chat) chat = emptyChat(engine);
     else chat.engine = engine;
 
-    if (b.mode === 'fit-assessment') return handleFitAssessment(req, res, { id, entry, engine, text, chat });
+    if (b.mode === 'fit-assessment') {
+      if (purpose !== 'job') return replyJson(res, 400, { error: 'fit assessment belongs to the job conversation' });
+      return handleFitAssessment(req, res, { id, entry, engine, text, chat });
+    }
 
     sseStart(res);
     let built;
@@ -347,7 +372,11 @@ export function registerChatRoutes({
     }
     const turn = runTurnFn({
       ...built,
-      prompt: entry.id === ONBOARDING_CHAT_ID ? text : `${selectedEntryContext(entry)}\n\nUser request:\n${text}`,
+      prompt: entry.id === ONBOARDING_CHAT_ID
+        ? text
+        : purpose === 'interview-prep'
+          ? `${selectedEntryContext(entry)}\n\n${interviewPrepAgentPrompt(entry, text)}`
+          : `${selectedEntryContext(entry)}\n\nUser request:\n${text}`,
       cwd: repoRoot,
       parseLine: ENGINES[engine].parse,
       onEvent: (ev) => {
@@ -375,7 +404,7 @@ export function registerChatRoutes({
     } else {
       appendMessage(chat, 'system', r.error || 'turn failed', nowIso());
     }
-    try { saveChatFn(repoRoot, id, chat); } catch (e) {
+    try { saveChatFn(repoRoot, id, chat, purpose); } catch (e) {
       console.error('chat transcript save failed:', e.message); // transcript loss only - agent session still resumable
     }
     checkpoint(`save chat - ${id}`);
