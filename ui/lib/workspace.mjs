@@ -182,6 +182,12 @@ export function seedWorkspace(appRoot, root) {
 }
 
 export function syncManagedInstructions(appRoot, workspaceRoot) {
+  const ignore = path.join(workspaceRoot, '.gitignore');
+  const ignoreText = fs.existsSync(ignore) ? fs.readFileSync(ignore, 'utf8') : '';
+  if (!ignoreText.split(/\r?\n/).includes('data/chats/')) {
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    fs.appendFileSync(ignore, `${ignoreText && !ignoreText.endsWith('\n') ? '\n' : ''}data/chats/\n`, 'utf8');
+  }
   // A source checkout can still act as its own legacy workspace. Its managed
   // files are already present and may be protected by the host sandbox.
   if (path.resolve(appRoot) === path.resolve(workspaceRoot)) return;

@@ -85,6 +85,23 @@ test('local-only checkpoints never contact a Git remote', async () => {
   fs.rmSync(f.base, { recursive: true, force: true });
 });
 
+test('workspace upgrade untracks legacy chats without deleting transcripts', async () => {
+  const f = fixture();
+  fs.appendFileSync(path.join(f.root, '.gitignore'), 'data/chats/\n');
+  fs.mkdirSync(path.join(f.root, 'data', 'chats'), { recursive: true });
+  fs.writeFileSync(path.join(f.root, 'data', 'chats', 'example.json'), '{"messages":[]}\n');
+  git(f.root, 'init');
+  git(f.root, 'config', 'user.name', 'Test');
+  git(f.root, 'config', 'user.email', 'test@example.invalid');
+  git(f.root, 'add', 'workspace.json', '.gitignore', 'data/opportunities.json');
+  git(f.root, 'add', '-f', 'data/chats/example.json');
+  git(f.root, 'commit', '-m', 'legacy tracked chat');
+  await runWorkspaceSync(f.root, 'make chats device local');
+  assert.equal(fs.existsSync(path.join(f.root, 'data', 'chats', 'example.json')), true);
+  assert.equal(git(f.root, 'ls-files', 'data/chats'), '');
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
 test('optional sync commits, pushes, restores ignored state, and can be disabled', async () => {
   const f = fixture();
   const verifyRemote = async () => ({ url: f.remote, empty: true, owner: 'test', repo: 'test' });

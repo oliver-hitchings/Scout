@@ -3,7 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#3525cd">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Scout">
   <title>Scout</title>
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/assets/scout-icon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/assets/scout-icon.png">
   <link rel="apple-touch-icon" href="/assets/scout-icon.png">
@@ -540,6 +544,7 @@
     }
 
     .hidden { display: none; }
+    .host-unavailable { margin:0; padding:10px 16px; background:var(--warn-bg); color:var(--on-surface); text-align:center; border-bottom:1px solid var(--line); }
 
     /* Chat drawer */
     .chat-drawer {
@@ -712,6 +717,7 @@
   </style>
 </head>
 <body>
+  <div id="host-unavailable" class="host-unavailable hidden" role="status">Scout's host is unavailable. Keep this page open and wake or sign in to the host computer. Offline editing is not supported.</div>
   <header>
     <b>Scout</b>
     <nav>
@@ -760,8 +766,8 @@
       <label class="cv-option"><input id="cv-option-xyz" type="checkbox" checked><span><b>Google XYZ <span class="chip">Recommended</span></b><span class="meta">Strengthen genuine achievement bullets with what you accomplished, the confirmed outcome, and how you did it. Scout asks only for missing evidence, one question at a time.</span></span></label>
       <label class="cv-option"><input id="cv-option-humanize" type="checkbox" checked><span><b>Natural-voice review <span class="chip">Recommended</span></b><span class="meta">Run a separate evidence-preserving rewrite and checks for generic phrasing, repetition, long bullets and locale mismatches.</span></span></label>
       <div class="controls" style="justify-content:flex-end;margin-top:18px">
-        <button class="act" type="button" onclick="Scout.closeCvOptions()">Cancel</button>
-        <button class="act primary" type="button" onclick="Scout.startCvFromOptions()">Continue to job chat</button>
+        <button id="cv-options-cancel" class="act" type="button">Cancel</button>
+        <button id="cv-options-continue" class="act primary" type="button">Continue to job chat</button>
       </div>
     </div>
   </div>

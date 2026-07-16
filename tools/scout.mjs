@@ -21,6 +21,7 @@ import {
   syncManagedInstructions, workspacePaths, writeWorkspaceConfig,
 } from '../ui/lib/workspace.mjs';
 import { acquireScanLock, readScanLock, releaseScanLock } from './scan-lock.mjs';
+import { runRemoteHostingPreflight } from './remote-hosting-preflight.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -102,7 +103,7 @@ export function migrateLegacyWorkspace(sourceRoot, targetRoot) {
     .reduce((count, rel) => count + verifyCopiedTree(path.join(sourceRoot, rel), path.join(targetRoot, rel)), 0);
   inferLegacyConfig(sourceRoot, targetRoot);
   const ignore = path.join(targetRoot, '.gitignore');
-  if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, '.env\n.agents/\n.claude/\nAGENTS.md\nCLAUDE.md\n.scout/\nlogs/\napplications/**/*.pdf\napplications/**/*.docx\n', 'utf8');
+  if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, '.env\n.agents/\n.claude/\nAGENTS.md\nCLAUDE.md\n.scout/\nlogs/\napplications/**/*.pdf\napplications/**/*.docx\ndata/chats/\n', 'utf8');
   spawnSync('git', ['add', '--', '.'], { cwd: targetRoot, encoding: 'utf8', windowsHide: true });
   const commit = spawnSync('git', ['commit', '-m', 'Initial private Scout workspace'], { cwd: targetRoot, encoding: 'utf8', windowsHide: true });
   return { sourceRoot, targetRoot, verifiedFiles, committed: commit.status === 0, commitMessage: String(commit.stderr || commit.stdout || '').trim() };
@@ -259,6 +260,17 @@ async function main() {
   const command = argv[0] || 'help';
   const root = selectedWorkspace(argv);
   if (command === 'doctor') return print(doctor(root));
+  if (command === 'remote') {
+    const action = argv[1] || 'preflight';
+    if (action !== 'preflight') throw new Error('remote action must be preflight');
+    const result = await runRemoteHostingPreflight({
+      url: argValue('--url', argv) || 'http://127.0.0.1:8459',
+      requireEnabled: argv.includes('--require-enabled'),
+    });
+    print(result);
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
   if (command === 'workspace') {
     const action = argv[1] || 'init';
     if (action === 'init') return print({ ok: true, workspace: initWorkspace(root) });
@@ -337,7 +349,7 @@ async function main() {
       return print(installSchedule(root, argValue('--time', argv) || config.schedule?.time || '07:30', argValue('--provider', argv) || config.ai?.provider));
     }
   }
-  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  workspace init|migrate [--from PATH] [--to PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude [--mode primary|second-pass]\n  schedule install|status|remove|run-now [--time HH:MM] [--provider PROVIDER]`);
+  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude [--mode primary|second-pass]\n  schedule install|status|remove|run-now [--time HH:MM] [--provider PROVIDER]`);
 }
 
 const isMain = isMainModule(import.meta.url);

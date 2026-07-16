@@ -77,9 +77,19 @@ const Scout = {
   companyHistory: null,
 
   async api(pathname, opts) {
-    const r = await fetch(pathname, opts);
-    const ct = r.headers.get('content-type') || '';
-    return ct.includes('json') ? r.json() : r.text();
+    try {
+      const r = await fetch(pathname, opts);
+      this.setHostAvailable(true);
+      const ct = r.headers.get('content-type') || '';
+      return ct.includes('json') ? r.json() : r.text();
+    } catch (error) {
+      this.setHostAvailable(false);
+      throw error;
+    }
+  },
+
+  setHostAvailable(available) {
+    document.getElementById('host-unavailable')?.classList.toggle('hidden', available);
   },
 
   esc(s) {
@@ -1651,6 +1661,9 @@ const Scout = {
   },
 
   init() {
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+    window.addEventListener?.('offline', () => this.setHostAvailable(false));
+    window.addEventListener?.('online', () => this.loadOpportunities().catch(() => this.setHostAvailable(false)));
     document.querySelectorAll('nav button').forEach((b) =>
       b.addEventListener('click', () => {
         if (b.id === 'scout-settings') window.ScoutSetup?.openSettings?.();
@@ -1658,6 +1671,8 @@ const Scout = {
       }));
     document.getElementById?.('scan-now')?.addEventListener('click', () => this.scanNow());
     document.getElementById?.('sync-status')?.addEventListener('click', () => window.ScoutSetup?.openSettings?.());
+    document.getElementById?.('cv-options-cancel')?.addEventListener('click', () => this.closeCvOptions());
+    document.getElementById?.('cv-options-continue')?.addEventListener('click', () => this.startCvFromOptions());
     window.addEventListener?.('focus', () => this.refreshSyncStatus({ retry: true }));
     document.addEventListener?.('visibilitychange', () => { if (!document.hidden) this.refreshSyncStatus({ retry: true }); });
     this.loadOpportunities();

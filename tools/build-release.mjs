@@ -12,6 +12,8 @@ const DEFAULT_ROOT = path.resolve(HERE, '..');
 export const RELEASE_FILES = Object.freeze([
   { source: 'ui', target: 'ui', tree: true },
   { source: 'tools/scout.mjs', target: 'tools/scout.mjs' },
+  { source: 'tools/remote-access.mjs', target: 'tools/remote-access.mjs' },
+  { source: 'tools/remote-hosting-preflight.mjs', target: 'tools/remote-hosting-preflight.mjs' },
   { source: 'tools/scan-lock.mjs', target: 'tools/scan-lock.mjs' },
   { source: 'tools/fetch-adzuna.mjs', target: 'tools/fetch-adzuna.mjs' },
   { source: 'tools/fetch-ats.mjs', target: 'tools/fetch-ats.mjs' },
@@ -28,6 +30,7 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'docs/AI_SETUP.md', target: 'docs/AI_SETUP.md' },
   { source: 'docs/CONFIGURATION.md', target: 'docs/CONFIGURATION.md' },
   { source: 'docs/PRIVACY.md', target: 'docs/PRIVACY.md' },
+  { source: 'docs/PRIVATE_REMOTE_ACCESS.md', target: 'docs/PRIVATE_REMOTE_ACCESS.md' },
   { source: 'docs/CV_QUALITY.md', target: 'docs/CV_QUALITY.md' },
   { source: 'docs/PROVIDERS.md', target: 'docs/PROVIDERS.md' },
   { source: 'docs/ADZUNA_AND_SOURCES.md', target: 'docs/ADZUNA_AND_SOURCES.md' },
@@ -59,9 +62,10 @@ export const PUBLIC_SOURCE_FILES = Object.freeze([
     'tools/fetch-adzuna.mjs', 'tools/fetch-ats.mjs', 'tools/fetch-hiring-cafe.mjs',
     'tools/scan-lock.mjs', 'tools/scan-lock.test.mjs', 'tools/scan-skill-parity.test.mjs',
     'tools/scout.mjs', 'tools/scout.test.mjs',
+    'tools/remote-access.mjs', 'tools/remote-hosting-preflight.mjs', 'tools/remote-hosting-preflight.test.mjs', 'tools/remote-hosting-docs.test.mjs', 'tools/windows-host.test.mjs',
   ].map((source) => ({ source, target: source })),
   ...PUBLIC_DOCS,
-  ...['.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'package.json', 'package-lock.json', 'LICENSE']
+  ...['.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'REMOTE_HOSTING_TODO.md', 'CONTRIBUTING.md', 'SECURITY.md', 'package.json', 'package-lock.json', 'LICENSE']
     .map((source) => ({ source, target: source })),
 ]);
 

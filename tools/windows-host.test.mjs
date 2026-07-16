@@ -20,3 +20,19 @@ test('Windows host checks updates after launch and on a recurring timer', () => 
   assert.match(host, /dailyTimer\.Interval = 60 \* 60 \* 1000/);
   assert.match(host, /api\/update\/check/);
 });
+
+test('Windows host supervises runtime recovery and warns before remote access stops', () => {
+  assert.match(host, /watchdogTimer\.Interval = 30000/);
+  assert.match(host, /WatchdogTick/);
+  assert.match(host, /new\[\] \{ 30, 60, 120, 300 \}/);
+  assert.match(host, /api\/remote-access\/status/);
+  assert.match(host, /Remote access will stop until Scout is relaunched or your next Windows sign-in/);
+});
+
+test('Windows uninstall removes only Scout managed hosting and both startup mechanisms', () => {
+  assert.match(installer, /tools\\remote-access\.mjs/);
+  assert.match(installer, /schtasks\.exe/);
+  assert.match(installer, /\\Scout\\Scout Host/);
+  assert.match(installer, /CurrentVersion\\Run \/v Scout/);
+  assert.doesNotMatch(installer, /tailscale serve reset/i);
+});

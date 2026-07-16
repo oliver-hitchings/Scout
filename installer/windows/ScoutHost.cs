@@ -31,6 +31,10 @@ namespace ScoutHost {
     Process serverProcess;
     System.Windows.Forms.Timer initialTimer;
     System.Windows.Forms.Timer dailyTimer;
+    System.Windows.Forms.Timer watchdogTimer;
+    int restartAttempts;
+    DateTime nextRestartAt = DateTime.MinValue;
+    bool quitting;
     string updateUrl;
 
     public TrayContext(bool background) {
@@ -48,29 +52,58 @@ namespace ScoutHost {
       tray.ContextMenuStrip = menu;
       tray.DoubleClick += delegate { Program.OpenDashboard(); };
       tray.BalloonTipClicked += delegate { if (!String.IsNullOrEmpty(updateUrl)) Process.Start(new ProcessStartInfo(updateUrl) { UseShellExecute = true }); };
-      if (!EnsureServer()) { tray.Visible = false; tray.Dispose(); return; }
-      if (!background) Program.OpenDashboard();
+      var started = EnsureServer(true);
+      if (!background && started) Program.OpenDashboard();
       initialTimer = new System.Windows.Forms.Timer(); initialTimer.Interval = 10000; initialTimer.Tick += delegate { initialTimer.Stop(); CheckUpdates(false); }; initialTimer.Start();
       dailyTimer = new System.Windows.Forms.Timer(); dailyTimer.Interval = 60 * 60 * 1000; dailyTimer.Tick += delegate { CheckUpdates(false); }; dailyTimer.Start();
+      watchdogTimer = new System.Windows.Forms.Timer(); watchdogTimer.Interval = 30000; watchdogTimer.Tick += delegate { WatchdogTick(); }; watchdogTimer.Start();
     }
 
-    bool EnsureServer() {
+    string RunningAppRoot() {
       try {
         var info = new JavaScriptSerializer().Deserialize<System.Collections.Generic.Dictionary<string, object>>(Get("api/app-info"));
-        var expected = Path.GetFullPath(Path.Combine(root, "app")).TrimEnd('\\');
-        var actual = Path.GetFullPath(Convert.ToString(info["appRoot"])).TrimEnd('\\');
-        if (String.Equals(expected, actual, StringComparison.OrdinalIgnoreCase)) return true;
-        MessageBox.Show("Another Scout copy is already using the local dashboard. Quit it before opening this version.\n\nRunning from: " + actual, "Scout", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        ExitThread(); return false;
+        return Path.GetFullPath(Convert.ToString(info["appRoot"])).TrimEnd('\\');
       } catch { }
+      return null;
+    }
+
+    bool ServerHealthy() {
+      var actual = RunningAppRoot();
+      var expected = Path.GetFullPath(Path.Combine(root, "app")).TrimEnd('\\');
+      return actual != null && String.Equals(expected, actual, StringComparison.OrdinalIgnoreCase);
+    }
+
+    bool EnsureServer(bool notifyFailure) {
+      if (ServerHealthy()) return true;
+      var running = RunningAppRoot();
+      if (running != null) {
+        if (notifyFailure) MessageBox.Show("Another Scout copy is already using the local dashboard. Quit it before opening this version.\n\nRunning from: " + running, "Scout", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return false;
+      }
       var runtime = Path.Combine(root, "runtime", "ScoutRuntime.exe");
       var server = Path.Combine(root, "app", "ui", "server.mjs");
       var startInfo = new ProcessStartInfo(runtime, Quote(server));
       startInfo.WorkingDirectory = Path.Combine(root, "app"); startInfo.UseShellExecute = false; startInfo.CreateNoWindow = true; startInfo.WindowStyle = ProcessWindowStyle.Hidden;
       serverProcess = Process.Start(startInfo);
       for (var i = 0; i < 50; i++) { Thread.Sleep(300); try { Get(""); return true; } catch { } }
-      MessageBox.Show("Scout did not start. Check the workspace logs.", "Scout", MessageBoxButtons.OK, MessageBoxIcon.Error);
+      if (notifyFailure) MessageBox.Show("Scout did not start yet. The tray host will keep trying in the background.", "Scout", MessageBoxButtons.OK, MessageBoxIcon.Warning);
       return false;
+    }
+
+    void WatchdogTick() {
+      if (quitting) return;
+      if (ServerHealthy()) { restartAttempts = 0; nextRestartAt = DateTime.MinValue; return; }
+      if (DateTime.UtcNow < nextRestartAt) return;
+      try { if (serverProcess != null && !serverProcess.HasExited) serverProcess.Kill(); } catch { }
+      if (EnsureServer(false)) {
+        restartAttempts = 0; nextRestartAt = DateTime.MinValue;
+        tray.BalloonTipTitle = "Scout recovered"; tray.BalloonTipText = "The Scout runtime restarted and remote access is available again."; tray.ShowBalloonTip(5000);
+        return;
+      }
+      restartAttempts++;
+      var delays = new[] { 30, 60, 120, 300 };
+      nextRestartAt = DateTime.UtcNow.AddSeconds(delays[Math.Min(restartAttempts - 1, delays.Length - 1)]);
+      tray.BalloonTipTitle = "Scout is recovering"; tray.BalloonTipText = "The runtime is unavailable. Scout will keep retrying in the background."; tray.ShowBalloonTip(5000);
     }
 
     void CheckUpdates(bool force) {
@@ -87,12 +120,16 @@ namespace ScoutHost {
     }
 
     void Quit() {
+      var remoteAccess = HasRemoteAccess();
       if (!HasScheduledScans()) {
-        var choice = MessageBox.Show("Quit Scout? No daily scan is currently scheduled.", "Quit Scout", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+        var message = remoteAccess
+          ? "Quit Scout? Remote access will stop until Scout is relaunched or your next Windows sign-in."
+          : "Quit Scout? No daily scan is currently scheduled.";
+        var choice = MessageBox.Show(message, "Quit Scout", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
         if (choice != DialogResult.Yes) return;
-        StopServer(); tray.Visible = false; tray.Dispose(); ExitThread(); return;
+        quitting = true; StopServer(); tray.Visible = false; tray.Dispose(); ExitThread(); return;
       }
-      using (var dialog = new QuitDialog()) {
+      using (var dialog = new QuitDialog(remoteAccess)) {
         var choice = dialog.ShowDialog();
         if (choice == DialogResult.Cancel) return;
         if (choice == DialogResult.No) {
@@ -100,7 +137,7 @@ namespace ScoutHost {
           catch (Exception ex) { MessageBox.Show("Daily scans could not be disabled, so Scout remains open. " + ex.Message, "Scout", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
         }
       }
-      StopServer(); tray.Visible = false; tray.Dispose(); ExitThread();
+      quitting = true; StopServer(); tray.Visible = false; tray.Dispose(); ExitThread();
     }
 
     bool HasScheduledScans() {
@@ -108,6 +145,13 @@ namespace ScoutHost {
         var status = new JavaScriptSerializer().Deserialize<System.Collections.Generic.Dictionary<string, object>>(Get("api/setup/status"));
         var schedule = status["schedule"] as System.Collections.Generic.Dictionary<string, object>;
         return schedule != null && schedule.ContainsKey("enabled") && Convert.ToBoolean(schedule["enabled"]);
+      } catch { return false; }
+    }
+
+    bool HasRemoteAccess() {
+      try {
+        var status = new JavaScriptSerializer().Deserialize<System.Collections.Generic.Dictionary<string, object>>(Get("api/remote-access/status"));
+        return status.ContainsKey("enabled") && Convert.ToBoolean(status["enabled"]);
       } catch { return false; }
     }
 
@@ -126,9 +170,9 @@ namespace ScoutHost {
   }
 
   sealed class QuitDialog : Form {
-    public QuitDialog() {
+    public QuitDialog(bool remoteAccess) {
       Text = "Quit Scout"; Width = 510; Height = 190; FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false; StartPosition = FormStartPosition.CenterScreen;
-      var label = new Label { Left = 18, Top = 18, Width = 460, Height = 42, Text = "Scout has scheduled daily scans. What should happen when the app closes?" };
+      var label = new Label { Left = 18, Top = 18, Width = 460, Height = 52, Text = remoteAccess ? "Scout has scheduled scans. Quitting also stops remote access until relaunch or next sign-in." : "Scout has scheduled daily scans. What should happen when the app closes?" };
       var keep = new Button { Left = 18, Top = 78, Width = 205, Height = 34, Text = "Keep scans enabled", DialogResult = DialogResult.Yes };
       var disable = new Button { Left = 230, Top = 78, Width = 155, Height = 34, Text = "Disable and quit", DialogResult = DialogResult.No };
       var cancel = new Button { Left = 392, Top = 78, Width = 80, Height = 34, Text = "Cancel", DialogResult = DialogResult.Cancel };

@@ -1,0 +1,13 @@
+{
+  "name": "Scout Opportunity Finder",
+  "short_name": "Scout",
+  "description": "Your private, local-first opportunity finder",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8f9ff",
+  "theme_color": "#3525cd",
+  "icons": [
+    { "src": "/assets/scout-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

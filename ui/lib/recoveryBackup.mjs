@@ -104,7 +104,7 @@ function walk(root, relative, out) {
 
 export function recoveryFileList(workspaceRoot) {
   const files = [];
-  for (const relative of ['.env', '.scout/backups', '.scout/onboarding']) walk(workspaceRoot, relative, files);
+  for (const relative of ['.env', '.scout/backups', '.scout/onboarding', 'data/chats']) walk(workspaceRoot, relative, files);
   const applications = path.join(workspaceRoot, 'applications');
   if (fs.existsSync(applications)) {
     const candidates = [];
@@ -123,6 +123,7 @@ function safeRecoveryPath(relative) {
     || normalized.startsWith('applications/')
     || normalized.startsWith('.scout/backups/')
     || normalized.startsWith('.scout/onboarding/')
+    || normalized.startsWith('data/chats/')
     || normalized === '__device__/preferences.json';
   if (!allowed) throw new Error(`Recovery path is not allowed: ${normalized}`);
   return normalized;
@@ -156,12 +157,18 @@ export function writeRecoveryBackup(workspaceRoot, dataKey, header, { devicePref
   let previous = { files: [] };
   try { previous = readIndex(header, dataKey); } catch { /* a new header has no index */ }
   const previousByPath = new Map(previous.files.map((entry) => [entry.path, entry]));
-  const sources = recoveryFileList(workspaceRoot).map((relative) => ({
-    path: safeRecoveryPath(relative), data: fs.readFileSync(path.join(workspaceRoot, ...relative.split('/'))),
-  }));
+  const sources = recoveryFileList(workspaceRoot).map((relative) => {
+    let data = fs.readFileSync(path.join(workspaceRoot, ...relative.split('/')));
+    if (relative.startsWith('data/chats/') && relative.endsWith('.json')) {
+      const chat = JSON.parse(data.toString('utf8'));
+      chat.cliSessionId = null;
+      data = Buffer.from(`${JSON.stringify(chat, null, 2)}\n`);
+    }
+    return { path: safeRecoveryPath(relative), data };
+  });
   if (devicePreferences !== undefined && devicePreferences !== null) sources.push({
     path: '__device__/preferences.json',
-    data: Buffer.from(`${JSON.stringify(devicePreferences, null, 2)}\n`),
+    data: Buffer.from(`${JSON.stringify({ startWithWindows: Boolean(devicePreferences.startWithWindows) }, null, 2)}\n`),
   });
   if (sources.length > MAX_RECOVERY_FILES) throw new Error('Recovery backup contains too many files');
 
@@ -247,7 +254,23 @@ export function restoreRecoveryBackupWithKey(workspaceRoot, destinationRoot, dat
     if (!target.startsWith(root)) throw new Error('Recovery path escaped the workspace');
     ensureSafeAncestors(path.resolve(destinationRoot), target);
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    atomicWrite(target, value);
+    let restoredValue = value;
+    if (relative.startsWith('data/chats/') && relative.endsWith('.json')) {
+      const chat = JSON.parse(value.toString('utf8'));
+      chat.cliSessionId = null;
+      chat.recovered = { at: new Date().toISOString(), providerSessionReset: true };
+      chat.messages = Array.isArray(chat.messages) ? chat.messages : [];
+      if (!chat.messages.some((message) => message.role === 'system' && message.recoveryNotice === true)) {
+        chat.messages.push({
+          role: 'system',
+          text: 'This transcript was recovered on a new Scout host. Your next message starts a new provider session.',
+          recoveryNotice: true,
+          ts: chat.recovered.at,
+        });
+      }
+      restoredValue = Buffer.from(`${JSON.stringify(chat, null, 2)}\n`);
+    }
+    atomicWrite(target, restoredValue);
   }
   return { dataKey, files: index.files.length, devicePreferences };
 }

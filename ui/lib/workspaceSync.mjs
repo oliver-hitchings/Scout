@@ -103,7 +103,16 @@ function sensitiveTrackedPath(value) {
   const file = String(value || '').replaceAll('\\', '/');
   return file === '.env' || file === 'AGENTS.md' || file === 'CLAUDE.md'
     || file.startsWith('.scout/') || file.startsWith('.agents/') || file.startsWith('.claude/') || file.startsWith('logs/')
+    || file.startsWith('data/chats/')
     || (/^applications\/.+\.(?:pdf|docx)$/i.test(file));
+}
+
+function untrackLegacyChats(root, options = {}) {
+  const tracked = runGit(root, ['ls-files', '-z', '--', 'data/chats'], options);
+  if (!tracked.ok) throw new Error(tracked.error);
+  if (!tracked.stdout.split('\0').filter(Boolean).length) return;
+  const removed = runGit(root, ['rm', '--cached', '-r', '--ignore-unmatch', '--', 'data/chats'], options);
+  if (!removed.ok) throw new Error(`Private backup could not make chats device-local: ${removed.error}`);
 }
 
 function assertNoTrackedSecrets(root, options = {}) {
@@ -141,6 +150,7 @@ export function syncStatus(root, options = {}) {
 }
 
 function commitAll(root, message, options = {}) {
+  untrackLegacyChats(root, options);
   assertNoTrackedSecrets(root, options);
   const update = runGit(root, ['add', '-u'], options);
   if (!update.ok) throw new Error(update.error);
@@ -184,6 +194,7 @@ export async function runWorkspaceSync(root, reason = 'workspace update', option
   const settings = loadSyncSettings(root);
   if (!repoReady(root, options)) return setState(root, 'disabled', { enabled: false });
   ensureRepo(root, options);
+  untrackLegacyChats(root, options);
   assertNoTrackedSecrets(root, options);
   if (!settings.enabled) {
     commitAll(root, `scout: ${reason}`, options);
@@ -260,6 +271,7 @@ export async function connectWorkspaceSync(root, { remoteUrl: value, passphrase 
     ? await options.verifyRemote(value)
     : await verifyPrivateGithubRemote(value, options);
   ensureRepo(root, options);
+  untrackLegacyChats(root, options);
   assertNoTrackedSecrets(root, options);
   const current = remoteUrl(root, options);
   if (current && current !== verified.url) throw new Error('This workspace is already connected to a different origin');
