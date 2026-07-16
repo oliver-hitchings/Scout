@@ -18,9 +18,9 @@ The beta.11 version bump and release commit must remain separate from the featur
   ```
 
 - [x] Review the feature worktree with `git status --short --branch` and `git diff --check`.
-- [ ] Commit only the private-remote-hosting feature on `agent/private-remote-hosting`.
-- [ ] Push the branch and open a **draft** PR against `main`.
-- [ ] Confirm the PR contains no beta.11 version bump, release notes, tag or published installer.
+- [x] Commit only the private-remote-hosting feature on `agent/private-remote-hosting`.
+- [x] Push the branch and open a **draft** PR against `main`.
+- [x] Confirm the PR contains no beta.11 version bump, release notes, tag or published installer.
 
 ## 2. Prepare the Windows host
 
