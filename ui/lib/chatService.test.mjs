@@ -9,6 +9,7 @@ import { ENGINES, registerChatRoutes } from './chatService.mjs';
 import { parseClaudeLine } from './chatClaude.mjs';
 import { emptyChat, loadChat, saveChat } from './chatStore.mjs';
 import { HANDOFF_SUMMARY_PROMPT } from './chatPrompts.mjs';
+import { interviewPrepPath } from './interviewPrep.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = path.join(HERE, 'fixtures', 'fake-cli.mjs');
@@ -101,6 +102,134 @@ test('chat prefills honour per-CV option query parameters', async () => {
   assert.match(body.prefills.cv, /Do not require Google XYZ/);
   assert.match(body.prefills.cv, /separate natural-voice revision/);
   assert.match(body.prefills.cv, /xyz=false and humanize=true/);
+});
+
+test('interview prep GET uses a separate transcript and returns the saved pack without running a provider', async () => {
+  const root = tmpRoot();
+  const job = emptyChat('claude');
+  job.messages.push({ role: 'user', text: 'job conversation' });
+  const prep = emptyChat('codex');
+  prep.messages.push({ role: 'user', text: 'prep conversation' });
+  saveChat(root, ID, job);
+  saveChat(root, ID, prep, 'interview-prep');
+  const pack = interviewPrepPath(root, ENTRY);
+  fs.mkdirSync(path.dirname(pack), { recursive: true });
+  fs.writeFileSync(pack, '# Interview prep\n\n## My notes\nRemember this.\n');
+
+  const response = new MockResponse();
+  routeFixture(root)['GET /api/chat'](
+    new EventEmitter(), response, '',
+    new URL(`http://127.0.0.1/api/chat?id=${ID}&purpose=interview-prep`),
+  );
+  await response.finished;
+  const body = JSON.parse(response.text());
+  assert.equal(body.purpose, 'interview-prep');
+  assert.equal(body.chat.messages[0].text, 'prep conversation');
+  assert.match(body.prefills.interviewPrep, /Use \$interview-prep/);
+  assert.equal(body.artifact.exists, true);
+  assert.match(body.artifact.content, /Remember this/);
+  assert.equal(loadChat(root, ID).messages[0].text, 'job conversation');
+});
+
+test('interview prep sends a pinned prompt and persists only to the prep transcript', async () => {
+  const root = tmpRoot();
+  let captured;
+  const routes = routeFixture(root, {
+    runTurnFn: (options) => {
+      captured = options;
+      return {
+        stop() {},
+        finished: Promise.resolve({ ok: true, text: 'Prepared.', updates: ['Prepared.'], sessionId: 'prep-session', filesTouched: [], usage: {} }),
+      };
+    },
+  });
+  const response = await callRoute(
+    routes['POST /api/chat/send'],
+    JSON.stringify({ id: ID, purpose: 'interview-prep', engine: 'codex', text: 'Prepare me' }),
+  );
+  assert.equal(sseEvents(response.text()).at(-1).event, 'done');
+  assert.match(captured.prompt, /authoritative selected opportunity/);
+  assert.match(captured.prompt, /Never switch to another opportunity/);
+  assert.match(captured.prompt, /applications\/acme\/interview-prep\/acme-role-2026-07\.md/);
+  assert.equal(loadChat(root, ID), null);
+  const saved = loadChat(root, ID, 'interview-prep');
+  assert.equal(saved.cliSessionId, 'prep-session');
+  assert.equal(saved.messages.at(-1).text, 'Prepared.');
+});
+
+test('interview prep handoff resumes the separate prep conversation', async () => {
+  const root = tmpRoot();
+  const prep = emptyChat('claude');
+  prep.cliSessionId = 'prep-old-session';
+  saveChat(root, ID, prep, 'interview-prep');
+  const prompts = [];
+  let call = 0;
+  const routes = routeFixture(root, {
+    runTurnFn: (options) => {
+      prompts.push(options.prompt);
+      call += 1;
+      return {
+        stop() {},
+        finished: Promise.resolve(call === 1
+          ? { ok: true, text: 'Prep handoff summary', sessionId: 'prep-old-session', filesTouched: [] }
+          : { ok: true, text: 'Continuing prep', sessionId: 'prep-new-session', filesTouched: [] }),
+      };
+    },
+  });
+  const response = await callRoute(
+    routes['POST /api/chat/handoff'],
+    JSON.stringify({ id: ID, purpose: 'interview-prep' }),
+  );
+  assert.equal(sseEvents(response.text()).at(-1).event, 'done');
+  assert.equal(loadChat(root, ID), null);
+  const saved = loadChat(root, ID, 'interview-prep');
+  assert.equal(saved.engine, 'codex');
+  assert.equal(saved.cliSessionId, 'prep-new-session');
+  assert.match(prompts[1], /dedicated interview-prep agent/);
+  assert.match(prompts[1], /Prep handoff summary/);
+});
+
+test('job and prep conversations share one running slot per opportunity', async () => {
+  const root = tmpRoot();
+  let finish;
+  const routes = routeFixture(root, {
+    runTurnFn: () => ({
+      stop() {},
+      finished: new Promise((resolve) => { finish = resolve; }),
+    }),
+  });
+  const prepPromise = callRoute(
+    routes['POST /api/chat/send'],
+    JSON.stringify({ id: ID, purpose: 'interview-prep', engine: 'claude', text: 'Prepare me' }),
+  );
+  while (!finish) await new Promise((resolve) => setImmediate(resolve));
+  const job = await callRoute(
+    routes['POST /api/chat/send'],
+    JSON.stringify({ id: ID, engine: 'codex', text: 'Edit my CV' }),
+  );
+  assert.equal(job.statusCode, 409);
+  assert.match(JSON.parse(job.text()).error, /already running/);
+  finish({ ok: true, text: 'Done', sessionId: 'prep-session', filesTouched: [] });
+  assert.equal(sseEvents((await prepPromise).text()).at(-1).event, 'done');
+});
+
+test('chat routes reject unknown purposes and fit mode in prep chats', async () => {
+  const root = tmpRoot();
+  const routes = routeFixture(root);
+  const get = new MockResponse();
+  routes['GET /api/chat'](
+    new EventEmitter(), get, '', new URL(`http://127.0.0.1/api/chat?id=${ID}&purpose=other`),
+  );
+  await get.finished;
+  assert.equal(get.statusCode, 400);
+  assert.match(JSON.parse(get.text()).error, /invalid chat purpose/);
+
+  const send = await callRoute(
+    routes['POST /api/chat/send'],
+    JSON.stringify({ id: ID, purpose: 'interview-prep', engine: 'claude', mode: 'fit-assessment', text: 'Assess' }),
+  );
+  assert.equal(send.statusCode, 400);
+  assert.match(JSON.parse(send.text()).error, /belongs to the job conversation/);
 });
 
 test('handoff route summarises the old session, starts the other engine, and persists it', { concurrency: false }, async () => {
