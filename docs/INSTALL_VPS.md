@@ -1,6 +1,6 @@
 # Host Scout on a private VPS
 
-This is an optional single-owner deployment for an always-on Ubuntu host. Scout remains local-first: the VPS becomes the one canonical machine holding the private workspace and provider sessions. Do not use this setup to share a Codex or Claude account, provide Scout to other users, or expose Scout to the public internet.
+This is an optional advanced, single-owner deployment for an always-on Ubuntu host. Normal users should keep running Scout locally; local installation requires no VPS, Tailscale or deployment credentials. In this advanced mode the VPS becomes the one canonical machine holding the private workspace and provider sessions. Do not use this setup to share a Codex or Claude account, provide Scout to other users, or expose Scout to the public internet.
 
 ## Recommended host
 

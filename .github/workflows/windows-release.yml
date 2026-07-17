@@ -7,6 +7,16 @@ on:
         description: Semantic version to package
         required: true
         type: string
+      deploy_vps:
+        description: Deploy this release-candidate branch to the private Beta VPS without publishing
+        required: false
+        default: false
+        type: boolean
+      test_rollback:
+        description: Intentionally fail after restart so the rehearsal must restore the previous commit
+        required: false
+        default: false
+        type: boolean
   push:
     tags: ['v*']
 
@@ -117,7 +127,7 @@ jobs:
             installer/output/*.tar.gz
 
   deploy-vps:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.deploy_vps)
     needs: [windows, macos, linux]
     runs-on: ubuntu-22.04
     environment: beta-vps
@@ -126,14 +136,13 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v4
       - name: Join the private deployment tailnet
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          audience: ${{ secrets.TS_AUDIENCE }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:scout-deploy
           ping: ${{ secrets.SCOUT_VPS_HOST }}
       - name: Configure pinned SSH credentials
@@ -157,10 +166,29 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$VPS_HOST"
+          mode=release
+          force_failure=false
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            mode=rehearsal
+            [[ "$GITHUB_REF" == refs/heads/agent/beta11-release-candidate ]]
+            force_failure='${{ inputs.test_rollback }}'
+          fi
           release_commit=$(git rev-parse HEAD)
-          printf -v remote_command 'bash -s -- %q %q' "$GITHUB_REF_NAME" "$release_commit"
+          version='${{ needs.windows.outputs.version }}'
+          printf -v remote_command 'bash -s -- %q %q %q %q %q' "$mode" "$GITHUB_REF" "$release_commit" "$version" "$force_failure"
           ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             ubuntu@"$VPS_HOST" "$remote_command" < tools/deploy-vps.sh
+      - name: Confirm a tagged Tailscale runner cannot open Scout
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.SCOUT_VPS_HOST }}
+        run: |
+          set -euo pipefail
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "https://$VPS_HOST/api/app-info")
+          if [[ "$status" != 403 ]]; then
+            printf 'A tagged Tailscale runner must receive HTTP 403, got %s.\n' "$status" >&2
+            exit 1
+          fi
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')

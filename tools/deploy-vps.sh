@@ -1,16 +1,38 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-tag=${1:-}
-expected_commit=${2:-}
+mode=${1:-}
+source_ref=${2:-}
+expected_commit=${3:-}
+version=${4:-}
+force_failure=${5:-false}
 app_root=${SCOUT_VPS_APP_ROOT:-/home/ubuntu/apps/Scout}
 workspace=${SCOUT_VPS_WORKSPACE:-/home/ubuntu/Documents/Scout Workspace}
 service=${SCOUT_VPS_SERVICE:-scout-host.service}
 
-if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
-  printf 'Refusing invalid Scout beta tag: %s\n' "$tag" >&2
+if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+  printf 'Refusing invalid Scout beta version: %s\n' "$version" >&2
   exit 2
 fi
+case "$mode" in
+  release)
+    [[ $source_ref == "refs/tags/v$version" && $force_failure == false ]] || {
+      printf 'Release deployment requires the matching immutable tag and cannot force a failure.\n' >&2
+      exit 2
+    }
+    fetch_ref="refs/tags/v$version:refs/tags/v$version"
+    target_ref="refs/tags/v$version"
+    ;;
+  rehearsal)
+    [[ $source_ref == refs/heads/agent/beta11-release-candidate && $force_failure =~ ^(true|false)$ ]] || {
+      printf 'Rehearsals are restricted to the Beta 11 release-candidate branch.\n' >&2
+      exit 2
+    }
+    fetch_ref="$source_ref:refs/scout-deploy/rehearsal"
+    target_ref=refs/scout-deploy/rehearsal
+    ;;
+  *) printf 'Deployment mode must be release or rehearsal.\n' >&2; exit 2 ;;
+esac
 if [[ ! $expected_commit =~ ^[0-9a-f]{40}$ ]]; then
   printf 'Expected release commit must be a full Git SHA.\n' >&2
   exit 2
@@ -43,7 +65,10 @@ command -v npm >/dev/null
 
 serve_before=$(mktemp)
 serve_after=$(mktemp)
-cleanup() { rm -f "$serve_before" "$serve_after"; }
+cleanup() {
+  rm -f "$serve_before" "$serve_after"
+  if [[ $mode == rehearsal ]]; then git -C "$app_root" update-ref -d refs/scout-deploy/rehearsal >/dev/null 2>&1 || true; fi
+}
 trap cleanup EXIT
 tailscale serve status --json >"$serve_before"
 
@@ -55,24 +80,45 @@ rollback() {
   set +e
   if [[ $switched == 1 && $previous_commit != "$expected_commit" ]]; then
     printf 'Deployment failed; restoring Scout commit %s.\n' "$previous_commit" >&2
-    git -C "$app_root" checkout --detach "$previous_commit"
-    (cd "$app_root" && npm ci)
-    sudo -n systemctl restart "$service"
+    rollback_failed=0
+    git -C "$app_root" checkout --detach "$previous_commit" || rollback_failed=1
+    (cd "$app_root" && npm ci) || rollback_failed=1
+    previous_version=$(cd "$app_root" && node -p "require('./package.json').version") || rollback_failed=1
+    sudo -n systemctl restart "$service" || rollback_failed=1
+    rollback_healthy=false
+    for attempt in {1..60}; do
+      response=$(curl --fail --silent --show-error http://127.0.0.1:8459/api/app-info 2>/dev/null || true)
+      if [[ -n $response ]] && node -e 'const info=JSON.parse(process.argv[1]); if(info.version!==process.argv[2]) process.exit(1)' "$response" "$previous_version"; then
+        rollback_healthy=true
+        break
+      fi
+      sleep 2
+    done
+    tailscale serve status --json >"$serve_after" || rollback_failed=1
+    cmp --silent "$serve_before" "$serve_after" || rollback_failed=1
+    if [[ $rollback_failed == 0 && $rollback_healthy == true ]]; then
+      printf 'Rollback restored Scout %s and preserved Tailscale Serve.\n' "$previous_version" >&2
+    else
+      printf 'CRITICAL: automatic rollback did not restore a verified healthy host.\n' >&2
+    fi
   fi
   exit "$status"
 }
 trap rollback ERR
 
-git -C "$app_root" fetch --force origin "refs/tags/$tag:refs/tags/$tag"
-target_commit=$(git -C "$app_root" rev-parse "$tag^{commit}")
+git -C "$app_root" fetch --force origin "$fetch_ref"
+target_commit=$(git -C "$app_root" rev-parse "$target_ref^{commit}")
 if [[ $target_commit != "$expected_commit" ]]; then
-  printf 'Fetched tag %s resolves to %s, not workflow commit %s.\n' "$tag" "$target_commit" "$expected_commit" >&2
+  printf 'Fetched ref %s resolves to %s, not workflow commit %s.\n' "$source_ref" "$target_commit" "$expected_commit" >&2
+  exit 2
+fi
+if [[ $mode == rehearsal && $force_failure == true && $previous_commit == "$target_commit" ]]; then
+  printf 'Rollback rehearsal requires the VPS to start on a different commit.\n' >&2
   exit 2
 fi
 
 git -C "$app_root" checkout --detach "$target_commit"
 switched=1
-version=${tag#v}
 package_version=$(cd "$app_root" && node -p "require('./package.json').version")
 if [[ $package_version != "$version" ]]; then
   printf 'Tag version and package version do not match.\n' >&2
@@ -86,6 +132,10 @@ fi
 )
 
 sudo -n systemctl restart "$service"
+if [[ $mode == rehearsal && $force_failure == true ]]; then
+  printf 'Controlled rehearsal failure requested after service restart.\n' >&2
+  false
+fi
 for attempt in {1..60}; do
   if systemctl is-active --quiet "$service"; then
     response=$(curl --fail --silent --show-error http://127.0.0.1:8459/api/app-info 2>/dev/null || true)
