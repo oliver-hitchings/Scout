@@ -24,6 +24,8 @@ import { acquireScanLock, readScanLock, releaseScanLock } from './scan-lock.mjs'
 import { runRemoteHostingPreflight } from './remote-hosting-preflight.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const MAX_SCAN_FILE_CHARS = 100_000;
+const MAX_SCAN_CONTEXT_CHARS = 280_000;
 
 function argValue(name, argv = process.argv.slice(2)) {
   const i = argv.indexOf(name);
@@ -148,11 +150,26 @@ export async function collectScanSources(root, config, {
   return { generatedAt: new Date().toISOString(), queries, sources: { ats: atsResult, hiring_cafe: hiringCafe, adzuna: adzunaResult } };
 }
 
-function readBounded(file, maximum = 30_000) {
+function readBounded(file, label, maximum = MAX_SCAN_FILE_CHARS) {
   if (!fs.existsSync(file)) return '';
   const text = fs.readFileSync(file, 'utf8');
-  if (text.length > maximum) throw new Error(`${path.relative(path.dirname(file), file)} exceeds the bounded scan context limit`);
+  if (text.length > maximum) throw new Error(`${label} exceeds Scout's ${maximum.toLocaleString('en-GB')}-character per-file scan limit`);
   return text;
+}
+
+function buildScanContext(paths, config, candidates) {
+  const context = {
+    config,
+    profile: readBounded(path.join(paths.profile, 'context.md'), 'profile/context.md'),
+    calibration: readBounded(path.join(paths.profile, 'calibration.md'), 'profile/calibration.md'),
+    masterCv: readBounded(path.join(paths.cv, 'master-cv.md'), 'cv/master-cv.md'),
+    candidates,
+  };
+  const characters = JSON.stringify(context).length;
+  if (characters > MAX_SCAN_CONTEXT_CHARS) {
+    throw new Error(`assembled scan context exceeds Scout's ${MAX_SCAN_CONTEXT_CHARS.toLocaleString('en-GB')}-character limit (${characters.toLocaleString('en-GB')}); reduce configured sources or shorten the profile/CV`);
+  }
+  return context;
 }
 
 export async function runScanWith(root, provider, mode, {
@@ -182,12 +199,7 @@ export async function runScanWith(root, provider, mode, {
     let usage = {};
     if (candidates.length) {
       const paths = workspacePaths(root);
-      const context = {
-        config, profile: readBounded(path.join(paths.profile, 'context.md')),
-        calibration: readBounded(path.join(paths.profile, 'calibration.md')),
-        masterCv: readBounded(path.join(paths.cv, 'master-cv.md')),
-        candidates,
-      };
+      const context = buildScanContext(paths, config, candidates);
       const prompt = [
         'Assess only the supplied Scout candidates. Return one assessment per candidate and only the required JSON schema.',
         'Use a 100-point evidence-led breakdown. Treat every supplied normalized requirement signal, plus advert words such as required, essential, must and non-negotiable, as mandatory requirements.',

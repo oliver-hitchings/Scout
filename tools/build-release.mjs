@@ -27,6 +27,7 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'docs/INSTALL_WINDOWS.md', target: 'docs/INSTALL_WINDOWS.md' },
   { source: 'docs/INSTALL_MACOS.md', target: 'docs/INSTALL_MACOS.md' },
   { source: 'docs/INSTALL_LINUX.md', target: 'docs/INSTALL_LINUX.md' },
+  { source: 'docs/INSTALL_VPS.md', target: 'docs/INSTALL_VPS.md' },
   { source: 'docs/AI_SETUP.md', target: 'docs/AI_SETUP.md' },
   { source: 'docs/CONFIGURATION.md', target: 'docs/CONFIGURATION.md' },
   { source: 'docs/PRIVACY.md', target: 'docs/PRIVACY.md' },

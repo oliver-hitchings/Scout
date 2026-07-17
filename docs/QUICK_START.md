@@ -116,3 +116,5 @@ Keep local-only use if it is all you need. No Scout account, Tailscale installat
 To make this computer the one active Scout host, install and sign in to [Tailscale](https://tailscale.com/download), then open **Settings -> Private Remote Access**. Confirm the detected owner, leave the automatic HTTPS port selected and enable access. On Windows, automatic startup is selected by default so the host returns after Windows sign-in.
 
 Install Tailscale on your phone or laptop with the same owner login, open the HTTPS address Scout displays, and use the browser's **Add to Home Screen** or **Install app** action. Your browser connects to the host's existing workspace and Scout/Codex chat; it does not create another workspace copy. The host must remain awake, online and signed in. See [Private Remote Access](PRIVATE_REMOTE_ACCESS.md) for access rules, recovery behaviour, cost/terms and troubleshooting.
+
+For an always-on single-owner Ubuntu host, use [Host Scout on a private VPS](INSTALL_VPS.md). It keeps Scout loopback-only and uses a dedicated unprivileged user service to recover after reboot.

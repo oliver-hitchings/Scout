@@ -118,3 +118,59 @@ test('runtime scan records provider failure truthfully and always releases its l
   assert.equal(released, true);
   assert.match(fs.readFileSync(path.join(root, 'data', 'scan-runs.jsonl'), 'utf8'), /bounded provider failed/);
 });
+
+test('runtime scan preserves an evidence-rich profile larger than the former per-file limit', async () => {
+  const root = scanRoot();
+  fs.mkdirSync(path.join(root, 'profile'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'cv'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'profile', 'context.md'), 'p'.repeat(41_154));
+  fs.writeFileSync(path.join(root, 'profile', 'calibration.md'), 'calibration');
+  fs.writeFileSync(path.join(root, 'cv', 'master-cv.md'), 'master CV');
+  let profileLength = 0;
+  const result = await runScanWith(root, 'codex', 'primary', {
+    providerStatusFn: authenticated,
+    collectSourcesFn: async () => ({
+      generatedAt: '2026-07-17T10:00:00Z', queries: ['engineer'],
+      sources: { hiring_cafe: { configured: true, status: 'healthy', count: 1, jobs: [{ company: 'Acme', title: 'Engineer', url: 'https://example.test/job' }] } },
+    }),
+    runStructuredTurnFn: async ({ prompt }) => {
+      const context = JSON.parse(prompt.split('\n\n').at(-1));
+      profileLength = context.profile.length;
+      return {
+        value: { assessments: [{
+          candidateId: 'candidate-001', categoryId: null, summary: 'Evidence-backed match',
+          hardExclusionMatches: [], mandatoryRequirements: [],
+          dimensions: [{ name: 'fit', score: 80, maximum: 100, evidence: 'Profile evidence' }], recommendation: 'keep',
+        }] },
+        usage: { input_tokens: 12_000 },
+      };
+    },
+    acquireLockFn: () => ({ ok: true, lock: { token: 'test' } }),
+    releaseLockFn: () => ({ ok: true }),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(profileLength, 41_154);
+});
+
+test('runtime scan bounds the complete assembled context before calling a provider', async () => {
+  const root = scanRoot();
+  fs.mkdirSync(path.join(root, 'profile'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'cv'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'profile', 'context.md'), 'p'.repeat(100_000));
+  fs.writeFileSync(path.join(root, 'profile', 'calibration.md'), 'c'.repeat(90_000));
+  fs.writeFileSync(path.join(root, 'cv', 'master-cv.md'), 'v'.repeat(90_000));
+  let providerCalls = 0;
+  const result = await runScanWith(root, 'codex', 'primary', {
+    providerStatusFn: authenticated,
+    collectSourcesFn: async () => ({
+      generatedAt: '2026-07-17T10:00:00Z', queries: ['engineer'],
+      sources: { hiring_cafe: { configured: true, status: 'healthy', count: 1, jobs: [{ company: 'Acme', title: 'Engineer', url: 'https://example.test/job' }] } },
+    }),
+    runStructuredTurnFn: async () => { providerCalls += 1; throw new Error('provider must not run'); },
+    acquireLockFn: () => ({ ok: true, lock: { token: 'test' } }),
+    releaseLockFn: () => ({ ok: true }),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /assembled scan context exceeds Scout's 280,000-character limit/);
+  assert.equal(providerCalls, 0);
+});

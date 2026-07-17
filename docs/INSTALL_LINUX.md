@@ -2,7 +2,7 @@
 
 Scout supports Ubuntu 22.04+ and Debian 12+ on x64. Other x64 distributions can try the portable tarball. Scout requires your own authenticated Codex or Claude account.
 
-Private Remote Access is optional. After normal setup, install [Tailscale](https://tailscale.com/download), sign in, and enable **Settings -> Private Remote Access**. Connect clients and install the home-screen app as described in [Private Remote Access](PRIVATE_REMOTE_ACCESS.md). The computer must be awake and the user session active.
+Private Remote Access is optional. After normal setup, install [Tailscale](https://tailscale.com/download), sign in, and enable **Settings -> Private Remote Access**. Connect clients and install the home-screen app as described in [Private Remote Access](PRIVATE_REMOTE_ACCESS.md). A desktop computer must be awake and the user session active. For an unattended Ubuntu server, follow the separate [private VPS guide](INSTALL_VPS.md).
 
 ## Optional user service
 
@@ -25,7 +25,7 @@ RestartSec=30
 WantedBy=default.target
 ```
 
-Run `systemd-analyze --user verify ~/.config/systemd/user/scout-host.service`, then `systemctl --user daemon-reload` and `systemctl --user enable --now scout-host.service`. Inspect it with `systemctl --user status scout-host.service`; disable it with `systemctl --user disable --now scout-host.service`. Do not enable user lingering: Scout and provider authentication are intended to start after the owner signs in.
+Run `systemd-analyze --user verify ~/.config/systemd/user/scout-host.service`, then `systemctl --user daemon-reload` and `systemctl --user enable --now scout-host.service`. Inspect it with `systemctl --user status scout-host.service`; disable it with `systemctl --user disable --now scout-host.service`. Do not enable user lingering on a desktop installation: Scout and provider authentication are intended to start after the owner signs in. The dedicated-user exception for an always-on server is documented and tested separately in the [private VPS guide](INSTALL_VPS.md).
 
 1. Download the `.deb` or `.tar.gz` and `checksums.txt` from [Scout releases](https://github.com/oliver-hitchings/Scout/releases).
 2. Run `sha256sum Scout-*-linux-x64.*` and compare it with the published checksum.

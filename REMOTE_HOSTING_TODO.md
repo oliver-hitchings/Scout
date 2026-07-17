@@ -80,6 +80,8 @@ The beta.11 version bump and release commit must remain separate from the featur
 - [ ] Test the documented macOS LaunchAgent/login setup on a release runner or VM.
 - [ ] Test the documented Linux `systemd --user` setup on a release runner or VM.
 - [ ] Confirm both start only after user sign-in and do not introduce system services or provider credential copying.
+- [ ] On the Ubuntu VPS, test the dedicated-user exception in `docs/INSTALL_VPS.md`: reboot without an SSH login, confirm Scout recovers, run one provider turn, and capture the preflight report.
+- [ ] Confirm the VPS has no public Scout/HTTP ports, Scout listens only on `127.0.0.1:8459`, and disabling linger stops reboot-time hosting.
 
 ## 8. Finish beta.11 after the feature PR is approved
 

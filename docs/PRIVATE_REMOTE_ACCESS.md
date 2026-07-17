@@ -4,7 +4,7 @@ Scout is local-first by default. Private Remote Access is optional and makes one
 
 ## Requirements and cost
 
-- The host must be awake, connected to the internet, signed in to its operating-system user account and running Scout.
+- A desktop host must be awake, connected to the internet, signed in to its operating-system user account and running Scout. A dedicated Ubuntu VPS may instead use the constrained, reboot-safe user service in [Host Scout on a private VPS](INSTALL_VPS.md).
 - Install [Tailscale](https://tailscale.com/download) on the host and every client, then sign in with the same user login on each device.
 - Tailscale's [Personal plan](https://tailscale.com/pricing) is currently free and intended for personal, non-commercial use. Business and organisational users must check the current plan and terms themselves.
 - Codex or Claude authentication stays in the host user's provider-owned profile. Scout never copies `%USERPROFILE%\.codex`, provider credentials or authentication stores to another device.
@@ -46,6 +46,8 @@ The installed web app caches only Scout's static shell. APIs, chats, CVs, report
 Windows installs a least-privilege per-user Task Scheduler task named `\Scout\Scout Host`. It starts after that Windows user signs in, stores no password, ignores duplicate launches, and restarts the tray host after unexpected failure. The tray host checks `ScoutRuntime.exe` every 30 seconds and retries failures with bounded backoff. Target availability is within 90 seconds after sign-in, subject to Windows and network startup.
 
 Scout cannot host before Windows sign-in. Sleep and hibernation also stop remote access. Choosing **Quit Scout** stops remote access until Scout is relaunched or the next sign-in.
+
+An Ubuntu VPS can recover before an interactive SSH login only when its dedicated Scout owner has explicitly enabled the lingering user service described in the [private VPS guide](INSTALL_VPS.md). This exception is not intended for shared machines or desktop Linux accounts.
 
 Encrypted private backup includes visible Scout chat transcripts, but not provider session IDs. Restoring on another host marks each recovered transcript and makes its next message start a new Codex or Claude session. This preserves the conversation for reference without copying provider authentication or pretending an old device-local provider session still exists.
 
