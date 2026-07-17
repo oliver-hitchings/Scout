@@ -116,9 +116,55 @@ jobs:
             installer/output/*.deb
             installer/output/*.tar.gz
 
-  publish:
+  deploy-vps:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [windows, macos, linux]
+    runs-on: ubuntu-22.04
+    environment: beta-vps
+    concurrency:
+      group: scout-beta-vps
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Join the private deployment tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:scout-deploy
+          ping: ${{ secrets.SCOUT_VPS_HOST }}
+      - name: Configure pinned SSH credentials
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SCOUT_VPS_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SCOUT_VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+      - name: Deploy the exact release tag and verify local health
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.SCOUT_VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          release_commit=$(git rev-parse HEAD)
+          printf -v remote_command 'bash -s -- %q %q' "$GITHUB_REF_NAME" "$release_commit"
+          ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            ubuntu@"$VPS_HOST" "$remote_command" < tools/deploy-vps.sh
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows, macos, linux, deploy-vps]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

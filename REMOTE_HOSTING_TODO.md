@@ -85,6 +85,9 @@ The beta.11 version bump and release commit must remain separate from the featur
 
 ## 8. Finish beta.11 after the feature PR is approved
 
+- [ ] Create the protected `beta-vps` GitHub Environment, owner approval rule, Tailscale workload identity and deployment-only SSH secrets documented in `docs/RELEASE.md`.
+- [ ] Confirm `tag:scout-deploy` can reach only SSH on the VPS and the deployment key has only the narrow service-restart sudo permission.
+- [ ] Exercise `tools/deploy-vps.sh` once against a disposable tag/commit and confirm rollback restores the prior commit after an intentional health-check failure.
 - [ ] Merge the feature PR only after required acceptance evidence is attached.
 - [ ] Create a separate beta.11 version/release commit.
 - [ ] Run `npm ci`, `npm test`, `npm run release:audit` and `git diff --check` from the release commit.

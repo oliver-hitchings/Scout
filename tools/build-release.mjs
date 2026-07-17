@@ -63,7 +63,7 @@ export const PUBLIC_SOURCE_FILES = Object.freeze([
     'tools/fetch-adzuna.mjs', 'tools/fetch-ats.mjs', 'tools/fetch-hiring-cafe.mjs',
     'tools/scan-lock.mjs', 'tools/scan-lock.test.mjs', 'tools/scan-skill-parity.test.mjs',
     'tools/scout.mjs', 'tools/scout.test.mjs',
-    'tools/remote-access.mjs', 'tools/remote-hosting-preflight.mjs', 'tools/remote-hosting-preflight.test.mjs', 'tools/remote-hosting-docs.test.mjs', 'tools/windows-host.test.mjs',
+    'tools/remote-access.mjs', 'tools/remote-hosting-preflight.mjs', 'tools/remote-hosting-preflight.test.mjs', 'tools/remote-hosting-docs.test.mjs', 'tools/deploy-vps.sh', 'tools/windows-host.test.mjs',
   ].map((source) => ({ source, target: source })),
   ...PUBLIC_DOCS,
   ...['.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'REMOTE_HOSTING_TODO.md', 'CONTRIBUTING.md', 'SECURITY.md', 'package.json', 'package-lock.json', 'LICENSE']

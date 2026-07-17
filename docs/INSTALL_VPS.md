@@ -84,3 +84,46 @@ Run `scout remote preflight --require-enabled`, then complete these live checks:
 - run one Codex or Claude turn after reboot to confirm that user's provider login remains usable.
 
 Keep automatic security updates, VPS snapshots and Scout's encrypted private-workspace recovery configured. A provider session may still require periodic interactive reauthentication.
+
+## Source-checkout service and Beta updates
+
+The private Beta host may instead use a system-level `scout-host.service` when the unit explicitly sets `User=ubuntu` (or another dedicated unprivileged owner), points at the source checkout and exports the separate `SCOUT_WORKSPACE` path. Scout itself must never run as root. This layout avoids user lingering and supports the gated tag deployment in [Release Process](RELEASE.md).
+
+For the standard source paths, create `/etc/systemd/system/scout-host.service` with root ownership:
+
+```ini
+[Unit]
+Description=Scout private VPS host
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/apps/Scout
+Environment="HOME=/home/ubuntu"
+Environment="SCOUT_WORKSPACE=/home/ubuntu/Documents/Scout Workspace"
+Environment="PATH=/usr/local/bin:/usr/bin:/bin:/home/ubuntu/.local/bin:/home/ubuntu/.npm-global/bin"
+ExecStart=/usr/bin/node /home/ubuntu/apps/Scout/ui/server.mjs
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Confirm the Node path with `command -v node` and adjust `ExecStart` if necessary. Validate and start the unit with `sudo systemd-analyze verify /etc/systemd/system/scout-host.service`, `sudo systemctl daemon-reload` and `sudo systemctl enable --now scout-host.service`.
+
+For automated Beta updates, install a deployment-only SSH public key in `/home/ubuntu/.ssh/authorized_keys`. Use `visudo` to create `/etc/sudoers.d/scout-deploy` containing only:
+
+```sudoers
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl restart scout-host.service
+```
+
+Confirm the real systemctl path with `command -v systemctl`, keep the file owned by root with mode `0440`, and validate it with `sudo visudo -cf /etc/sudoers.d/scout-deploy`. Do not grant the deployment key general passwordless sudo.
+
+The release workflow updates only the clean application checkout: fetch the exact release tag, run `npm ci`, run the complete tests, restart `scout-host.service`, then verify the local version and remote-hosting preflight. It records and restores the previous application commit if deployment fails. The workspace, Codex/Claude profiles and existing Tailscale Serve mapping remain outside that update.
