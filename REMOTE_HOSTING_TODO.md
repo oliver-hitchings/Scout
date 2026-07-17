@@ -96,6 +96,20 @@ The beta.11 version bump and release commit must remain separate from the featur
 - [ ] Publish `v0.1.0-beta.11` only after the release gates pass.
 - [ ] Replace this checklist link with the final acceptance record or mark every item complete.
 
+## 9. Beta 12 follow-up: update notifications and optional automatic updates
+
+- [ ] Notify users in Scout when a newer release is available, with the version,
+  release notes and a clear link or action to update.
+- [ ] Design an optional automatic updater for local desktop installations; keep
+  automatic installation opt-in and allow users to continue updating manually.
+- [ ] Support advanced VPS installations with a safe update action or documented
+  automation that preserves the separate workspace, provider authentication and
+  Tailscale Serve configuration.
+- [ ] Verify release signatures/checksums before installation, refuse unexpected
+  or dirty deployments, and provide rollback when an update fails its health check.
+- [ ] Add cross-platform update tests and privacy/release-audit coverage before
+  targeting the feature for `0.1.0-beta.12`.
+
 ## Completed before handoff
 
 - [x] Feature implemented in a clean beta.10-based worktree without changing the original checkout.
