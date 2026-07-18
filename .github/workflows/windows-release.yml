@@ -178,15 +178,16 @@ jobs:
           printf -v remote_command 'bash -s -- %q %q %q %q %q' "$mode" "$GITHUB_REF" "$release_commit" "$version" "$force_failure"
           ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             scout-deploy@"$VPS_HOST" "$remote_command" < tools/deploy-vps.sh
-      - name: Confirm a tagged Tailscale runner cannot open Scout
+      - name: Confirm the deployment tag cannot open Scout
         shell: bash
         env:
           VPS_HOST: ${{ secrets.SCOUT_VPS_HOST }}
         run: |
           set -euo pipefail
-          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "https://$VPS_HOST/api/app-info")
-          if [[ "$status" != 403 ]]; then
-            printf 'A tagged Tailscale runner must receive HTTP 403, got %s.\n' "$status" >&2
+          status=$(curl --connect-timeout 5 --max-time 10 --silent --show-error \
+            --output /dev/null --write-out '%{http_code}' "https://$VPS_HOST/api/app-info" || true)
+          if [[ "$status" != 000 && "$status" != 403 ]]; then
+            printf 'The deployment tag must be denied by the tailnet or Scout, got HTTP %s.\n' "$status" >&2
             exit 1
           fi
 

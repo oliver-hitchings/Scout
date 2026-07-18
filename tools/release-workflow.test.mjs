@@ -34,7 +34,9 @@ test('tagged release deploys the private VPS before publication', () => {
   assert.match(workflow, /StrictHostKeyChecking=yes/);
   assert.match(workflow, /inputs\.deploy_vps/);
   assert.match(workflow, /inputs\.test_rollback/);
-  assert.match(workflow, /tagged Tailscale runner must receive HTTP 403/i);
+  assert.match(workflow, /--connect-timeout 5 --max-time 10/);
+  assert.match(workflow, /status" != 000 && "\$status" != 403/);
+  assert.match(workflow, /deployment tag must be denied by the tailnet or Scout/i);
   assert.match(workflow, /scout-deploy@"\$VPS_HOST"/);
   assert.doesNotMatch(workflow, /ubuntu@"\$VPS_HOST"/);
   assert.match(workflow, /publish:[\s\S]*needs: \[windows, macos, linux, deploy-vps\]/);
