@@ -7,7 +7,7 @@ Scout is a local-first opportunity finder for Windows, macOS and Linux. It keeps
 Download the Windows installer and its `checksums.txt` from the same GitHub release. Compare the installer SHA-256 hash before running it:
 
 ```powershell
-Get-FileHash .\Scout-0.1.0-beta.10-windows-x64.exe -Algorithm SHA256
+Get-FileHash .\Scout-0.1.0-beta.11-windows-x64.exe -Algorithm SHA256
 ```
 
 The first unsigned beta may trigger Microsoft SmartScreen. A matching checksum proves file integrity, not publisher trust. Scout installs for the current user under `%LOCALAPPDATA%\Programs\Scout` and does not require administrator rights.
@@ -20,7 +20,7 @@ On first launch choose **Set up Scout for the first time** for a new local works
 
 Scout works fully without GitHub. Optional private backup requires Git and Git Credential Manager. Scout guides a new user to create an empty GitHub repository named `scout-workspace`, select **Private**, and paste its credential-free HTTPS URL. Git Credential Manager performs browser sign-in; Scout never asks for a GitHub token.
 
-When enabling backup, choose a recovery passphrase and save the one-time emergency recovery key. Normal CV, profile, tracker and chat files remain readable in the private repository so Git history remains useful. `.env`, generated PDF/DOCX files and Scout recovery state are stored as authenticated encrypted blobs. Do not make the repository public.
+When enabling backup, choose a recovery passphrase and save the one-time emergency recovery key. Normal CV, profile and tracker files remain readable in the private repository so Git history remains useful. `.env`, generated PDF/DOCX files, chat transcripts and Scout recovery state are stored as authenticated encrypted blobs. Do not make the repository public.
 
 Restore clones into a temporary directory, validates the workspace, decrypts recovery data and installs it only after Scout doctor passes. On the new computer, sign in to Codex or Claude again and explicitly choose whether to re-enable Windows startup and scheduled scans.
 
@@ -108,3 +108,13 @@ During setup, choose the local daily time and enable the schedule after the firs
 ```
 
 Scheduled scans use Windows Task Scheduler, macOS launchd, or a Linux systemd user timer. See [Automation](AUTOMATION.md).
+
+## 8. Use Scout from your phone or laptop (optional)
+
+Keep local-only use if it is all you need. No Scout account, Tailscale installation or cloud service is required.
+
+To make this computer the one active Scout host, install and sign in to [Tailscale](https://tailscale.com/download), then open **Settings -> Private Remote Access**. Confirm the detected owner, leave the automatic HTTPS port selected and enable access. On Windows, automatic startup is selected by default so the host returns after Windows sign-in.
+
+Install Tailscale on your phone or laptop with the same owner login, open the HTTPS address Scout displays, and use the browser's **Add to Home Screen** or **Install app** action. Your browser connects to the host's existing workspace and Scout/Codex chat; it does not create another workspace copy. The host must remain awake, online and signed in. See [Private Remote Access](PRIVATE_REMOTE_ACCESS.md) for access rules, recovery behaviour, cost/terms and troubleshooting.
+
+For an always-on single-owner Ubuntu host, use [Host Scout on a private VPS](INSTALL_VPS.md). It keeps Scout loopback-only and uses a dedicated unprivileged user service to recover after reboot.

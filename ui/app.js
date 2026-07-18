@@ -74,11 +74,22 @@ const Scout = {
   discoveryTimer: null,
   scanRunning: false,
   lastSyncPullAt: null,
+  companyHistory: null,
 
   async api(pathname, opts) {
-    const r = await fetch(pathname, opts);
-    const ct = r.headers.get('content-type') || '';
-    return ct.includes('json') ? r.json() : r.text();
+    try {
+      const r = await fetch(pathname, opts);
+      this.setHostAvailable(true);
+      const ct = r.headers.get('content-type') || '';
+      return ct.includes('json') ? r.json() : r.text();
+    } catch (error) {
+      this.setHostAvailable(false);
+      throw error;
+    }
+  },
+
+  setHostAvailable(available) {
+    document.getElementById('host-unavailable')?.classList.toggle('hidden', available);
   },
 
   esc(s) {
@@ -634,6 +645,7 @@ const Scout = {
     const hasCv = (cvFiles.applications || []).includes(slug);
     const hasOutreach = (cvFiles.outreach || []).includes(slug);
     const applied = ['applied', 'interviewing', 'accepted'].includes(e.status);
+    const prepRecommended = this.interviewPrepRecommended(e.id);
     const extraSources = (e.sources || []).slice(1)
       .map((s) => this.safeHref(s)).filter(Boolean)
       .map((href, i) => `<a href="${href}" target="_blank" rel="noopener">source ${i + 2}</a>`)
@@ -666,8 +678,10 @@ const Scout = {
         ${hasOutreach
           ? `<button class="act" onclick="Scout.seeCoverLetter(${slugArg})">see cover letter</button>`
           : `<button class="act bridge" onclick="Scout.openChat(${idArg},'coverLetter')">create custom cover letter</button>`}
+        <button class="act" onclick="Scout.openCompanyHistory(${idArg})">company history</button>
         <button class="act bridge" onclick="Scout.openChat(${idArg},'fit')">fit and evidence gaps</button>
         <button class="act bridge" onclick="Scout.openChat(${idArg},'ask')">ask about this job</button>
+        <button class="act${prepRecommended ? ' bridge' : ''}" onclick="Scout.openInterviewPrep(${idArg})">interview prep</button>
       </div>`;
   },
 
@@ -708,6 +722,160 @@ const Scout = {
       .replace(/&/g, ' and ')
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
+  },
+
+  localToday() {
+    const value = new Date();
+    value.setMinutes(value.getMinutes() - value.getTimezoneOffset());
+    return value.toISOString().slice(0, 10);
+  },
+
+  async openCompanyHistory(id) {
+    if (this.chat?.streaming) return alert('Finish or stop the running Scout turn before opening company history.');
+    await this.closeChat();
+    let data;
+    try { data = await this.api(`/api/company?id=${encodeURIComponent(id)}`); }
+    catch (error) { return alert(`Could not open company history: ${error.message}`); }
+    if (data?.error) return alert(`Could not open company history: ${data.error}`);
+    this.companyHistory = { id, data };
+    this.renderCompanyHistory();
+  },
+
+  closeCompanyHistory() {
+    this.companyHistory = null;
+    document.getElementById('company-drawer')?.classList.add('hidden');
+  },
+
+  companyRoleLabel(id) {
+    const role = this.companyHistory?.data?.opportunities?.find((entry) => entry.id === id);
+    return role?.role || id;
+  },
+
+  companyContactLabel(id) {
+    const contact = this.companyHistory?.data?.contacts?.find((entry) => entry.id === id);
+    return contact?.name || '';
+  },
+
+  companyTimelineItemHtml(item) {
+    const contact = this.companyContactLabel(item.contactId);
+    const roleNames = (item.opportunityIds || []).map((id) => this.companyRoleLabel(id));
+    const labels = [item.kind, item.direction !== 'note' ? item.direction : null, item.channel !== 'other' ? item.channel : null]
+      .filter(Boolean).join(' · ');
+    const roleLine = roleNames.length ? `<div class="meta">${this.esc(roleNames.join(' · '))}</div>` : '';
+    const contactLine = contact ? `<b>${this.esc(contact)}</b> · ` : '';
+    const remove = item.source === 'company'
+      ? `<button class="danger-link company-remove" type="button" onclick="Scout.removeCompanyCommunication(${this.jsArg(item.id)})">remove</button>`
+      : '<span class="chip">tracker</span>';
+    return `<article class="company-event ${this.esc(item.direction || 'note')}">
+      <div class="company-event-head"><span>${this.esc(item.date)}</span><span>${contactLine}${this.esc(labels)}</span>${remove}</div>
+      ${roleLine}<div class="company-event-text">${this.esc(item.text)}</div>
+    </article>`;
+  },
+
+  renderCompanyHistory() {
+    const state = this.companyHistory;
+    const drawer = document.getElementById('company-drawer');
+    if (!state || !drawer) return drawer?.classList.add('hidden');
+    const data = state.data;
+    const roles = (data.opportunities || []).map((entry) => `
+      <div class="company-role">
+        <div><b>${this.esc(entry.role)}</b><span class="chip">${this.esc(entry.status || 'new')}</span></div>
+        <div class="meta">${this.esc([entry.location, entry.appliedDate ? `applied ${entry.appliedDate}` : '', entry.currentStage ? `current: ${entry.currentStage}` : ''].filter(Boolean).join(' · '))}</div>
+        <button class="act bridge" type="button" onclick="Scout.openCompanyRoleChat(${this.jsArg(entry.id)})">open job chat</button>
+      </div>`).join('');
+    const contacts = (data.contacts || []).length
+      ? data.contacts.map((contact) => {
+          const href = this.safeHref(contact.linkedin);
+          return `<div class="company-contact"><b>${this.esc(contact.name)}</b>${contact.role ? `<span>${this.esc(contact.role)}</span>` : ''}${href ? `<a href="${href}" target="_blank" rel="noopener">LinkedIn</a>` : ''}</div>`;
+        }).join('')
+      : '<div class="meta">No company contacts recorded yet.</div>';
+    const timeline = (data.timeline || []).length
+      ? data.timeline.map((item) => this.companyTimelineItemHtml(item)).join('')
+      : '<div class="meta">No company activity recorded yet.</div>';
+    const opportunityOptions = [
+      '<option value="">Company-wide</option>',
+      ...(data.opportunities || []).map((entry) => `<option value="${this.esc(entry.id)}" ${entry.id === state.id ? 'selected' : ''}>${this.esc(entry.role)}</option>`),
+    ].join('');
+    drawer.innerHTML = `
+      <div class="chat-head">
+        <div><b>${this.esc(data.company)}</b><div class="meta">company relationship history</div></div>
+        <button class="act" style="margin-left:auto" type="button" onclick="Scout.closeCompanyHistory()">close</button>
+      </div>
+      <div class="company-body">
+        <div class="label">Related roles</div>${roles}
+        <div class="label">Contacts</div>${contacts}
+        <div class="label">Activity and correspondence</div>${timeline}
+        <form class="company-form" onsubmit="event.preventDefault();Scout.saveCompanyCommunication()">
+          <div class="label">Record an update</div>
+          <div class="company-form-grid">
+            <label>Date<input id="company-event-date" type="date" value="${this.localToday()}" required></label>
+            <label>Role<select id="company-event-opportunity">${opportunityOptions}</select></label>
+            <label>Type<select id="company-event-kind"><option value="message">Message</option><option value="call">Call</option><option value="meeting">Meeting</option><option value="interview">Interview</option><option value="application">Application</option><option value="note">Note</option></select></label>
+            <label>Direction<select id="company-event-direction"><option value="inbound">Received</option><option value="outbound">Sent</option><option value="note">Note</option></select></label>
+            <label>Channel<select id="company-event-channel"><option value="linkedin">LinkedIn</option><option value="email">Email</option><option value="phone">Phone</option><option value="video">Video call</option><option value="in-person">In person</option><option value="other">Other</option></select></label>
+            <label>Contact<input id="company-event-contact" placeholder="e.g. Julian Sheppard"></label>
+            <label>Contact role<input id="company-event-contact-role" placeholder="e.g. Lead Talent Acquisition Partner"></label>
+            <label>Contact link<input id="company-event-contact-link" type="url" placeholder="https://linkedin.com/in/..."></label>
+          </div>
+          <label>Message or notes<textarea id="company-event-text" placeholder="Paste the message verbatim, or record what happened." required></textarea></label>
+          <div class="company-privacy">Saved only in your private Scout workspace. Scout never sends this message.</div>
+          <button class="act primary" type="submit">save to company history</button>
+        </form>
+      </div>`;
+    drawer.classList.remove('hidden');
+  },
+
+  async saveCompanyCommunication() {
+    const state = this.companyHistory;
+    if (!state) return;
+    const opportunityId = document.getElementById('company-event-opportunity').value;
+    const communication = {
+      date: document.getElementById('company-event-date').value,
+      kind: document.getElementById('company-event-kind').value,
+      direction: document.getElementById('company-event-direction').value,
+      channel: document.getElementById('company-event-channel').value,
+      opportunityIds: opportunityId ? [opportunityId] : [],
+      contact: {
+        name: document.getElementById('company-event-contact').value,
+        role: document.getElementById('company-event-contact-role').value,
+        linkedin: document.getElementById('company-event-contact-link').value,
+      },
+      text: document.getElementById('company-event-text').value,
+    };
+    let result;
+    try {
+      result = await this.api('/api/company/communication', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: state.id, communication }),
+      });
+    } catch (error) {
+      return alert(`Could not save company update: ${error.message}`);
+    }
+    if (!result?.ok) return alert(`Could not save company update: ${result?.error || 'unknown error'}`);
+    state.data = result;
+    this.renderCompanyHistory();
+  },
+
+  async removeCompanyCommunication(communicationId) {
+    const state = this.companyHistory;
+    if (!state || !confirm('Remove this manually recorded company update?')) return;
+    let result;
+    try {
+      result = await this.api('/api/company/communication/remove', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: state.id, communicationId }),
+      });
+    } catch (error) {
+      return alert(`Could not remove company update: ${error.message}`);
+    }
+    if (!result?.ok) return alert(`Could not remove company update: ${result?.error || 'unknown error'}`);
+    state.data = result;
+    this.renderCompanyHistory();
+  },
+
+  openCompanyRoleChat(id) {
+    this.closeCompanyHistory();
+    this.openChat(id, 'ask');
   },
 
   waitFor(selector) {
@@ -948,10 +1116,11 @@ const Scout = {
 
   // --- Embedded chat drawer ---
 
-  async openChat(id, prefillKey = 'ask', cvOptions = null) {
+  async openChat(id, prefillKey = 'ask', cvOptions = null, purpose = 'job') {
+    this.closeCompanyHistory();
     const previous = this.chat;
     if (previous && previous.streaming) {
-      if (previous.id === id) {
+      if (previous.id === id && previous.purpose === purpose) {
         document.getElementById('chat-drawer').classList.remove('hidden');
         return;
       }
@@ -964,7 +1133,8 @@ const Scout = {
     const optionQuery = cvOptions
       ? `&xyz=${cvOptions.xyz ? '1' : '0'}&humanize=${cvOptions.humanize ? '1' : '0'}`
       : '';
-    try { r = await this.api(`/api/chat?id=${encodeURIComponent(id)}${optionQuery}`); }
+    const purposeQuery = purpose === 'job' ? '' : `&purpose=${encodeURIComponent(purpose)}`;
+    try { r = await this.api(`/api/chat?id=${encodeURIComponent(id)}${purposeQuery}${optionQuery}`); }
     catch (e) {
       if (openSeq === this.chatOpenSeq) alert(`Could not open chat: ${e.message}`);
       return;
@@ -976,6 +1146,8 @@ const Scout = {
       data: r.chat || { engine: null, cliSessionId: null, messages: [], filesTouched: [] },
       engine: r.chat ? r.chat.engine : null,
       prefills: r.prefills || {},
+      purpose: r.purpose || purpose,
+      artifact: r.artifact || null,
       streaming: !!r.busy,
       recovering: !!r.busy,
       pollTimer: null,
@@ -993,6 +1165,15 @@ const Scout = {
     if (c.recovering) this.scheduleChatRecovery(c);
   },
 
+  openInterviewPrep(id) {
+    this.openChat(id, 'interviewPrep', null, 'interview-prep');
+  },
+
+  interviewPrepRecommended(id) {
+    return (this.state.data?.pipeline?.flags || [])
+      .some((flag) => flag.id === id && flag.kind === 'interview-prep');
+  },
+
   scheduleChatRecovery(c) {
     if (this.chat !== c || !c.recovering) return;
     if (c.pollTimer) clearTimeout(c.pollTimer);
@@ -1003,7 +1184,8 @@ const Scout = {
     if (this.chat !== c || !c.recovering) return;
     c.pollTimer = null;
     let r;
-    try { r = await this.api(`/api/chat?id=${encodeURIComponent(c.id)}`); }
+    const purposeQuery = c.purpose === 'job' ? '' : `&purpose=${encodeURIComponent(c.purpose)}`;
+    try { r = await this.api(`/api/chat?id=${encodeURIComponent(c.id)}${purposeQuery}`); }
     catch {
       this.scheduleChatRecovery(c);
       return;
@@ -1019,6 +1201,7 @@ const Scout = {
     c.data = r.chat || c.data;
     c.engine = r.chat ? r.chat.engine : c.engine;
     c.prefills = r.prefills || c.prefills;
+    c.artifact = r.artifact || c.artifact;
     c.streaming = false;
     c.recovering = false;
     this.renderChatDrawer();
@@ -1034,9 +1217,16 @@ const Scout = {
     if (!c) return d.classList.add('hidden');
     d.classList.remove('hidden');
     const picker = this.chatPickerHtml();
+    const prep = c.purpose === 'interview-prep';
+    const prepControls = prep ? `<div class="controls" style="padding:8px 12px;flex-wrap:wrap">
+      <button class="act bridge" onclick="Scout.usePrepPrompt('interviewPrep')">generate pack</button>
+      <button class="act" onclick="Scout.usePrepPrompt('prepRefresh')">refresh research</button>
+      <button class="act" onclick="Scout.usePrepPrompt('prepQuestions')">practise questions</button>
+      <button class="act" onclick="Scout.usePrepPrompt('prepMock')">mock interview</button>
+    </div>` : '';
     d.innerHTML = `
       <div class="chat-head">
-        <b>${this.esc(this.company(c.id))}</b>
+        <b>${prep ? 'Interview prep - ' : ''}${this.esc(this.company(c.id))}</b>
         ${c.engine ? `<span class="chip" style="margin-left:0">${this.esc(c.engine)}</span>` : ''}
         <span id="usage-meters" class="meta"></span>
         ${c.engine && c.data.cliSessionId
@@ -1047,7 +1237,8 @@ const Scout = {
           : ''}
         <button class="act" style="margin-left:auto" onclick="Scout.closeChat()">close</button>
       </div>
-      <div class="chat-companion">${scoutMarkup(c.streaming ? 'thinking' : 'listening')}<div class="scout-bubble tail-left"><span id="scout-chat-status">${c.streaming ? 'I’m thinking…' : 'Ask me anything about this opportunity.'}</span></div></div>
+      <div class="chat-companion">${scoutMarkup(c.streaming ? 'thinking' : 'listening')}<div class="scout-bubble tail-left"><span id="scout-chat-status">${c.streaming ? 'I’m thinking…' : prep ? 'Build your prep pack, refresh research, or practise here.' : 'Ask me anything about this opportunity.'}</span></div></div>
+      ${prepControls}
       <div id="chat-body" class="chat-body">${c.engine ? '' : picker}</div>
       <div class="chat-foot" ${c.engine ? '' : 'style="display:none"'}>
         <textarea id="chat-input" placeholder="message ${this.esc(c.engine || '')} - Enter sends, Shift+Enter for a new line" onkeydown="Scout.chatKey(event)"></textarea>
@@ -1069,8 +1260,9 @@ const Scout = {
 
   chatPickerHtml() {
     const onboarding = this.chat?.id === 'setup-onboarding';
+    const prep = this.chat?.purpose === 'interview-prep';
     return `<div class="chat-picker">
-      <div class="label">choose an engine for ${onboarding ? 'setup' : 'this job'}</div>
+      <div class="label">choose an engine for ${onboarding ? 'setup' : prep ? 'interview prep' : 'this job'}</div>
       <button class="act" onclick="Scout.pickEngine('claude')">Claude</button>
       <button class="act" onclick="Scout.pickEngine('codex')">Codex</button>
     </div>`;
@@ -1129,6 +1321,7 @@ const Scout = {
     if (!body || !this.chat) return;
     body.innerHTML = this.chat.data.messages.map((m) => this.chatBubble(m.role, m.text)).join('')
       + this.cvLinkHtml()
+      + this.interviewPrepPackHtml()
       + (this.chat.engine ? '' : this.chatPickerHtml());
     body.scrollTop = body.scrollHeight;
   },
@@ -1147,6 +1340,25 @@ const Scout = {
     return (this.chat.data.filesTouched || []).includes(`applications/${slug}/cv.typ`)
       ? `<div class="chat-msg system"><a href="#" onclick="event.preventDefault();Scout.seeCv(${this.jsArg(slug)},${this.jsArg(this.chat.id)})">view rendered CV</a></div>`
       : '';
+  },
+
+  interviewPrepPackHtml() {
+    if (this.chat?.purpose !== 'interview-prep') return '';
+    const artifact = this.chat.artifact;
+    if (!artifact?.exists) {
+      return '<div class="chat-msg system">No prep pack yet. Choose an engine, then send Generate pack when you are ready.</div>';
+    }
+    const updated = artifact.updatedAt ? ` - updated ${this.esc(new Date(artifact.updatedAt).toLocaleString())}` : '';
+    return `<div class="chat-msg system"><details><summary>View prep pack${updated}</summary><pre style="white-space:pre-wrap">${this.esc(artifact.content || '')}</pre></details></div>`;
+  },
+
+  usePrepPrompt(key) {
+    const c = this.chat;
+    if (!c || c.purpose !== 'interview-prep') return;
+    const input = document.getElementById('chat-input');
+    if (!input) return;
+    input.value = c.prefills[key] || '';
+    input.focus();
   },
 
   pickEngine(engine) {
@@ -1216,7 +1428,7 @@ const Scout = {
       const resp = await fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: c.id, engine: c.engine, text, mode: c.mode }),
+        body: JSON.stringify({ id: c.id, purpose: c.purpose, engine: c.engine, text, mode: c.mode }),
       });
       const ct = resp.headers.get('content-type') || '';
       if (!resp.ok || !ct.includes('event-stream')) {
@@ -1270,7 +1482,7 @@ const Scout = {
     if (this.chat !== c) return;
     if (terminalError && startedWithoutSession) {
       const message = terminalError;
-      await this.openChat(c.id, 'ask');
+      await this.openChat(c.id, c.purpose === 'interview-prep' ? 'interviewPrep' : 'ask', null, c.purpose);
       if (this.chat?.id === c.id
           && !this.chat.data.messages.some((m) => m.role === 'system' && m.text === message)) {
         this.chat.data.messages.push({ role: 'system', text: message });
@@ -1278,6 +1490,7 @@ const Scout = {
       }
       return;
     }
+    if (c.purpose === 'interview-prep') await this.refreshInterviewPrepArtifact(c);
     const draft = document.getElementById('chat-input')?.value || '';
     const following = this.chatNearBottom(body);
     const previousScrollTop = body.scrollTop;
@@ -1287,13 +1500,21 @@ const Scout = {
     this.refreshUsage(c);
   },
 
+  async refreshInterviewPrepArtifact(target = this.chat) {
+    if (!target || target.purpose !== 'interview-prep') return;
+    try {
+      const r = await this.api(`/api/chat?id=${encodeURIComponent(target.id)}&purpose=interview-prep`);
+      if (this.chat === target) target.artifact = r.artifact || target.artifact;
+    } catch { /* a saved transcript remains usable if the pack cannot be read */ }
+  },
+
   async stopChat(target = this.chat) {
     if (!target) return false;
     try {
       const response = await fetch('/api/chat/stop', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: target.id }),
+        body: JSON.stringify({ id: target.id, purpose: target.purpose }),
       });
       if (!response.ok) throw new Error(`request failed (${response.status})`);
       return true;
@@ -1369,7 +1590,7 @@ const Scout = {
       const resp = await fetch('/api/chat/handoff', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: c.id }),
+        body: JSON.stringify({ id: c.id, purpose: c.purpose }),
       });
       const ct = resp.headers.get('content-type') || '';
       if (!resp.ok || !ct.includes('event-stream')) {
@@ -1404,7 +1625,7 @@ const Scout = {
     if (!completed) {
       if (handoffStateChanged) {
         const message = handoffError;
-        await this.openChat(c.id, 'ask');
+        await this.openChat(c.id, c.purpose === 'interview-prep' ? 'interviewPrep' : 'ask', null, c.purpose);
         if (message && this.chat?.id === c.id
             && !this.chat.data.messages.some((m) => m.role === 'system' && m.text === message)) {
           this.chat.data.messages.push({ role: 'system', text: message });
@@ -1417,7 +1638,12 @@ const Scout = {
     }
     const following = this.chatNearBottom(body);
     const previousScrollTop = body.scrollTop;
-    await this.openChat(c.id, 'ask'); // reload transcript, new engine badge, fresh composer
+    await this.openChat(
+      c.id,
+      c.purpose === 'interview-prep' ? 'interviewPrep' : 'ask',
+      null,
+      c.purpose,
+    ); // reload transcript, new engine badge, fresh composer
     if (!following && this.chat?.id === c.id) {
       document.getElementById('chat-body').scrollTop = previousScrollTop;
     }
@@ -1435,6 +1661,9 @@ const Scout = {
   },
 
   init() {
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+    window.addEventListener?.('offline', () => this.setHostAvailable(false));
+    window.addEventListener?.('online', () => this.loadOpportunities().catch(() => this.setHostAvailable(false)));
     document.querySelectorAll('nav button').forEach((b) =>
       b.addEventListener('click', () => {
         if (b.id === 'scout-settings') window.ScoutSetup?.openSettings?.();
@@ -1442,6 +1671,8 @@ const Scout = {
       }));
     document.getElementById?.('scan-now')?.addEventListener('click', () => this.scanNow());
     document.getElementById?.('sync-status')?.addEventListener('click', () => window.ScoutSetup?.openSettings?.());
+    document.getElementById?.('cv-options-cancel')?.addEventListener('click', () => this.closeCvOptions());
+    document.getElementById?.('cv-options-continue')?.addEventListener('click', () => this.startCvFromOptions());
     window.addEventListener?.('focus', () => this.refreshSyncStatus({ retry: true }));
     document.addEventListener?.('visibilitychange', () => { if (!document.hidden) this.refreshSyncStatus({ retry: true }); });
     this.loadOpportunities();

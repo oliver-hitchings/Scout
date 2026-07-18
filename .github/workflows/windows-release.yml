@@ -7,6 +7,16 @@ on:
         description: Semantic version to package
         required: true
         type: string
+      deploy_vps:
+        description: Deploy this release-candidate branch to the private Beta VPS without publishing
+        required: false
+        default: false
+        type: boolean
+      test_rollback:
+        description: Intentionally fail after restart so the rehearsal must restore the previous commit
+        required: false
+        default: false
+        type: boolean
   push:
     tags: ['v*']
 
@@ -116,9 +126,74 @@ jobs:
             installer/output/*.deb
             installer/output/*.tar.gz
 
+  deploy-vps:
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.deploy_vps)
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-22.04
+    environment: beta-vps
+    concurrency:
+      group: scout-beta-vps
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Join the private deployment tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:scout-deploy
+          ping: ${{ secrets.SCOUT_VPS_HOST }}
+      - name: Configure pinned SSH credentials
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SCOUT_VPS_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SCOUT_VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+      - name: Deploy the exact release tag and verify local health
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.SCOUT_VPS_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          mode=release
+          force_failure=false
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            mode=rehearsal
+            [[ "$GITHUB_REF" == refs/heads/agent/beta11-release-candidate ]]
+            force_failure='${{ inputs.test_rollback }}'
+          fi
+          release_commit=$(git rev-parse HEAD)
+          version='${{ needs.windows.outputs.version }}'
+          printf -v remote_command 'bash -s -- %q %q %q %q %q' "$mode" "$GITHUB_REF" "$release_commit" "$version" "$force_failure"
+          ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            scout-deploy@"$VPS_HOST" "$remote_command" < tools/deploy-vps.sh
+      - name: Confirm the deployment tag cannot open Scout
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.SCOUT_VPS_HOST }}
+        run: |
+          set -euo pipefail
+          status=$(curl --connect-timeout 5 --max-time 10 --silent --show-error \
+            --output /dev/null --write-out '%{http_code}' "https://$VPS_HOST/api/app-info" || true)
+          if [[ "$status" != 000 && "$status" != 403 ]]; then
+            printf 'The deployment tag must be denied by the tailnet or Scout, got HTTP %s.\n' "$status" >&2
+            exit 1
+          fi
+
   publish:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [windows, macos, linux]
+    needs: [windows, macos, linux, deploy-vps]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

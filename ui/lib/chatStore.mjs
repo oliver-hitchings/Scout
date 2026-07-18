@@ -2,24 +2,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const ID = /^[a-z0-9][a-z0-9-]*$/;
+export const CHAT_PURPOSES = Object.freeze(['job', 'interview-prep']);
 
-export function chatPath(repoRoot, id) {
+export function chatPurpose(value = 'job') {
+  const purpose = String(value || 'job');
+  if (!CHAT_PURPOSES.includes(purpose)) throw new Error(`invalid chat purpose: ${purpose}`);
+  return purpose;
+}
+
+function storageId(id, purpose) {
   if (!ID.test(String(id ?? ''))) throw new Error(`invalid chat id: ${id}`);
-  return path.join(repoRoot, 'data', 'chats', `${id}.json`);
+  return purpose === 'interview-prep' ? `${id}-interview-prep` : id;
+}
+
+export function chatPath(repoRoot, id, purpose = 'job') {
+  return path.join(repoRoot, 'data', 'chats', `${storageId(id, chatPurpose(purpose))}.json`);
 }
 
 export function emptyChat(engine) {
   return { engine, cliSessionId: null, messages: [], filesTouched: [], handoffs: [] };
 }
 
-export function loadChat(repoRoot, id) {
-  const p = chatPath(repoRoot, id);
+export function loadChat(repoRoot, id, purpose = 'job') {
+  const p = chatPath(repoRoot, id, purpose);
   if (!fs.existsSync(p)) return null;
   return JSON.parse(fs.readFileSync(p, 'utf8'));
 }
 
-export function saveChat(repoRoot, id, chat) {
-  const p = chatPath(repoRoot, id);
+export function saveChat(repoRoot, id, chat, purpose = 'job') {
+  const p = chatPath(repoRoot, id, purpose);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(chat, null, 2));
 }

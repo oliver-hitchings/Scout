@@ -1,6 +1,6 @@
 {
   "name": "scout-opportunity-finder",
-  "version": "0.1.0-beta.10",
+  "version": "0.1.0-beta.11",
   "private": true,
   "type": "module",
   "description": "Local-first, AI-assisted opportunity finder",
@@ -11,6 +11,7 @@
     "start": "node ui/server.mjs",
     "test": "node --test ui/*.test.mjs ui/lib/*.test.mjs tools/*.test.mjs",
     "doctor": "node tools/scout.mjs doctor",
+    "remote:preflight": "node tools/remote-hosting-preflight.mjs",
     "release:audit": "node tools/release-audit.mjs"
   },
   "dependencies": {

@@ -18,7 +18,7 @@ This is the canonical clean-history public application repository. Release only 
 
    ```powershell
    npm ci --omit=dev
-   node tools/build-release.mjs --installer --version 0.1.0-beta.10
+   node tools/build-release.mjs --installer --version 0.1.0-beta.11
    ```
 
    Set `ISCC_PATH` when required. The installer is named
@@ -26,7 +26,22 @@ This is the canonical clean-history public application repository. Release only 
    `installer/output/`. The current installer creates UI shortcuts but does not
    add the CLI to `PATH`.
 7. Test on clean Windows, macOS and Ubuntu runners: install; first launch; provider detection; supervised/scheduled scans; missed-run/overlap/timeout; upgrade; and uninstall preserving the workspace.
-8. Tag the reviewed commit with the exact package version prefixed by `v`. The cross-platform workflow publishes all packages, one checksum manifest and release notes only after native smoke tests and required-marker audits pass.
+8. Tag the reviewed commit with the exact package version prefixed by `v`. The cross-platform workflow builds all packages, runs native smoke tests and required-marker audits, deploys and health-checks the exact tag on the approved private Beta VPS, then publishes one checksum manifest and the release notes. A failed or unapproved VPS deployment prevents publication.
+
+## Private Beta VPS deployment
+
+The tag workflow uses the protected GitHub Environment `beta-vps`. Configure an owner approval rule and restrict it to release tags. Store these values as environment secrets, never in the repository:
+
+- `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` for a narrowly scoped Tailscale OAuth client allowed to create ephemeral `tag:scout-deploy` nodes;
+- `SCOUT_VPS_HOST` containing the private Tailscale hostname;
+- `SCOUT_VPS_SSH_PRIVATE_KEY` containing a deployment-only Ed25519 private key;
+- `SCOUT_VPS_SSH_KNOWN_HOSTS` containing the separately verified, pinned VPS SSH host-key line.
+
+Tailnet policy should allow `tag:scout-deploy` to reach only TCP 22 on the Scout VPS. Install the matching public key only for the unprivileged deployment user. The VPS sudoers policy should allow that user to run only `/usr/bin/systemctl restart scout-host.service` without a password; validate the file with `visudo`.
+
+The OAuth client needs only the `auth_keys` scope and permission to create `tag:scout-deploy` devices. The workflow sends [the reviewed deployment script](../tools/deploy-vps.sh) over the private SSH connection. It refuses a dirty or unexpected checkout, verifies that the release ref resolves to the workflow commit, runs `npm ci` and `npm test`, restarts the service, checks the version on `127.0.0.1:8459`, confirms the Tailscale Serve configuration did not change and runs the remote-hosting preflight. On failure after checkout, it restores the previous application commit and dependencies before restarting the service. It never changes the separate workspace or provider credential directories.
+
+Before tagging a release, manually dispatch **Cross-platform release candidate** from `agent/beta11-release-candidate` with version `0.1.0-beta.11` and **Deploy VPS** selected. First select **Test rollback** while the VPS still runs the previous commit; that job must fail deliberately and log a healthy rollback. Then dispatch it again without **Test rollback** and require success. Workflow dispatch never enters the publication job.
 
 ## Required privacy review
 

@@ -16,20 +16,24 @@ function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-recovery-'));
   fs.mkdirSync(path.join(root, 'applications', 'example'), { recursive: true });
   fs.mkdirSync(path.join(root, '.scout', 'backups'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'data', 'chats'), { recursive: true });
   fs.writeFileSync(path.join(root, '.env'), EXAMPLE_ENV);
   fs.writeFileSync(path.join(root, 'applications', 'example', 'cv.pdf'), Buffer.from([0, 1, 2, 3]));
   fs.writeFileSync(path.join(root, 'applications', 'example', 'cv.typ'), 'public source');
   fs.writeFileSync(path.join(root, '.scout', 'backups', 'before.json'), '{}');
+  fs.writeFileSync(path.join(root, 'data', 'chats', 'example.json'), JSON.stringify({
+    engine: 'codex', cliSessionId: 'device-local-session-secret', messages: [{ role: 'user', text: 'keep this transcript' }], filesTouched: [], handoffs: [],
+  }));
   return root;
 }
 
 test('recovery backup encrypts only resumable ignored state and restores with either secret', () => {
   const root = fixture();
   const passphrase = 'correct horse battery staple';
-  const created = initializeRecoveryBackup(root, passphrase, { devicePreferences: { startWithWindows: true } });
+  const created = initializeRecoveryBackup(root, passphrase, { devicePreferences: { startWithWindows: true, remoteAccess: { enabled: true, ownerLogin: 'must-not-move@example.com' } } });
   const raw = fs.readFileSync(path.join(root, '.scout-backup', 'v1', 'header.json'), 'utf8');
-  assert.doesNotMatch(raw, /synthetic|cv\.pdf|startWithWindows/);
-  assert.deepEqual(recoveryFileList(root), ['.env', '.scout/backups/before.json', 'applications/example/cv.pdf']);
+  assert.doesNotMatch(raw, /synthetic|cv\.pdf|startWithWindows|device-local-session-secret|keep this transcript/);
+  assert.deepEqual(recoveryFileList(root), ['.env', '.scout/backups/before.json', 'applications/example/cv.pdf', 'data/chats/example.json']);
   assert.deepEqual(unlockRecoveryKey(created.header, passphrase), created.dataKey);
   assert.deepEqual(unlockRecoveryKey(created.header, created.recoveryKey), created.dataKey);
 
@@ -41,7 +45,13 @@ test('recovery backup encrypts only resumable ignored state and restores with ei
     const restored = restoreRecoveryBackup(root, target, secret);
     assert.equal(fs.readFileSync(path.join(target, '.env'), 'utf8'), EXAMPLE_ENV);
     assert.deepEqual(fs.readFileSync(path.join(target, 'applications', 'example', 'cv.pdf')), Buffer.from([0, 1, 2, 3]));
+    const chat = JSON.parse(fs.readFileSync(path.join(target, 'data', 'chats', 'example.json'), 'utf8'));
+    assert.equal(chat.cliSessionId, null);
+    assert.equal(chat.messages[0].text, 'keep this transcript');
+    assert.equal(chat.messages.at(-1).recoveryNotice, true);
+    assert.equal(chat.recovered.providerSessionReset, true);
     assert.equal(restored.devicePreferences.startWithWindows, true);
+    assert.equal(restored.devicePreferences.remoteAccess, undefined);
     fs.rmSync(target, { recursive: true, force: true });
   }
   fs.rmSync(root, { recursive: true, force: true });
@@ -57,7 +67,7 @@ test('unchanged encrypted files retain their blob and changed files rotate only 
   writeRecoveryBackup(root, created.dataKey, first);
   const blobsAfter = new Map(fs.readdirSync(path.join(root, '.scout-backup/v1/files')).map((name) => [name, fs.readFileSync(path.join(root, '.scout-backup/v1/files', name), 'utf8')]));
   assert.notEqual(JSON.stringify(loadRecoveryHeader(root).index), firstIndex);
-  assert.equal([...blobsAfter].filter(([name, value]) => blobsBefore.get(name) === value).length, 2);
+  assert.equal([...blobsAfter].filter(([name, value]) => blobsBefore.get(name) === value).length, 3);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

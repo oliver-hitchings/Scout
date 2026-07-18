@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0-beta.10"
+  #define MyAppVersion "0.1.0-beta.11"
 #endif
 
 #ifndef StageDir
@@ -27,6 +27,7 @@ OutputBaseFilename=Scout-{#MyAppVersion}-windows-x64
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\ui\assets\scout-icon.ico
 UninstallDisplayName=Scout
 LicenseFile={#StageDir}\app\LICENSE
 ChangesEnvironment=no
@@ -53,7 +54,9 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch Scout"; Flags: nowait po
 Type: filesandordirs; Name: "{app}\app"
 
 [UninstallRun]
-Filename: "{sys}\reg.exe"; Parameters: "delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Scout /f"; Flags: runhidden; RunOnceId: "RemoveScoutStartup"
+Filename: "{app}\runtime\ScoutRuntime.exe"; Parameters: """{app}\app\tools\remote-access.mjs"""; Flags: runhidden skipifdoesntexist; RunOnceId: "RemoveScoutRemoteAccess"
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""\Scout\Scout Host"" /F"; Flags: runhidden; RunOnceId: "RemoveScoutScheduledStartup"
+Filename: "{sys}\reg.exe"; Parameters: "delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Scout /f"; Flags: runhidden; RunOnceId: "RemoveScoutLegacyStartup"
 
 ; The private workspace is deliberately outside {app}. The uninstaller therefore
 ; removes application files only and never deletes Documents\Scout Workspace or

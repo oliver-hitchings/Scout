@@ -20,7 +20,8 @@ import { setupReadiness } from './lib/setupReadiness.mjs';
 import {
   activateOnboardingProposal, createOnboardingProposal, discardOnboardingProposal, readOnboardingProposal,
 } from './lib/onboardingProposal.mjs';
-import { loadDeviceSettings, pendingDeviceSections, saveDeviceSettings, setWindowsStartup } from './lib/deviceSettings.mjs';
+import { loadDeviceSettings, pendingDeviceSections, saveDeviceSettings, setWindowsStartup, windowsStartupStatus } from './lib/deviceSettings.mjs';
+import { disableRemoteAccess, enableRemoteAccess, remoteAccessStatus } from './lib/remoteAccess.mjs';
 import { checkForUpdate } from './lib/updates.mjs';
 import {
   confirmRecoveryKey, connectWorkspaceSync, detectGit, disableWorkspaceSync, pendingRecoveryKey,
@@ -96,7 +97,7 @@ function sendText(res, status, type, text) {
 function serveStatic(res, file, type) {
   if (!fs.existsSync(file)) return sendText(res, 404, 'text/plain', 'not built yet');
   const buf = fs.readFileSync(file);
-  res.writeHead(200, { 'Content-Type': type, 'Content-Length': buf.length });
+  res.writeHead(200, { 'Content-Type': type, 'Content-Length': buf.length, 'Cache-Control': 'public, max-age=300' });
   res.end(buf);
 }
 
@@ -130,40 +131,119 @@ function loopbackHost(hostHeader) {
   }
 }
 
-function guardLocalRequest(req, res, url) {
+function loopbackSocket(address) {
+  const value = String(address || '').toLowerCase();
+  return value === '127.0.0.1' || value === '::1' || value === '::ffff:127.0.0.1';
+}
+
+const LOCAL_ONLY_ROUTES = new Set([
+  'POST /api/device/settings',
+  'POST /api/setup/section',
+  'POST /api/remote-access/enable',
+  'POST /api/remote-access/disable',
+  'POST /api/shutdown',
+]);
+
+function applySecurityHeaders(res, url) {
+  res.setHeader('Content-Security-Policy', "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'");
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (url.pathname.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
+}
+
+function sameOrigin(origin, expected, protocol) {
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === protocol && parsed.origin.toLowerCase() === expected.toLowerCase();
+  } catch { return false; }
+}
+
+export function requestAccess(req, url, settings = loadDeviceSettings()) {
   const host = String(req.headers.host || '');
-  if (!loopbackHost(host)) {
-    sendJson(res, 403, { error: 'loopback host required' });
-    return false;
+  if (!loopbackSocket(req.socket?.remoteAddress)) return { ok: false, error: 'loopback proxy required' };
+
+  let access;
+  let expectedOrigin;
+  let protocol;
+  if (loopbackHost(host)) {
+    access = 'local';
+    expectedOrigin = `http://${host}`;
+    protocol = 'http:';
+  } else {
+    const remote = settings.remoteAccess || {};
+    let configured;
+    try { configured = new URL(remote.origin || ''); } catch { configured = null; }
+    if (!remote.enabled || !configured || configured.host.toLowerCase() !== host.toLowerCase()) {
+      return { ok: false, error: 'private remote access is not enabled for this address' };
+    }
+    const login = String(req.headers['tailscale-user-login'] || '').trim();
+    if (!login || login.toLowerCase() !== String(remote.ownerLogin || '').trim().toLowerCase()) {
+      return { ok: false, error: 'configured Tailscale owner identity required' };
+    }
+    access = 'remote-owner';
+    expectedOrigin = configured.origin;
+    protocol = 'https:';
   }
 
   const mutatingApi = url.pathname.startsWith('/api/') && !['GET', 'HEAD'].includes(req.method);
-  if (!mutatingApi) return true;
+  if (mutatingApi && LOCAL_ONLY_ROUTES.has(`${req.method} ${url.pathname}`) && access !== 'local') {
+    return { ok: false, error: 'this setting can only be changed on the Scout host' };
+  }
 
   const origin = req.headers.origin;
-  if (origin) {
-    let parsedOrigin = null;
-    try { parsedOrigin = new URL(origin); } catch { /* rejected below */ }
-    if (!parsedOrigin
-        || parsedOrigin.protocol !== 'http:'
-        || parsedOrigin.host.toLowerCase() !== host.toLowerCase()) {
-      sendJson(res, 403, { error: 'same-origin request required' });
-      return false;
-    }
+  if ((origin && !sameOrigin(origin, expectedOrigin, protocol)) || (mutatingApi && access === 'remote-owner' && !origin)) {
+    return { ok: false, error: 'same-origin request required' };
   }
 
   const requiresJson = url.pathname.startsWith('/api/chat/')
     || url.pathname.startsWith('/api/sync/')
     || url.pathname.startsWith('/api/workspace/')
+    || url.pathname.startsWith('/api/remote-access/')
     || ['POST /api/setup/proposal', 'POST /api/setup/activate', 'DELETE /api/setup/proposal'].includes(`${req.method} ${url.pathname}`);
-  if (requiresJson) {
+  if (mutatingApi && requiresJson) {
     const mediaType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
     if (mediaType !== 'application/json') {
-      sendJson(res, 415, { error: 'application/json required' });
-      return false;
+      return { ok: false, status: 415, error: 'application/json required' };
     }
   }
+  return { ok: true, access };
+}
+
+function guardRequest(req, res, url) {
+  applySecurityHeaders(res, url);
+  const result = requestAccess(req, url);
+  if (!result.ok) {
+    sendJson(res, result.status || 403, { error: result.error });
+    return false;
+  }
+  req.scoutAccess = result.access;
+  if (result.access === 'remote-owner') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   return true;
+}
+
+function publicRemoteStatus(value) {
+  return {
+    state: value.state,
+    enabled: Boolean(value.enabled),
+    installed: Boolean(value.detected?.installed),
+    version: value.detected?.version || null,
+    ownerLogin: value.ownerLogin || value.identity?.ownerLogin || null,
+    deviceName: value.identity?.dnsName || null,
+    origin: value.origin || null,
+    httpsPort: value.httpsPort || null,
+    blocker: value.blocker || null,
+    authorizationUrl: value.authorizationUrl || null,
+    suggestedPort: value.suggestedPort || null,
+    customPortRequired: Boolean(value.customPortRequired),
+  };
+}
+
+function currentDeviceSettings() {
+  if (process.platform !== 'win32') return null;
+  const settings = loadDeviceSettings();
+  return { ...settings, startupStatus: windowsStartupStatus() };
 }
 
 function handleRead(req, res, url) {
@@ -175,6 +255,12 @@ function handleRead(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/setup.js') {
     return serveStatic(res, path.join(__dirname, 'setup.js'), 'text/javascript; charset=utf-8');
+  }
+  if (req.method === 'GET' && url.pathname === '/manifest.webmanifest') {
+    return serveStatic(res, path.join(__dirname, 'manifest.webmanifest'), 'application/manifest+json; charset=utf-8');
+  }
+  if (req.method === 'GET' && url.pathname === '/service-worker.js') {
+    return serveStatic(res, path.join(__dirname, 'service-worker.js'), 'text/javascript; charset=utf-8');
   }
   if (req.method === 'GET' && url.pathname.startsWith('/lib/')) {
     const name = url.pathname.slice('/lib/'.length);
@@ -212,7 +298,9 @@ function handleRead(req, res, url) {
         scanHealth: { healthy: false, lastRunAt: null },
         schedule: { enabled: false, configured: false, lastResult: 'never' },
         doctor: { ok: false, workspaceRoot: WORKSPACE_ROOT, checks: {} },
-        device: process.platform === 'win32' ? loadDeviceSettings() : null,
+        device: currentDeviceSettings(),
+        remoteAccess: publicRemoteStatus(remoteAccessStatus(loadDeviceSettings())),
+        requestAccess: req.scoutAccess,
         git: detectGit(),
         sync: syncStatus(WORKSPACE_ROOT),
         pendingSetupSections: [],
@@ -239,7 +327,9 @@ function handleRead(req, res, url) {
       doctor: doctor(WORKSPACE_ROOT),
       git: detectGit(),
       sync: syncStatus(WORKSPACE_ROOT),
-      device: process.platform === 'win32' ? loadDeviceSettings() : null,
+      device: currentDeviceSettings(),
+      remoteAccess: publicRemoteStatus(remoteAccessStatus(loadDeviceSettings())),
+      requestAccess: req.scoutAccess,
       pendingSetupSections: [...pendingWorkspaceSections(readiness.established ? { ...config.setup, completedAt: config.setup?.completedAt || 'legacy' } : config.setup), ...pendingDeviceSections(loadDeviceSettings())],
     });
   }
@@ -250,6 +340,11 @@ function handleRead(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/app-info') {
     return sendJson(res, 200, {
       name: 'Scout', version: APP_VERSION, appRoot: APP_ROOT, workspaceRoot: WORKSPACE_ROOT,
+    });
+  }
+  if (req.method === 'GET' && url.pathname === '/api/remote-access/status') {
+    return sendJson(res, 200, {
+      ...publicRemoteStatus(remoteAccessStatus(loadDeviceSettings())), requestAccess: req.scoutAccess,
     });
   }
   if (req.method === 'GET' && url.pathname === '/api/opportunities') {
@@ -371,7 +466,7 @@ async function handleSource(res, id) {
 export function createServer() {
   return http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
-    if (!guardLocalRequest(req, res, url)) return;
+    if (!guardRequest(req, res, url)) return;
     const routeKey = `${req.method} ${url.pathname}`;
     if (routes[routeKey]) {
       let body = '';
@@ -591,6 +686,7 @@ routes['POST /api/cv/quality/override'] = (req, res, body) => {
 };
 
 import { registerChatRoutes } from './lib/chatService.mjs';
+import { registerCompanyRoutes } from './lib/companyService.mjs';
 let proposalGenerationRunning = false;
 routes['POST /api/setup/proposal'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
@@ -682,11 +778,50 @@ routes['POST /api/device/settings'] = (req, res, body) => {
       const result = setWindowsStartup(enabled, host);
       if (!result.ok) return replyJson(res, 400, result);
       settings.startWithWindows = enabled;
+      settings.startup = {
+        mechanism: result.mechanism || 'task-scheduler',
+        verifiedAt: result.verifiedAt || new Date().toISOString(),
+      };
     }
     saveDeviceSettings(settings);
     void queueCheckpoint('update device settings', { includeDevicePreferences: true });
     return replyJson(res, 200, { ok: true, settings, pendingSetupSections: pendingDeviceSections(settings) });
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
+routes['POST /api/remote-access/enable'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (b.confirmOwner !== true) return replyJson(res, 400, { error: 'Confirm the detected Tailscale owner before enabling remote access' });
+  try {
+    let result = enableRemoteAccess(loadDeviceSettings(), { httpsPort: b.httpsPort });
+    if (result.settings) {
+      const settings = result.settings;
+      let startupWarning = null;
+      if (process.platform === 'win32' && b.startWithWindows !== false && result.enabled) {
+        const host = path.resolve(APP_ROOT, '..', 'Scout.exe');
+        if (!fs.existsSync(host)) startupWarning = 'Automatic startup is available in the installed Scout app';
+        else {
+          const startup = setWindowsStartup(true, host);
+          if (startup.ok) {
+            settings.startWithWindows = true;
+            settings.startup = { mechanism: startup.mechanism, verifiedAt: startup.verifiedAt };
+          } else startupWarning = startup.error;
+        }
+      }
+      saveDeviceSettings(settings);
+      result = { ...result, startupWarning };
+    }
+    return replyJson(res, result.enabled ? 200 : 202, { ...publicRemoteStatus(result), startupWarning: result.startupWarning || null });
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
+routes['POST /api/remote-access/disable'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  try {
+    const result = disableRemoteAccess(loadDeviceSettings());
+    saveDeviceSettings(result.settings);
+    return replyJson(res, 200, publicRemoteStatus(result));
+  } catch (e) { return replyJson(res, 409, { error: e.message }); }
 };
 
 routes['POST /api/setup/section'] = (req, res, body) => {
@@ -822,10 +957,24 @@ routes['POST /api/shutdown'] = (req, res) => {
   setTimeout(() => shutdownControl.exit(), 200);
 };
 
+registerCompanyRoutes({ routes, repoRoot: WORKSPACE_ROOT, readTracker, onCheckpoint: queueCheckpoint });
 registerChatRoutes({ routes, repoRoot: WORKSPACE_ROOT, readTracker, onCheckpoint: queueCheckpoint });
 
 const isMain = isMainModule(import.meta.url);
 if (isMain) {
+  if (process.platform === 'win32') {
+    try {
+      const settings = loadDeviceSettings();
+      const host = path.resolve(APP_ROOT, '..', 'Scout.exe');
+      if (settings.startWithWindows && fs.existsSync(host) && !windowsStartupStatus().enabled) {
+        const migrated = setWindowsStartup(true, host);
+        if (migrated.ok) {
+          settings.startup = { mechanism: migrated.mechanism, verifiedAt: migrated.verifiedAt };
+          saveDeviceSettings(settings);
+        }
+      }
+    } catch (error) { console.warn(`Scout startup migration needs attention: ${error.message}`); }
+  }
   const server = createServer();
   let bindRetries = 0;
   server.on('error', (err) => {
