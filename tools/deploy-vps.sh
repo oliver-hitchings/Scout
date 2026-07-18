@@ -66,6 +66,13 @@ if [[ $service_user != "$expected_service_user" || $service_user == root ]]; the
   printf 'Service %s must run as the expected unprivileged owner, not %s.\n' "$service" "${service_user:-root}" >&2
   exit 2
 fi
+service_exec=$(systemctl show "$service" --property=ExecStart --value)
+service_node=$(sed -n 's/^{ path=\([^ ;]*\).*/\1/p' <<<"$service_exec")
+if [[ ! -x $service_node || $(basename "$service_node") != node ]]; then
+  printf 'Service %s must expose an executable Node runtime.\n' "$service" >&2
+  exit 2
+fi
+export PATH="$(dirname "$service_node"):$PATH"
 if [[ ! -w $app_root/.git ]]; then
   printf 'Deployment account cannot update the Scout application checkout.\n' >&2
   exit 2

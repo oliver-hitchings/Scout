@@ -47,6 +47,8 @@ test('tagged release deploys the private VPS before publication', () => {
   assert.match(deploy, /remote preflight --require-serve-mapping/);
   assert.match(deploy, /SCOUT_VPS_DEPLOY_USER:-scout-deploy/);
   assert.match(deploy, /SCOUT_VPS_SERVICE_USER:-ubuntu/);
+  assert.match(deploy, /property=ExecStart/);
+  assert.match(deploy, /export PATH="\$\(dirname "\$service_node"\):\$PATH"/);
   assert.match(deploy, /Controlled rehearsal failure requested/);
   assert.match(deploy, /Rollback restored Scout/);
   assert.doesNotMatch(deploy, /tailscale serve (?:reset|--bg|--https)/);
