@@ -110,6 +110,21 @@ The beta.11 version bump and release commit must remain separate from the featur
 - [ ] Add cross-platform update tests and privacy/release-audit coverage before
   targeting the feature for `0.1.0-beta.12`.
 
+### Job deduplication
+
+- [ ] Check every newly discovered job against the existing tracker and the
+  current scan before presenting or saving it.
+- [ ] Detect both exact duplicates and the same underlying role arriving from
+  different sources or URLs, using stable provider IDs plus normalised company,
+  title, location and advert evidence.
+- [ ] Merge additional sources into the existing opportunity without losing its
+  status, notes, application history, company timeline or chat transcripts.
+- [ ] Treat a materially changed repost as an update to review rather than a new
+  opportunity, while keeping genuinely different roles at the same company
+  separate.
+- [ ] Add regression tests for duplicates within one scan, across later scans and
+  across providers, including false-positive tests for similar but distinct jobs.
+
 ## Completed before handoff
 
 - [x] Feature implemented in a clean beta.10-based worktree without changing the original checkout.
