@@ -171,6 +171,22 @@
     }
     .label:first-child { margin-top: 0; }
 
+    .update-banner {
+      margin: 12px auto 0;
+      max-width: 1052px;
+      padding: 12px 16px;
+      border: 1px solid var(--primary);
+      border-radius: var(--radius-card);
+      background: var(--primary-fixed);
+      color: var(--fg);
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .update-banner p { margin: 0; }
+    .update-banner-actions { display:flex; gap:8px; flex-wrap:wrap; flex-shrink:0; }
+
     /* Cards */
     .card {
       background: var(--card-bg);
@@ -718,6 +734,7 @@
 </head>
 <body>
   <div id="host-unavailable" class="host-unavailable hidden" role="status">Scout's host is unavailable. Keep this page open and wake or sign in to the host computer. Offline editing is not supported.</div>
+  <aside id="update-banner" class="update-banner hidden" role="status" aria-live="polite"></aside>
   <header>
     <b>Scout</b>
     <nav>
@@ -772,7 +789,7 @@
     </div>
   </div>
   <div id="scout-arrival" class="scout-arrival hidden"></div>
-  <script src="/app.js?v=beta-11-csp-hotfix-1"></script>
-  <script type="module" src="/setup.js?v=beta-11-csp-hotfix-1"></script>
+  <script src="/app.js?v=beta-12-1"></script>
+  <script type="module" src="/setup.js?v=beta-12-1"></script>
 </body>
 </html>

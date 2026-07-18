@@ -1748,6 +1748,49 @@ const Scout = {
     });
   },
 
+  async checkForAppUpdate(force = false) {
+    try {
+      const response = await fetch('/api/update/check', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ force }) });
+      const update = await response.json();
+      if (!response.ok) throw new Error(update.error || 'Update check failed');
+      this.renderUpdateBanner(update);
+      return update;
+    } catch (error) {
+      if (force) this.renderUpdateBanner({ error: error.message });
+      return null;
+    }
+  },
+
+  renderUpdateBanner(update) {
+    const banner = document.getElementById?.('update-banner');
+    if (!banner) return;
+    banner.replaceChildren();
+    if (!update?.available && !update?.error) { banner.classList.add('hidden'); return; }
+    banner.classList.remove('hidden');
+    const copy = document.createElement('p');
+    copy.textContent = update.error ? `Scout could not check for updates: ${update.error}` : `Scout ${update.latestVersion} is available.${update.downloaded?.version === update.latestVersion ? ' The verified package is ready.' : ''}`;
+    banner.append(copy);
+    const actions = document.createElement('div'); actions.className = 'update-banner-actions';
+    if (update.url) {
+      const notes = document.createElement('a'); notes.className = 'act'; notes.href = update.url; notes.target = '_blank'; notes.rel = 'noreferrer'; notes.textContent = 'Release notes'; actions.append(notes);
+    }
+    if (update.canDownload && update.package && update.downloaded?.version !== update.latestVersion) {
+      const download = document.createElement('button'); download.type = 'button'; download.className = 'act primary'; download.textContent = 'Download verified update';
+      download.addEventListener('click', async () => {
+        download.disabled = true; download.textContent = 'Verifying…';
+        try {
+          const response = await fetch('/api/update/download', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+          const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Download failed');
+          copy.textContent = `Scout ${result.downloaded.version} is verified and ready at ${result.downloaded.path}. Close Scout, then run that package to update.`;
+          download.remove();
+        } catch (error) { copy.textContent = `Update download failed: ${error.message}`; download.disabled = false; download.textContent = 'Try again'; }
+      });
+      actions.append(download);
+    }
+    const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'act'; dismiss.textContent = 'Later'; dismiss.addEventListener('click', () => banner.classList.add('hidden')); actions.append(dismiss);
+    banner.append(actions);
+  },
+
   init() {
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     window.addEventListener?.('offline', () => this.setHostAvailable(false));
@@ -1766,6 +1809,7 @@ const Scout = {
     document.addEventListener?.('visibilitychange', () => { if (!document.hidden) this.refreshSyncStatus({ retry: true }); });
     this.loadOpportunities();
     this.refreshSyncStatus();
+    window.setTimeout?.(() => this.checkForAppUpdate(false), 2500);
     window.setInterval?.(() => this.refreshSyncStatus(), 5 * 60 * 1000);
   },
 };

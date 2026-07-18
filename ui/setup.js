@@ -253,7 +253,7 @@ const Setup = {
         <div class="setup-callout"><strong>No automatic sending</strong><p>Scout drafts material for your review. It never applies or sends outreach for you.</p></div>
         <div class="setup-callout"><strong>Local workspace</strong><p>Scout has no telemetry or hosted profile. Codex or Claude receives the career context needed for the task you ask it to perform, under that provider’s account terms.</p></div>
         <div class="setup-callout"><strong>Daily scan</strong><p>${scheduleText}</p></div>
-        ${this.status?.device ? `<div class="setup-callout"><strong>Windows startup</strong><label class="setup-field"><span><input id="setup-start-with-windows" type="checkbox" ${this.status.device.startWithWindows ? 'checked' : ''}> Start Scout when I sign into Windows</span></label><p><button id="setup-save-device" class="act" type="button">Save startup setting</button></p></div>` : ''}
+        ${this.status?.device ? `<div class="setup-callout"><strong>Application updates</strong><p>Scout checks its official GitHub releases. Notifications are on; package downloads are optional and verified against the release SHA-256 manifest.</p><label class="setup-field"><span><input id="setup-auto-download-updates" type="checkbox" ${this.status.device.updates?.policy === 'download' ? 'checked' : ''}> Download verified update packages automatically</span></label>${this.status.device.startupStatus?.supported ? `<label class="setup-field"><span><input id="setup-start-with-windows" type="checkbox" ${this.status.device.startWithWindows ? 'checked' : ''}> Start Scout when I sign into Windows</span></label>` : ''}<p><button id="setup-save-device" class="act" type="button">Save device settings</button></p><p class="meta">Installation always asks first. Updates never replace your separate workspace, provider sign-ins or Tailscale Serve mapping.</p></div>` : ''}
       </div>
       ${this.remoteAccessPanelHtml()}
       ${restored ? `<div class="setup-callout"><strong>Choose settings for this computer</strong><p>Your work has been restored. Device integrations stay off until you confirm them here.</p>${this.status?.device && restored.startWithWindows ? '<label class="setup-field"><span><input id="restore-start-with-windows" type="checkbox"> Start Scout with Windows on this computer</span></label>' : ''}${this.status?.schedule?.configured ? `<label class="setup-field"><span><input id="restore-daily-schedule" type="checkbox"> Enable the saved ${this.escape(this.status.schedule.time || '')} daily scan on this computer</span></label>` : ''}<p><button id="restore-apply-device" class="act primary" type="button">Apply selected settings</button> <button id="restore-keep-device-local" class="act" type="button">Keep them off</button></p></div>` : ''}
@@ -281,10 +281,11 @@ const Setup = {
   },
 
   async saveDeviceSetting() {
-    const enabled = Boolean(this.el('setup-start-with-windows')?.checked);
-    const result = await requestJson('/api/device/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ startWithWindows: enabled }) });
+    const body = { updatePolicy: this.el('setup-auto-download-updates')?.checked ? 'download' : 'notify' };
+    if (this.el('setup-start-with-windows')) body.startWithWindows = Boolean(this.el('setup-start-with-windows').checked);
+    const result = await requestJson('/api/device/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     this.status.device = result.settings;
-    this.setMessage('Windows startup setting saved.', 'good');
+    this.setMessage('Device update settings saved.', 'good');
   },
 
   remoteAccessPanelHtml() {

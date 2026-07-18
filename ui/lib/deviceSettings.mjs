@@ -15,21 +15,25 @@ export function deviceSettingsPath(env = process.env, platform = process.platfor
   return path.join(base, 'Scout', 'device-settings.json');
 }
 
+export function updateDownloadDirectory(env = process.env, platform = process.platform) {
+  return path.join(path.dirname(deviceSettingsPath(env, platform)), 'updates');
+}
+
 export function loadDeviceSettings(options = {}) {
   const file = options.file || deviceSettingsPath(options.env, options.platform);
   const defaults = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     startWithWindows: false,
     startup: { mechanism: 'task-scheduler', verifiedAt: null },
     remoteAccess: { enabled: false },
     completedSections: {}, deferredSections: {},
-    updates: { lastCheckedAt: null, lastNotifiedVersion: null },
+    updates: { policy: 'notify', lastCheckedAt: null, lastNotifiedVersion: null, downloaded: null },
   };
   if (!fs.existsSync(file)) return defaults;
   try {
     const value = JSON.parse(fs.readFileSync(file, 'utf8'));
     return {
-      ...defaults, ...value, schemaVersion: 2,
+      ...defaults, ...value, schemaVersion: 3,
       startup: { ...defaults.startup, ...(value.startup || {}) },
       remoteAccess: { ...defaults.remoteAccess, ...(value.remoteAccess || {}) },
       completedSections: { ...defaults.completedSections, ...(value.completedSections || {}) },
