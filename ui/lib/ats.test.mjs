@@ -12,13 +12,14 @@ const portal = { name: 'HardwareCo', ats: 'greenhouse', token: ['hardware', 'co'
 
 test('fetchGreenhouse maps public board jobs', async () => {
   const jobs = await fetchGreenhouse(portal, async () => response({
-    jobs: [{ title: 'Senior Hardware Engineer', content: '<p>PCB and test rigs</p>', absolute_url: 'https://x', location: { name: 'Oxford' }, updated_at: '2026-07-08T10:00:00Z' }],
+    jobs: [{ id: 123, title: 'Senior Hardware Engineer', content: '<p>PCB and test rigs</p>', absolute_url: 'https://x', location: { name: 'Oxford' }, updated_at: '2026-07-08T10:00:00Z' }],
   }));
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].company, 'HardwareCo');
   assert.equal(jobs[0].source, 'ats-greenhouse');
   assert.equal(jobs[0].description, 'PCB and test rigs');
   assert.equal(jobs[0].postedDate, '2026-07-08');
+  assert.equal(jobs[0].providerId, '123');
 });
 
 test('fetchLever maps public postings', async () => {

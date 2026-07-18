@@ -4,6 +4,7 @@ import { adzunaUrl, fetchAdzuna, resolveAdzunaCredentials, DEFAULT_ADZUNA_QUERIE
 
 const creds = { appId: 'id1', apiKey: 'key1' };
 const item = {
+  id: 'adzuna-123',
   title: 'Senior Designer', company: { display_name: 'Example Studio' }, description: 'Research and prototyping',
   redirect_url: 'https://adzuna/x', salary_min: 60000, salary_max: 70000,
   created: '2026-07-09T08:00:00Z', location: { display_name: 'Manchester' },
@@ -39,6 +40,7 @@ test('fetchAdzuna normalises jobs, locale/currency, and per-query counts', async
   assert.equal(result.jobs[0].company, 'Example Studio');
   assert.equal(result.jobs[0].salary, '\u00a360,000-\u00a370,000');
   assert.equal(result.jobs[0].postedDate, '2026-07-09');
+  assert.equal(result.jobs[0].providerId, 'adzuna-123');
   assert.deepEqual(result.sources, { 'product designer': 1 });
 });
 
@@ -53,6 +55,13 @@ test('fetchAdzuna dedupes and fails soft per query', async () => {
   assert.equal(result.errors.length, 1);
   assert.equal(result.status, 'degraded');
   assert.match(result.errors[0], /bad/);
+});
+
+test('fetchAdzuna keeps distinct provider openings with the same title', async () => {
+  const result = await fetchAdzuna({ ...creds, queries: ['designer'] }, async () => response({ results: [
+    item, { ...item, id: 'adzuna-456', redirect_url: 'https://adzuna/y', location: { display_name: 'Leeds' } },
+  ] }));
+  assert.equal(result.jobs.length, 2);
 });
 
 test('fetchAdzuna reports unavailable without credentials or configured queries', async () => {

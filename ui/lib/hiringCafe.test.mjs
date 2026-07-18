@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { extractBuildId, buildSearchState, fetchHiringCafe, DEFAULT_HIRING_CAFE_QUERIES } from './hiringCafe.mjs';
 
 const hit = {
+  objectID: 'hiring-cafe-123',
   is_expired: false, apply_url: 'https://apply/x', job_information: { title: 'Product Designer' },
   v5_processed_job_data: {
     company_name: 'ExampleCo', requirements_summary: 'Research and prototyping', job_category: 'Design',
@@ -36,7 +37,19 @@ test('fetchHiringCafe normalises hits and skips expired ones', async () => {
   assert.equal(result.count, 1);
   assert.equal(result.jobs.length, 1);
   assert.equal(result.jobs[0].salary, 'GBP 60,000-75,000');
+  assert.equal(result.jobs[0].providerId, 'hiring-cafe-123');
   assert.deepEqual(result.sources, { 'product designer': 1 });
+});
+
+test('fetchHiringCafe keeps distinct openings with the same company and title', async () => {
+  let call = 0;
+  const result = await fetchHiringCafe(['product designer'], async () => {
+    call += 1;
+    return call === 1 ? homepage('bld1') : dataResponse([
+      hit, { ...hit, objectID: 'hiring-cafe-456', apply_url: 'https://apply/y', v5_processed_job_data: { ...hit.v5_processed_job_data, formatted_workplace_location: 'Leeds' } },
+    ]);
+  });
+  assert.equal(result.jobs.length, 2);
 });
 
 test('fetchHiringCafe fails soft and records bounded retry recovery', async () => {

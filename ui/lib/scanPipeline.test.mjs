@@ -19,6 +19,27 @@ test('candidate input is deduplicated, capped and descriptions are bounded', () 
   assert.equal(result[0].description.length, 1200);
 });
 
+test('candidate input collapses the same cross-provider role and preserves every source', () => {
+  const description = 'Build reliable Kubernetes services with AWS observability and mentor engineers.';
+  const result = compactCandidates({
+    one: { jobs: [{ company: 'Acme Ltd', title: 'Senior Platform Engineer', location: 'London, UK', url: 'https://a.test/1?utm_source=feed', source: 'adzuna', providerId: 'a1', description }] },
+    two: { jobs: [{ company: 'Acme', title: 'Senior Platform Engineer', location: 'London', url: 'https://g.test/9', source: 'ats-greenhouse', providerId: 'g9', description }] },
+  });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].duplicateCount, 2);
+  assert.deepEqual(result[0].sources, ['https://a.test/1', 'https://g.test/9']);
+});
+
+test('candidate input keeps similar but distinct openings separate', () => {
+  const common = { company: 'Acme', location: 'London', source: 'ats-greenhouse', description: 'Build reliable platform services.' };
+  const result = compactCandidates({ one: { jobs: [
+    { ...common, title: 'Software Engineer', providerId: 'one', url: 'https://x.test/1' },
+    { ...common, title: 'Software Engineer', providerId: 'two', url: 'https://x.test/2' },
+    { ...common, title: 'Staff Software Engineer', providerId: 'three', url: 'https://x.test/3' },
+  ] } });
+  assert.equal(result.length, 3);
+});
+
 test('mandatory advert language is assigned stable signals that assessments cannot omit', () => {
   const candidates = compactCandidates({ one: { jobs: [{ company: 'Acme', title: 'Engineer', url: 'https://example.test/job', description: 'AWS is required. Mentoring is helpful.' }] } });
   assert.deepEqual(candidates[0].mandatorySignals, [{ id: 'mandatory-01', text: 'AWS is required' }]);
@@ -82,6 +103,7 @@ test('runtime writes canonical scan records and preserves user tracker state', (
   assert.deepEqual(artifacts.run.sources_checked, ['hiring_cafe']);
   assert.deepEqual(artifacts.run.queries_checked, ['engineer']);
   assert.equal(artifacts.run.candidates_found, 1);
+  assert.equal(artifacts.run.duplicates_collapsed, 0);
   const saved = JSON.parse(fs.readFileSync(path.join(root, 'data', 'opportunities.json'), 'utf8')).opportunities[0];
   assert.equal(saved.status, 'watch');
   assert.equal(saved.notes, 'user note');
@@ -89,6 +111,38 @@ test('runtime writes canonical scan records and preserves user tracker state', (
   assert.deepEqual(saved.log, [{ date: '2026-07-01', event: 'replied', note: '' }]);
   assert.equal(saved.eligibility.status, 'eligible');
   assert.equal(validateWrittenScanArtifacts(root, artifacts.run).run.agent, 'codex');
+});
+
+test('later cross-provider reposts update one opportunity without losing user-owned state', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-dedupe-scan-'));
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+  const description = 'Build reliable Kubernetes services with AWS observability and mentor engineers across production systems.';
+  const existing = { updated: '2026-06-01', opportunities: [{
+    id: 'acme-senior-platform-engineer-2026-06', company: 'Acme Ltd', role: 'Senior Platform Engineer', location: 'London, UK',
+    status: 'interview', notes: 'Keep this note', application: { stages: [{ name: 'Interview' }] },
+    sources: ['https://a.test/old'], sourceReferences: [{ source: 'adzuna', providerId: 'a1', url: 'https://a.test/old' }],
+    jobIdentity: { company: 'acme', title: 'senior platform engineer', location: 'london uk', advertFingerprint: description },
+    tags: [], contacts: [], log: [],
+  }] };
+  fs.writeFileSync(path.join(root, 'data', 'opportunities.json'), `${JSON.stringify(existing)}\n`);
+  const candidates = compactCandidates({ ats: { jobs: [{
+    company: 'Acme', title: 'Senior Platform Engineer', location: 'London', source: 'ats-greenhouse', providerId: 'g9',
+    url: 'https://g.test/new', description,
+  }] } });
+  const artifacts = writeScanArtifacts(root, {
+    provider: 'codex', mode: 'primary', sources: { ats: { configured: true, status: 'healthy', count: 1 } },
+    candidates, assessmentResult: { assessments: [assessment('met')] }, policy: { actionScore: 70, checkScore: 55 },
+    startedAt: '2026-08-01T10:00:00Z',
+  });
+  assert.equal(artifacts.tracker.opportunities.length, 1);
+  assert.equal(artifacts.run.keepers_added, 0);
+  assert.equal(artifacts.run.keepers_updated, 1);
+  const saved = artifacts.tracker.opportunities[0];
+  assert.equal(saved.id, 'acme-senior-platform-engineer-2026-06');
+  assert.equal(saved.status, 'interview');
+  assert.equal(saved.notes, 'Keep this note');
+  assert.deepEqual(saved.application, { stages: [{ name: 'Interview' }] });
+  assert.deepEqual(saved.sources, ['https://a.test/old', 'https://g.test/new']);
 });
 
 test('zero configured sources is degraded and still produces a truthful empty run', () => {

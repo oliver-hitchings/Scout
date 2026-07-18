@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { serializeTracker } from './tracker.mjs';
 import { workspacePaths } from './workspace.mjs';
+import {
+  advertMateriallyChanged, jobIdentity, mergeSourceReferences, sameUnderlyingJob, sourceReferencesOf,
+} from './jobIdentity.mjs';
 
 const EMPTY_DISCARDED = Object.freeze({ hard_exclusion: 0, mandatory_unmet: 0, below_threshold: 0, provider_discarded: 0 });
 
@@ -53,7 +56,6 @@ function mandatorySignals(description, requirements) {
 }
 
 export function compactCandidates(sources, maximum = 40) {
-  const seen = new Set();
   const candidates = [];
   for (const source of Object.values(sources || {})) {
     for (const job of source?.jobs || []) {
@@ -61,20 +63,32 @@ export function compactCandidates(sources, maximum = 40) {
       const role = String(job?.title || job?.role || '').trim();
       const url = String(job?.url || '').trim();
       if (!company || !role || !/^https?:\/\//i.test(url)) continue;
-      const key = `${company}|${role}|${url}`.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      candidates.push({
-        candidateId: `candidate-${String(candidates.length + 1).padStart(3, '0')}`,
+      const incoming = {
         company, role, url, location: String(job?.location || ''), salary: job?.salary || null,
         workingType: String(job?.workingType || ''), postedDate: job?.postedDate || null,
-        source: String(job?.source || ''), description: String(job?.description || '').slice(0, 1200),
-        mandatorySignals: mandatorySignals(job?.description, job?.requirements),
-      });
-      if (candidates.length >= maximum) return candidates;
+        source: String(job?.source || ''), providerId: String(job?.providerId || ''),
+        description: String(job?.description || ''), requirements: String(job?.requirements || ''),
+        tags: Array.isArray(job?.tags) ? job.tags : [], sourceReferences: sourceReferencesOf(job), duplicateCount: 1,
+      };
+      const duplicate = candidates.find((candidate) => sameUnderlyingJob(candidate, incoming));
+      if (duplicate) {
+        duplicate.sourceReferences = mergeSourceReferences(duplicate, incoming);
+        duplicate.duplicateCount += 1;
+        duplicate.tags = [...new Set([...duplicate.tags, ...incoming.tags])];
+        if (incoming.description.length > duplicate.description.length) duplicate.description = incoming.description;
+        if (!duplicate.salary && incoming.salary) duplicate.salary = incoming.salary;
+        continue;
+      }
+      if (candidates.length < maximum) candidates.push(incoming);
     }
   }
-  return candidates;
+  return candidates.map((candidate, index) => ({
+    ...candidate,
+    candidateId: `candidate-${String(index + 1).padStart(3, '0')}`,
+    description: candidate.description.slice(0, 1200),
+    sources: [...new Set(candidate.sourceReferences.map((reference) => reference.url).filter(Boolean))],
+    mandatorySignals: mandatorySignals(candidate.description, candidate.requirements),
+  }));
 }
 
 export function validateAssessments(value, candidates) {
@@ -133,9 +147,9 @@ function sourceHealth(sources) {
 
 function mergeTracker(existing, candidates, assessments, policy, date) {
   const byId = new Map(existing.opportunities.map((entry) => [entry.id, entry]));
-  const byUrl = new Map(existing.opportunities.flatMap((entry) => (entry.sources || []).map((url) => [url, entry])));
   const discarded = { ...EMPTY_DISCARDED };
   let keepersAdded = 0;
+  let keepersUpdated = 0;
   for (const assessment of assessments) {
     const candidate = candidates.find((item) => item.candidateId === assessment.candidateId);
     if (!candidate) continue;
@@ -147,24 +161,31 @@ function mergeTracker(existing, candidates, assessments, policy, date) {
       else discarded.below_threshold += 1;
       continue;
     }
-    const id = `${slug(candidate.company)}-${slug(candidate.role)}-${date.slice(0, 7)}`;
-    const previous = byUrl.get(candidate.url) || byId.get(id);
+    const baseId = `${slug(candidate.company)}-${slug(candidate.role)}-${date.slice(0, 7)}`;
+    const previous = existing.opportunities.find((entry) => sameUnderlyingJob(entry, candidate));
+    let id = previous?.id || baseId;
+    for (let suffix = 2; !previous && byId.has(id); suffix += 1) id = `${baseId}-${suffix}`;
+    const changedAdvert = Boolean(previous && advertMateriallyChanged(previous, candidate));
+    const references = mergeSourceReferences(previous || {}, candidate);
+    const urls = references.map((reference) => reference.url).filter(Boolean);
     const generated = {
-      id: previous?.id || id, company: candidate.company, role: candidate.role, score: gate.score,
+      id, company: candidate.company, role: candidate.role, location: candidate.location || previous?.location || '', score: gate.score,
       scoreBreakdown: Object.fromEntries(assessment.dimensions.map((item) => [item.name, item.score])),
       eligibility: { status: gate.eligibility, reasons: gate.reasons },
       mandatoryRequirements: assessment.mandatoryRequirements,
       status: previous?.status || 'new', category: assessment.categoryId || previous?.category || null,
-      tags: [...new Set([...(previous?.tags || []), ...(gate.eligibility === 'check' ? ['Check mandatory requirement'] : [])])],
-      sources: [...new Set([...(previous?.sources || []), candidate.url])],
+      tags: [...new Set([...(previous?.tags || []), ...(candidate.tags || []), ...(gate.eligibility === 'check' ? ['Check mandatory requirement'] : []), ...(changedAdvert ? ['Updated advert — review'] : [])])],
+      sources: [...new Set([...(previous?.sources || []), ...urls])], sourceReferences: references,
+      jobIdentity: jobIdentity(candidate),
       notes: previous && Object.hasOwn(previous, 'notes') ? previous.notes : assessment.summary,
       lastChecked: date, foundVia: candidate.source, contacts: previous?.contacts || [], log: previous?.log || [],
+      ...(changedAdvert ? { advertUpdate: { detectedAt: date, previousFingerprint: previous.jobIdentity?.advertFingerprint || '', currentFingerprint: jobIdentity(candidate).advertFingerprint } } : {}),
     };
-    if (previous) Object.assign(previous, generated);
-    else { existing.opportunities.push(generated); byId.set(generated.id, generated); byUrl.set(candidate.url, generated); keepersAdded += 1; }
+    if (previous) { Object.assign(previous, generated); keepersUpdated += 1; }
+    else { existing.opportunities.push(generated); byId.set(generated.id, generated); keepersAdded += 1; }
   }
   existing.updated = date;
-  return { tracker: existing, keepersAdded, discarded };
+  return { tracker: existing, keepersAdded, keepersUpdated, discarded };
 }
 
 function applyTrustedExclusions(candidates, assessmentResult, exclusions = []) {
@@ -226,11 +247,13 @@ export function writeScanArtifacts(root, { provider, mode, sources, queries = []
   const trustedAssessments = applyTrustedExclusions(candidates, assessmentResult, exclusions);
   const merged = trustedAssessments
     ? mergeTracker(existing, candidates, trustedAssessments.assessments, policy, date)
-    : { tracker: existing, keepersAdded: 0, discarded: { ...EMPTY_DISCARDED } };
+    : { tracker: existing, keepersAdded: 0, keepersUpdated: 0, discarded: { ...EMPTY_DISCARDED } };
   const run = {
     schemaVersion: 1, timestamp, started_at: startedAt, agent: provider, mode, degraded,
     sources_checked: Object.entries(health).filter(([, item]) => item.configured !== false).map(([name]) => name),
     queries_checked: [...queries], candidates_found: candidates.length, keepers_added: merged.keepersAdded,
+    duplicates_collapsed: candidates.reduce((total, candidate) => total + Math.max(0, Number(candidate.duplicateCount || 1) - 1), 0),
+    keepers_updated: merged.keepersUpdated,
     discarded: merged.discarded, errors, source_health: health,
   };
   const report = reportText({ date, degraded, source_health: health, kept: merged.tracker.opportunities, discarded: merged.discarded, errors });
