@@ -177,7 +177,7 @@ jobs:
           version='${{ needs.windows.outputs.version }}'
           printf -v remote_command 'bash -s -- %q %q %q %q %q' "$mode" "$GITHUB_REF" "$release_commit" "$version" "$force_failure"
           ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
-            ubuntu@"$VPS_HOST" "$remote_command" < tools/deploy-vps.sh
+            scout-deploy@"$VPS_HOST" "$remote_command" < tools/deploy-vps.sh
       - name: Confirm a tagged Tailscale runner cannot open Scout
         shell: bash
         env:

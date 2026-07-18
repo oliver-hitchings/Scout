@@ -38,6 +38,7 @@ test('VPS instructions keep headless hosting private, unprivileged and reboot sa
     'Ubuntu Server 24.04', '4 GB RAM', '2 GB swap', 'never run Scout or a provider CLI as `root`',
     '127.0.0.1:8459', 'never Funnel', 'NoNewPrivileges=true', 'UMask=0077',
     'loginctl enable-linger', 'reboot the VPS', 'missing `Tailscale-User-Login` receive `403`',
+    'separate `scout-deploy` account', 'must not read the workspace',
   ]) assert.match(vps, new RegExp(phrase, 'i'), phrase);
   assert.doesNotMatch(vps, /0\.0\.0\.0:\d+/);
   assert.match(read('README.md'), /docs\/INSTALL_VPS\.md/);

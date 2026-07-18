@@ -64,6 +64,23 @@ test('disabled remote access is a warning unless enabled hosting is required', a
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('deployment preflight verifies the live Serve mapping without reading owner settings', async () => {
+  const root = fixtureRoot();
+  try {
+    const result = await runRemoteHostingPreflight({
+      appRoot: root, platform: 'linux', fetchFn: healthyFetch, requireServeMapping: true,
+      loadSettings: () => ({}), remoteStatus: () => ({ state: 'disabled' }),
+      tailscaleState: () => ({ serveStatus: {
+        TCP: { '443': { HTTPS: true } },
+        Web: { 'scout.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:8459' } } } },
+      } }),
+      startupStatus: () => ({ enabled: false }),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.checks.find((check) => check.id === 'tailscale-mapping').status, 'pass');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('preflight fails closed on missing security headers and non-loopback targets', async () => {
   const root = fixtureRoot();
   try {

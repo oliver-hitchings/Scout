@@ -118,12 +118,25 @@ WantedBy=multi-user.target
 
 Confirm the Node path with `command -v node` and adjust `ExecStart` if necessary. Validate and start the unit with `sudo systemd-analyze verify /etc/systemd/system/scout-host.service`, `sudo systemctl daemon-reload` and `sudo systemctl enable --now scout-host.service`.
 
-For automated Beta updates, install a deployment-only SSH public key in `/home/ubuntu/.ssh/authorized_keys`. Use `visudo` to create `/etc/sudoers.d/scout-deploy` containing only:
+For automated Beta updates, use a separate `scout-deploy` account. It updates the clean application checkout but must not read the workspace or the Scout owner's Codex and Claude profiles. Scout itself continues to run as `ubuntu`.
+
+Create the account and a shared application group, then make only the application checkout group-writable:
+
+```sh
+sudo addgroup --system scout-deploy
+sudo adduser --system --home /home/scout-deploy --shell /bin/bash --ingroup scout-deploy scout-deploy
+sudo adduser ubuntu scout-deploy
+sudo chgrp -R scout-deploy /home/ubuntu/apps/Scout
+sudo chmod -R g+rwX /home/ubuntu/apps/Scout
+sudo find /home/ubuntu/apps/Scout -type d -exec chmod g+s {} +
+```
+
+Install the deployment-only SSH public key in `/home/scout-deploy/.ssh/authorized_keys`, prefixed with `restrict`. Keep the workspace and provider credential directories owned by `ubuntu` with no group access. Use `visudo` to create `/etc/sudoers.d/scout-deploy` containing only:
 
 ```sudoers
-ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl restart scout-host.service
+scout-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart scout-host.service
 ```
 
 Confirm the real systemctl path with `command -v systemctl`, keep the file owned by root with mode `0440`, and validate it with `sudo visudo -cf /etc/sudoers.d/scout-deploy`. Do not grant the deployment key general passwordless sudo.
 
-The release workflow updates only the clean application checkout: fetch the exact release tag, run `npm ci`, run the complete tests, restart `scout-host.service`, then verify the local version and remote-hosting preflight. It records and restores the previous application commit if deployment fails. The workspace, Codex/Claude profiles and existing Tailscale Serve mapping remain outside that update.
+The release workflow updates only the clean application checkout: fetch the exact release tag, run `npm ci`, run the complete tests, restart `scout-host.service`, then verify the local version and live Tailscale Serve mapping. It records and restores the previous application commit if deployment fails. The workspace, Codex/Claude profiles and existing Tailscale Serve mapping remain outside that update.

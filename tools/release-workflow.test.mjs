@@ -35,6 +35,8 @@ test('tagged release deploys the private VPS before publication', () => {
   assert.match(workflow, /inputs\.deploy_vps/);
   assert.match(workflow, /inputs\.test_rollback/);
   assert.match(workflow, /tagged Tailscale runner must receive HTTP 403/i);
+  assert.match(workflow, /scout-deploy@"\$VPS_HOST"/);
+  assert.doesNotMatch(workflow, /ubuntu@"\$VPS_HOST"/);
   assert.match(workflow, /publish:[\s\S]*needs: \[windows, macos, linux, deploy-vps\]/);
   assert.match(deploy, /status --porcelain --untracked-files=normal/);
   assert.match(deploy, /refs\/tags\/v\$version:refs\/tags\/v\$version/);
@@ -42,7 +44,9 @@ test('tagged release deploys the private VPS before publication', () => {
   assert.match(deploy, /npm ci[\s\S]*npm test[\s\S]*systemctl restart/);
   assert.match(deploy, /127\.0\.0\.1:8459\/api\/app-info/);
   assert.match(deploy, /cmp --silent "\$serve_before" "\$serve_after"/);
-  assert.match(deploy, /remote preflight --require-enabled/);
+  assert.match(deploy, /remote preflight --require-serve-mapping/);
+  assert.match(deploy, /SCOUT_VPS_DEPLOY_USER:-scout-deploy/);
+  assert.match(deploy, /SCOUT_VPS_SERVICE_USER:-ubuntu/);
   assert.match(deploy, /Controlled rehearsal failure requested/);
   assert.match(deploy, /Rollback restored Scout/);
   assert.doesNotMatch(deploy, /tailscale serve (?:reset|--bg|--https)/);

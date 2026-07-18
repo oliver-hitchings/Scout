@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadDeviceSettings, windowsStartupStatus } from '../ui/lib/deviceSettings.mjs';
-import { remoteAccessStatus } from '../ui/lib/remoteAccess.mjs';
+import {
+  DEFAULT_HTTPS_PORTS, loadTailscaleState, remoteAccessStatus, serveMappingPresent,
+} from '../ui/lib/remoteAccess.mjs';
 import { isMainModule } from '../ui/lib/mainModule.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -79,8 +81,10 @@ async function localHttpChecks(base, fetchFn) {
 }
 
 export async function runRemoteHostingPreflight({
-  url = 'http://127.0.0.1:8459', requireEnabled = false, fetchFn = globalThis.fetch,
+  url = 'http://127.0.0.1:8459', requireEnabled = false, requireServeMapping = false,
+  fetchFn = globalThis.fetch,
   loadSettings = loadDeviceSettings, remoteStatus = remoteAccessStatus,
+  tailscaleState = loadTailscaleState,
   startupStatus = windowsStartupStatus, platform = process.platform, appRoot = APP_ROOT,
 } = {}) {
   const base = validateLocalUrl(url);
@@ -88,11 +92,13 @@ export async function runRemoteHostingPreflight({
   let remote = null;
   try {
     remote = remoteStatus(loadSettings());
-    if (remote.state === 'enabled') checks.push(item('tailscale-mapping', 'pass', 'Scout-owned Tailscale Serve mapping is present'));
-    else if (requireEnabled) checks.push(item('tailscale-mapping', 'fail', 'Private Remote Access is not ready', remote.blocker || remote.state));
+    const deploymentMapping = requireServeMapping
+      && DEFAULT_HTTPS_PORTS.some((port) => serveMappingPresent(tailscaleState().serveStatus, port));
+    if (remote.state === 'enabled' || deploymentMapping) checks.push(item('tailscale-mapping', 'pass', 'Scout-owned Tailscale Serve mapping is present'));
+    else if (requireEnabled || requireServeMapping) checks.push(item('tailscale-mapping', 'fail', 'Private Remote Access is not ready', remote.blocker || remote.state));
     else checks.push(item('tailscale-mapping', 'warn', 'Private Remote Access is not enabled', remote.blocker || remote.state));
   } catch (error) {
-    checks.push(item('tailscale-mapping', requireEnabled ? 'fail' : 'warn', 'Tailscale state could not be verified', error.message));
+    checks.push(item('tailscale-mapping', requireEnabled || requireServeMapping ? 'fail' : 'warn', 'Tailscale state could not be verified', error.message));
   }
 
   if (platform === 'win32') {
@@ -110,6 +116,7 @@ export async function runRemoteHostingPreflight({
     generatedAt: new Date().toISOString(),
     target: base.origin,
     requireEnabled: Boolean(requireEnabled),
+    requireServeMapping: Boolean(requireServeMapping),
     summary: counts,
     checks,
     remainingManualChecks: [
@@ -131,6 +138,7 @@ if (isMainModule(import.meta.url)) {
   runRemoteHostingPreflight({
     url: argument('--url', argv) || 'http://127.0.0.1:8459',
     requireEnabled: argv.includes('--require-enabled'),
+    requireServeMapping: argv.includes('--require-serve-mapping'),
   }).then((result) => {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     if (!result.ok) process.exitCode = 1;

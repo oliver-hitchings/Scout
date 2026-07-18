@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 0002
 
 mode=${1:-}
 source_ref=${2:-}
@@ -9,6 +10,8 @@ force_failure=${5:-false}
 app_root=${SCOUT_VPS_APP_ROOT:-/home/ubuntu/apps/Scout}
 workspace=${SCOUT_VPS_WORKSPACE:-/home/ubuntu/Documents/Scout Workspace}
 service=${SCOUT_VPS_SERVICE:-scout-host.service}
+deployment_user=${SCOUT_VPS_DEPLOY_USER:-scout-deploy}
+expected_service_user=${SCOUT_VPS_SERVICE_USER:-ubuntu}
 
 if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
   printf 'Refusing invalid Scout beta version: %s\n' "$version" >&2
@@ -37,7 +40,11 @@ if [[ ! $expected_commit =~ ^[0-9a-f]{40}$ ]]; then
   printf 'Expected release commit must be a full Git SHA.\n' >&2
   exit 2
 fi
-if [[ ! -d $app_root/.git || ! -f $workspace/workspace.json ]]; then
+if [[ $(id -un) != "$deployment_user" ]]; then
+  printf 'Deployment must run as the restricted %s account.\n' "$deployment_user" >&2
+  exit 2
+fi
+if [[ ! -d $app_root/.git || ! -d $workspace ]]; then
   printf 'Scout application checkout or separate workspace is missing.\n' >&2
   exit 2
 fi
@@ -55,8 +62,12 @@ if [[ ! $remote =~ github\.com[:/]oliver-hitchings/Scout(\.git)?$ ]]; then
   exit 2
 fi
 service_user=$(systemctl show "$service" --property=User --value)
-if [[ $service_user != "$(id -un)" ]]; then
-  printf 'Service %s must run as the deployment user, not %s.\n' "$service" "${service_user:-root}" >&2
+if [[ $service_user != "$expected_service_user" || $service_user == root ]]; then
+  printf 'Service %s must run as the expected unprivileged owner, not %s.\n' "$service" "${service_user:-root}" >&2
+  exit 2
+fi
+if [[ ! -w $app_root/.git ]]; then
+  printf 'Deployment account cannot update the Scout application checkout.\n' >&2
   exit 2
 fi
 command -v tailscale >/dev/null
@@ -155,7 +166,7 @@ if ! cmp --silent "$serve_before" "$serve_after"; then
   printf 'Tailscale Serve configuration changed during deployment.\n' >&2
   false
 fi
-node "$app_root/tools/scout.mjs" remote preflight --require-enabled
+node "$app_root/tools/scout.mjs" remote preflight --require-serve-mapping
 
 trap - ERR
 printf 'Scout %s is healthy; workspace, provider homes and Tailscale Serve mapping were preserved.\n' "$version"
