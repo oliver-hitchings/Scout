@@ -27,8 +27,8 @@ case "$mode" in
     target_ref="refs/tags/v$version"
     ;;
   rehearsal)
-    [[ $source_ref == refs/heads/agent/beta11-release-candidate && $force_failure =~ ^(true|false)$ ]] || {
-      printf 'Rehearsals are restricted to the Beta 11 release-candidate branch.\n' >&2
+    [[ $source_ref == refs/heads/agent/beta12-release-candidate && $force_failure =~ ^(true|false)$ ]] || {
+      printf 'Rehearsals are restricted to the Beta 12 release-candidate branch.\n' >&2
       exit 2
     }
     fetch_ref="$source_ref:refs/scout-deploy/rehearsal"

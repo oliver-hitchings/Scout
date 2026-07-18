@@ -170,7 +170,7 @@ jobs:
           force_failure=false
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
             mode=rehearsal
-            [[ "$GITHUB_REF" == refs/heads/agent/beta11-release-candidate ]]
+            [[ "$GITHUB_REF" == refs/heads/agent/beta12-release-candidate ]]
             force_failure='${{ inputs.test_rollback }}'
           fi
           release_commit=$(git rev-parse HEAD)

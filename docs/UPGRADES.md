@@ -13,6 +13,14 @@ explicit bundled CLI invocation in [Quick Start](QUICK_START.md).
 3. Record the installed Scout version and run `scout doctor`.
 4. Read release notes for schema, provider and source changes.
 
+Scout checks the official GitHub releases once a day and shows an in-app notice
+when a newer version is available. In **Settings -> Application updates**, the
+default is notification-only. You may opt in to automatic package downloads;
+Scout accepts only the package for the current platform and verifies it against
+the release `checksums.txt` SHA-256 value before storing it in device-local state.
+Installation always remains an explicit user action, so Windows elevation,
+macOS Gatekeeper and Linux package-manager prompts are never hidden.
+
 On Windows, choose **Quit Scout** from the notification-area menu before running the new installer. Install the newer release over the existing application (Windows installer, replacement macOS app, or Linux package), then run:
 
 ```powershell
@@ -20,6 +28,11 @@ scout doctor --workspace "$HOME/Documents/Scout Workspace"
 ```
 
 Scout validates `workspace.json`. Versioned migrations are designed to be safe to rerun and save the pre-migration configuration under `.scout/backups/`. Scout refuses a workspace schema newer than the application understands; upgrade the application rather than manually lowering `schemaVersion`.
+
+VPS source checkouts continue to use the protected release workflow described in
+[VPS installation](INSTALL_VPS.md). It refuses dirty or unexpected checkouts,
+runs the complete tests, rolls back a failed health check, and preserves the
+separate workspace, provider credentials and existing Tailscale Serve mapping.
 
 ## Legacy/private checkout migration
 

@@ -93,49 +93,49 @@ The beta.11 version bump and release commit must remain separate from the featur
 - [ ] Run `npm ci`, `npm test`, `npm run release:audit` and `git diff --check` from the release commit.
 - [ ] Build all release artifacts and record their SHA-256 checksums.
 - [ ] Verify Windows, macOS and Linux CI/release runners.
-- [ ] Publish `v0.1.0-beta.11` only after the release gates pass.
+- [x] Publish `v0.1.0-beta.11` only after the release gates pass.
 - [ ] Replace this checklist link with the final acceptance record or mark every item complete.
 
 ## 9. Beta 12 follow-up: update notifications and optional automatic updates
 
-- [ ] Notify users in Scout when a newer release is available, with the version,
+- [x] Notify users in Scout when a newer release is available, with the version,
   release notes and a clear link or action to update.
-- [ ] Design an optional automatic updater for local desktop installations; keep
+- [x] Design an optional automatic updater for local desktop installations; keep
   automatic installation opt-in and allow users to continue updating manually.
-- [ ] Support advanced VPS installations with a safe update action or documented
+- [x] Support advanced VPS installations with a safe update action or documented
   automation that preserves the separate workspace, provider authentication and
   Tailscale Serve configuration.
-- [ ] Verify release signatures/checksums before installation, refuse unexpected
+- [x] Verify release signatures/checksums before installation, refuse unexpected
   or dirty deployments, and provide rollback when an update fails its health check.
-- [ ] Add cross-platform update tests and privacy/release-audit coverage before
+- [x] Add cross-platform update tests and privacy/release-audit coverage before
   targeting the feature for `0.1.0-beta.12`.
 
 ### Job deduplication
 
-- [ ] Check every newly discovered job against the existing tracker and the
+- [x] Check every newly discovered job against the existing tracker and the
   current scan before presenting or saving it.
-- [ ] Detect both exact duplicates and the same underlying role arriving from
+- [x] Detect both exact duplicates and the same underlying role arriving from
   different sources or URLs, using stable provider IDs plus normalised company,
   title, location and advert evidence.
-- [ ] Merge additional sources into the existing opportunity without losing its
+- [x] Merge additional sources into the existing opportunity without losing its
   status, notes, application history, company timeline or chat transcripts.
-- [ ] Treat a materially changed repost as an update to review rather than a new
+- [x] Treat a materially changed repost as an update to review rather than a new
   opportunity, while keeping genuinely different roles at the same company
   separate.
-- [ ] Add regression tests for duplicates within one scan, across later scans and
+- [x] Add regression tests for duplicates within one scan, across later scans and
   across providers, including false-positive tests for similar but distinct jobs.
 
 ### Carry forward the Beta 11 VPS CSP hotfix
 
-- [ ] Bring commit `4fda74e7eca3c2d260420b7a86fb5f83ca2ab26a` from the clean
+- [x] Bring commit `4fda74e7eca3c2d260420b7a86fb5f83ca2ab26a` from the clean
   `Scout-beta11-vps-hotfix` checkout into the Beta 12 release branch before the
   next VPS deployment overwrites the live hotfix.
-- [ ] Preserve the strict `script-src 'self'` CSP: keep generated UI markup free
+- [x] Preserve the strict `script-src 'self'` CSP: keep generated UI markup free
   of inline `onclick`, `onchange`, `oninput`, `onkeydown` and `onsubmit` handlers,
   using delegated `data-*` actions instead.
-- [ ] Carry forward the service-worker cache-name and asset-query bump so clients
+- [x] Carry forward the service-worker cache-name and asset-query bump so clients
   replace the stale Beta 10/Beta 11 shell after upgrading.
-- [ ] Retain regression coverage for inline handlers and strict CSP, then verify
+- [x] Retain regression coverage for inline handlers and strict CSP, then verify
   cards, reports, filters, CV controls, company history and chat actions through
   the private Tailscale URL.
 - [ ] Run the full suite and a signed-in VPS browser acceptance check before
