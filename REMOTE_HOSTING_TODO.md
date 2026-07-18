@@ -125,6 +125,23 @@ The beta.11 version bump and release commit must remain separate from the featur
 - [ ] Add regression tests for duplicates within one scan, across later scans and
   across providers, including false-positive tests for similar but distinct jobs.
 
+### Carry forward the Beta 11 VPS CSP hotfix
+
+- [ ] Bring commit `4fda74e7eca3c2d260420b7a86fb5f83ca2ab26a` from the clean
+  `Scout-beta11-vps-hotfix` checkout into the Beta 12 release branch before the
+  next VPS deployment overwrites the live hotfix.
+- [ ] Preserve the strict `script-src 'self'` CSP: keep generated UI markup free
+  of inline `onclick`, `onchange`, `oninput`, `onkeydown` and `onsubmit` handlers,
+  using delegated `data-*` actions instead.
+- [ ] Carry forward the service-worker cache-name and asset-query bump so clients
+  replace the stale Beta 10/Beta 11 shell after upgrading.
+- [ ] Retain regression coverage for inline handlers and strict CSP, then verify
+  cards, reports, filters, CV controls, company history and chat actions through
+  the private Tailscale URL.
+- [ ] Run the full suite and a signed-in VPS browser acceptance check before
+  releasing Beta 12. The live Beta 11 VPS was verified on this hotfix on
+  2026-07-18.
+
 ## Completed before handoff
 
 - [x] Feature implemented in a clean beta.10-based worktree without changing the original checkout.
