@@ -62,6 +62,8 @@ test('security headers protect pages and private APIs are never cacheable', asyn
   const page = await request({ path: '/' });
   assert.equal(page.status, 200);
   assert.match(page.headers['content-security-policy'], /frame-ancestors 'none'/);
+  assert.match(page.headers['content-security-policy'], /script-src 'self'/);
+  assert.doesNotMatch(page.headers['content-security-policy'], /script-src[^;]*'unsafe-inline'/);
   assert.equal(page.headers['x-frame-options'], 'DENY');
   assert.equal(page.headers['x-content-type-options'], 'nosniff');
   const api = await request({ path: '/api/app-info' });

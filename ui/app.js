@@ -261,7 +261,7 @@ const Scout = {
     el.innerHTML = `<div class="scout-arrival-copy scout-bubble tail-right" role="status" aria-live="polite">
         <b>${count === 1 ? 'I found a strong match' : `I found ${count} strong matches`}</b>
         <span>${this.esc(first.company)} — ${this.esc(first.role)} · ${this.esc(first.score)}</span>
-        <div><button class="act primary" onclick="Scout.showDiscovery()">Show me</button><button class="act" onclick="Scout.dismissDiscoveries()">Later</button></div>
+        <div><button class="act primary" data-action="show-discovery">Show me</button><button class="act" data-action="dismiss-discoveries">Later</button></div>
       </div>${scoutMarkup('found', 'scout-arrival-character')}`;
     el.classList.remove('hidden');
     applyScoutState(el.querySelector('.scout-character'), 'found', { reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches });
@@ -305,12 +305,11 @@ const Scout = {
 
   cardHtml(e, cls = '') {
     const score = typeof e.score === 'number' ? e.score : '-';
-    const idArg = this.jsArg(e.id);
     const src = this.primarySource(e);
     const srcBtn = src
-      ? `<a class="source-btn" href="${src}" target="_blank" rel="noopener" onclick="event.stopPropagation()">view source &#8599;</a>`
+      ? `<a class="source-btn" href="${src}" target="_blank" rel="noopener">view source &#8599;</a>`
       : '';
-    return `<div class="card ${cls}" data-id="${this.esc(e.id)}" onclick="Scout.expandCard(${idArg},this)">
+    return `<div class="card ${cls}" data-id="${this.esc(e.id)}" role="button" tabindex="0">
       <div class="top">
         <span class="score ${this.fitClass(e.score)}">${this.esc(score)}</span>
         <b>${this.esc(e.company)} - ${this.esc(e.role)}</b>
@@ -327,15 +326,15 @@ const Scout = {
     const origin = this.workspaceConfig?.commute?.origin;
     const option = (value, label) => `<option value="${value}" ${String(c.mode) === value ? 'selected' : ''}>${label}</option>`;
     const maxOption = (value, label) => `<option value="${value}" ${String(c.maxMinutes) === String(value) ? 'selected' : ''}>${label}</option>`;
-    return `<div class="filterbar" onclick="event.stopPropagation()">
+    return `<div class="filterbar">
       <b>Commute${origin ? ` from ${this.esc(origin)}` : ''}</b>
-      <label>mode <select onchange="Scout.setCommuteFilter('mode', this.value)">
+      <label>mode <select data-change-action="commute-filter" data-key="mode">
         ${option('either', 'Either')}${option('car', 'Car')}${option('public', 'Public transport')}${option('any', 'Any')}
       </select></label>
-      <label>maximum <select onchange="Scout.setCommuteFilter('maxMinutes', this.value)" ${c.mode === 'any' ? 'disabled' : ''}>
+      <label>maximum <select data-change-action="commute-filter" data-key="maxMinutes" ${c.mode === 'any' ? 'disabled' : ''}>
         ${maxOption('30', '30 min')}${maxOption('60', '1 hour')}${maxOption('90', '1.5 hours')}${maxOption('120', '2 hours')}${maxOption('180', '3 hours')}
       </select></label>
-      <label><input type="checkbox" ${c.includeUnknown ? 'checked' : ''} onchange="Scout.setCommuteFilter('includeUnknown', this.checked)"> include unknown</label>
+      <label><input type="checkbox" ${c.includeUnknown ? 'checked' : ''} data-change-action="commute-filter" data-key="includeUnknown"> include unknown</label>
     </div>`;
   },
 
@@ -409,7 +408,7 @@ const Scout = {
       : '';
     const fu = followups.length
       ? '<div class="label">Follow-ups due</div>' + followups.map((f) =>
-          `<div class="card" data-id="${this.esc(f.entry.id)}" onclick="Scout.expandCard(${this.jsArg(f.entry.id)},this)">
+          `<div class="card" data-id="${this.esc(f.entry.id)}" role="button" tabindex="0">
              <div class="top"><b>${this.esc(f.entry.company)}</b>
              <span class="chip">${f.due[0].kind === 'nudge' ? 'nudge due' : 'close-out due'}</span></div>
              <div class="meta">since ${this.esc(f.due[0].since)}</div>
@@ -443,7 +442,7 @@ const Scout = {
       : '<div class="meta">No per-source health was recorded for this run.</div>';
     const flags = p.flags.length
       ? '<div class="label">Flags</div>' + p.flags.map((f) =>
-          `<div class="card flag" data-id="${this.esc(f.id)}" onclick="Scout.expandCard(${this.jsArg(f.id)},this)">
+          `<div class="card flag" data-id="${this.esc(f.id)}" role="button" tabindex="0">
             <div class="top"><b>${this.esc(f.company)}</b><span class="chip">${this.esc(f.kind)}</span></div>
             <div class="meta">${this.esc(f.role)} - ${this.esc(f.detail)}</div>
             <div class="detail"></div>
@@ -482,7 +481,7 @@ const Scout = {
       item.appliedDate ? `applied ${item.appliedDate}` : null,
       item.daysSinceLastMovement !== null ? `${item.daysSinceLastMovement}d since movement` : null,
     ].filter(Boolean).join(' - ');
-    return `<div class="card" data-id="${this.esc(item.id)}" onclick="Scout.expandCard(${this.jsArg(item.id)},this)">
+    return `<div class="card" data-id="${this.esc(item.id)}" role="button" tabindex="0">
       <div class="top"><span class="score ${this.fitClass(item.score)}">${this.esc(item.score ?? '-')}</span><b>${this.esc(item.company)} - ${this.esc(item.role)}</b><span class="chip">${this.esc(item.status)}</span></div>
       <div class="meta">${this.esc(bits) || this.metaLine(entry)}</div>
       <div class="detail"></div>
@@ -504,17 +503,17 @@ const Scout = {
       `${this.filterBar()}
        <div class="controls"><input id="filter" placeholder="search company / role / tag..." value="${this.esc(this.state.filter)}"></div>
        <table><thead><tr>
-         <th onclick="Scout.setSort('score')">score</th>
-         <th onclick="Scout.setSort('company')">company</th>
+         <th data-action="sort" data-key="score" role="button" tabindex="0">score</th>
+         <th data-action="sort" data-key="company" role="button" tabindex="0">company</th>
          <th>role</th>
          <th>category</th>
          <th>car</th>
          <th>public</th>
          <th>stage</th>
-         <th onclick="Scout.setSort('status')">status</th>
-         <th onclick="Scout.setSort('lastChecked')">last checked</th>
+         <th data-action="sort" data-key="status" role="button" tabindex="0">status</th>
+         <th data-action="sort" data-key="lastChecked" role="button" tabindex="0">last checked</th>
        </tr></thead><tbody>` +
-      rows.map((e) => `<tr onclick="Scout.openEntry('${this.categoryOf(e)}',${this.jsArg(e.id)})" style="cursor:pointer">
+      rows.map((e) => `<tr data-action="open-entry" data-tab="${this.esc(this.categoryOf(e))}" data-id="${this.esc(e.id)}" role="button" tabindex="0" style="cursor:pointer">
         <td><b>${typeof e.score === 'number' ? e.score : '-'}</b></td>
         <td>${this.esc(e.company)}</td><td>${this.esc(e.role)}</td>
         <td>${this.esc(this.categoryOf(e))}</td>
@@ -524,7 +523,7 @@ const Scout = {
         <td>${this.esc(e.status)}</td><td>${this.esc(e.lastChecked || 'never')}</td></tr>`).join('') +
       '</tbody></table>';
     const f = document.getElementById('filter');
-    if (f) f.oninput = (ev) => { this.state.filter = ev.target.value; this.renderAll(); f.focus(); };
+    if (f) f.addEventListener('input', (ev) => { this.state.filter = ev.target.value; this.renderAll(); document.getElementById('filter')?.focus(); }, { once: true });
   },
 
   setSort(key) {
@@ -539,7 +538,7 @@ const Scout = {
     const el = document.getElementById('tab-reports');
     if (!reports.length) { el.innerHTML = '<p>No reports yet.</p>'; return; }
     el.innerHTML = `<div class="report-list">
-      <div class="dates">${reports.map((d) => `<button class="act" data-date="${this.esc(d)}" onclick="Scout.openReport(${this.jsArg(d)})">${d}</button>`).join('')}</div>
+      <div class="dates">${reports.map((d) => `<button class="act" data-action="open-report" data-date="${this.esc(d)}">${d}</button>`).join('')}</div>
       <div id="report-body" class="report-body" style="flex:1"></div></div>`;
     this.openReport(reports[0]);
   },
@@ -636,11 +635,9 @@ const Scout = {
       : '<div class="meta">no commute time recorded yet</div>';
     const stageHtml = stages.length
       ? `<ol class="stage-list">${stages.map((s, i) =>
-          `<li>${this.esc(s.completed ? '[x]' : '[ ]')} ${this.esc(s.name)}${s.date ? ' - ' + this.esc(s.date) : ''}${!s.completed ? ` <button class="act" onclick="event.stopPropagation();Scout.completeStage(${this.jsArg(e.id)},${i})">complete</button>` : ''}</li>`).join('')}</ol>`
+          `<li>${this.esc(s.completed ? '[x]' : '[ ]')} ${this.esc(s.name)}${s.date ? ' - ' + this.esc(s.date) : ''}${!s.completed ? ` <button class="act" data-action="complete-stage" data-id="${this.esc(e.id)}" data-index="${i}">complete</button>` : ''}</li>`).join('')}</ol>`
       : '<div class="meta">no application stages yet</div>';
-    const idArg = this.jsArg(e.id);
     const slug = this.slugOf(e.company);
-    const slugArg = this.jsArg(slug);
     const cvFiles = this.state.cvFiles || { applications: [], outreach: [] };
     const hasCv = (cvFiles.applications || []).includes(slug);
     const hasOutreach = (cvFiles.outreach || []).includes(slug);
@@ -652,8 +649,8 @@ const Scout = {
       .join(' - ');
     const sourcePanel = this.primarySource(e)
       ? `<div class="label">source</div>
-         <div class="source-panel" onclick="event.stopPropagation()">
-           <button class="act" onclick="Scout.toggleSourcePanel(${idArg},this)">show what the source says</button>
+         <div class="source-panel">
+           <button class="act" data-action="toggle-source" data-id="${this.esc(e.id)}">show what the source says</button>
            ${extraSources ? `<span class="meta"> ${extraSources}</span>` : ''}
            <div class="source-body" style="display:none"></div>
          </div>`
@@ -668,20 +665,20 @@ const Scout = {
       <div class="label">application stages</div>${stageHtml}
       <div class="label">event log</div>${log}
       <div class="label">notes</div><div class="meta" style="white-space:pre-wrap">${this.esc(e.notes || '-')}</div>
-      <div class="controls" style="margin-top:10px;flex-wrap:wrap" onclick="event.stopPropagation()">
-        ${applied ? '' : `<button class="act" onclick="Scout.markApplied(${idArg})">mark applied</button>`}
-        <button class="act" onclick="Scout.markAccepted(${idArg})">mark accepted</button>
-        <button class="act" onclick="Scout.rejectOpportunity(${idArg})">mark rejected</button>
+      <div class="controls" style="margin-top:10px;flex-wrap:wrap">
+        ${applied ? '' : `<button class="act" data-action="mark-applied" data-id="${this.esc(e.id)}">mark applied</button>`}
+        <button class="act" data-action="mark-accepted" data-id="${this.esc(e.id)}">mark accepted</button>
+        <button class="act" data-action="mark-rejected" data-id="${this.esc(e.id)}">mark rejected</button>
         ${hasCv
-          ? `<button class="act" onclick="Scout.seeCv(${slugArg},${idArg})">see custom CV</button>`
-          : `<button class="act bridge" onclick="Scout.chooseCvOptions(${idArg})">create custom CV</button>`}
+          ? `<button class="act" data-action="see-cv" data-slug="${this.esc(slug)}" data-id="${this.esc(e.id)}">see custom CV</button>`
+          : `<button class="act bridge" data-action="choose-cv-options" data-id="${this.esc(e.id)}">create custom CV</button>`}
         ${hasOutreach
-          ? `<button class="act" onclick="Scout.seeCoverLetter(${slugArg})">see cover letter</button>`
-          : `<button class="act bridge" onclick="Scout.openChat(${idArg},'coverLetter')">create custom cover letter</button>`}
-        <button class="act" onclick="Scout.openCompanyHistory(${idArg})">company history</button>
-        <button class="act bridge" onclick="Scout.openChat(${idArg},'fit')">fit and evidence gaps</button>
-        <button class="act bridge" onclick="Scout.openChat(${idArg},'ask')">ask about this job</button>
-        <button class="act${prepRecommended ? ' bridge' : ''}" onclick="Scout.openInterviewPrep(${idArg})">interview prep</button>
+          ? `<button class="act" data-action="see-cover-letter" data-slug="${this.esc(slug)}">see cover letter</button>`
+          : `<button class="act bridge" data-action="open-chat" data-id="${this.esc(e.id)}" data-prefill="coverLetter">create custom cover letter</button>`}
+        <button class="act" data-action="open-company-history" data-id="${this.esc(e.id)}">company history</button>
+        <button class="act bridge" data-action="open-chat" data-id="${this.esc(e.id)}" data-prefill="fit">fit and evidence gaps</button>
+        <button class="act bridge" data-action="open-chat" data-id="${this.esc(e.id)}" data-prefill="ask">ask about this job</button>
+        <button class="act${prepRecommended ? ' bridge' : ''}" data-action="open-interview-prep" data-id="${this.esc(e.id)}">interview prep</button>
       </div>`;
   },
 
@@ -764,7 +761,7 @@ const Scout = {
     const roleLine = roleNames.length ? `<div class="meta">${this.esc(roleNames.join(' · '))}</div>` : '';
     const contactLine = contact ? `<b>${this.esc(contact)}</b> · ` : '';
     const remove = item.source === 'company'
-      ? `<button class="danger-link company-remove" type="button" onclick="Scout.removeCompanyCommunication(${this.jsArg(item.id)})">remove</button>`
+      ? `<button class="danger-link company-remove" type="button" data-action="remove-company-communication" data-id="${this.esc(item.id)}">remove</button>`
       : '<span class="chip">tracker</span>';
     return `<article class="company-event ${this.esc(item.direction || 'note')}">
       <div class="company-event-head"><span>${this.esc(item.date)}</span><span>${contactLine}${this.esc(labels)}</span>${remove}</div>
@@ -781,7 +778,7 @@ const Scout = {
       <div class="company-role">
         <div><b>${this.esc(entry.role)}</b><span class="chip">${this.esc(entry.status || 'new')}</span></div>
         <div class="meta">${this.esc([entry.location, entry.appliedDate ? `applied ${entry.appliedDate}` : '', entry.currentStage ? `current: ${entry.currentStage}` : ''].filter(Boolean).join(' · '))}</div>
-        <button class="act bridge" type="button" onclick="Scout.openCompanyRoleChat(${this.jsArg(entry.id)})">open job chat</button>
+        <button class="act bridge" type="button" data-action="open-company-role-chat" data-id="${this.esc(entry.id)}">open job chat</button>
       </div>`).join('');
     const contacts = (data.contacts || []).length
       ? data.contacts.map((contact) => {
@@ -799,13 +796,13 @@ const Scout = {
     drawer.innerHTML = `
       <div class="chat-head">
         <div><b>${this.esc(data.company)}</b><div class="meta">company relationship history</div></div>
-        <button class="act" style="margin-left:auto" type="button" onclick="Scout.closeCompanyHistory()">close</button>
+        <button class="act" style="margin-left:auto" type="button" data-action="close-company-history">close</button>
       </div>
       <div class="company-body">
         <div class="label">Related roles</div>${roles}
         <div class="label">Contacts</div>${contacts}
         <div class="label">Activity and correspondence</div>${timeline}
-        <form class="company-form" onsubmit="event.preventDefault();Scout.saveCompanyCommunication()">
+        <form class="company-form" data-submit-action="save-company-communication">
           <div class="label">Record an update</div>
           <div class="company-form-grid">
             <label>Date<input id="company-event-date" type="date" value="${this.localToday()}" required></label>
@@ -926,21 +923,21 @@ const Scout = {
     const appBtns = list.applications.map((s) => {
       const cvPath = `applications/${s}/cv.typ`;
       const opportunityId = this.opportunityIdForSlug(s);
-      return `<button class="act" data-cv-path="${this.esc(cvPath)}" onclick="Scout.openCv(${this.jsArg(cvPath)},${this.jsArg(s)},${opportunityId ? this.jsArg(opportunityId) : 'null'})">${this.esc(s)}</button>`;
+      return `<button class="act" data-action="open-cv" data-cv-path="${this.esc(cvPath)}" data-slug="${this.esc(s)}" data-opportunity-id="${this.esc(opportunityId || '')}">${this.esc(s)}</button>`;
     }).join('') || '<div class="meta">no tailored CVs yet - run /tailor</div>';
     el.innerHTML = `
       <div class="cv-layout">
         <aside class="cv-sidebar">
           <div class="label">master</div>
-          <button class="act" data-cv-path="${this.esc('cv/master-cv.md')}" onclick="Scout.openCv(${this.jsArg('cv/master-cv.md')},null,null)">master-cv.md</button>
+          <button class="act" data-action="open-cv" data-cv-path="${this.esc('cv/master-cv.md')}">master-cv.md</button>
           <div class="label">applications</div>${appBtns}
         </aside>
         <section class="cv-editor-panel">
           <div class="label"><span id="cv-editing">select a file</span> <span id="cv-dirty" style="color:var(--warn)"></span></div>
-          <textarea id="cv-text" class="cv-source" oninput="Scout.cvState.dirty=true;document.getElementById('cv-dirty').textContent='unsaved'"></textarea>
+          <textarea id="cv-text" class="cv-source" data-input-action="cv-dirty"></textarea>
            <div class="controls" style="flex-wrap:wrap;margin-top:6px">
-             <button class="act" onclick="Scout.saveCv()">save + render</button>
-             <button class="act" onclick="Scout.downloadCv()">download PDF</button>
+             <button class="act" data-action="save-cv">save + render</button>
+             <button class="act" data-action="download-cv">download PDF</button>
            </div>
            <div id="cv-quality" class="cv-quality"><div class="meta">Select a tailored CV to see its quality review.</div></div>
           <div class="cv-chat-request">
@@ -948,7 +945,7 @@ const Scout = {
             <div class="meta">This opens the same job-specific Codex or Claude conversation used to create the CV. Your request is placed in the message box for review; nothing is sent until you press Send in the chat drawer.</div>
             <div class="cv-chat-request-row">
               <input id="cv-instruction" class="act" placeholder="e.g. lead with the drone/UAV angle and mention the composites oven rig">
-              <button class="act bridge" onclick="Scout.openChatForCv()">open job chat with request</button>
+              <button class="act bridge" data-action="open-chat-for-cv">open job chat with request</button>
             </div>
           </div>
         </section>
@@ -956,7 +953,7 @@ const Scout = {
           <div class="cv-preview-toolbar">
             <div class="label" style="margin:0">PDF preview</div>
             <label class="meta">scale
-              <select id="cv-preview-zoom" class="act" onchange="Scout.setCvZoom(this.value)">
+              <select id="cv-preview-zoom" class="act" data-change-action="cv-zoom">
                 <option value="page-width" selected>fit width</option>
                 <option value="page-fit">fit page</option>
                 <option value="100">100%</option>
@@ -964,8 +961,8 @@ const Scout = {
                 <option value="150">150%</option>
               </select>
             </label>
-            <button class="act" onclick="Scout.fullscreenCv()">full screen</button>
-            <button class="act" onclick="Scout.openCvPdf()">open PDF</button>
+            <button class="act" data-action="fullscreen-cv">full screen</button>
+            <button class="act" data-action="open-cv-pdf">open PDF</button>
           </div>
           <div id="cv-preview-shell">
             <div id="cv-preview">Select a tailored CV to render its PDF.</div>
@@ -1043,8 +1040,8 @@ const Scout = {
       <div class="meta">${this.esc(optionText)}</div>
       ${issues.length ? `<ul>${issues.map((entry) => `<li>${this.esc(entry.message)}</li>`).join('')}</ul>` : '<div class="meta">All enabled checks passed.</div>'}
       <div class="controls" style="flex-wrap:wrap;margin-top:8px">
-        <button class="act" onclick="Scout.runCvQualityReview()">run quality review</button>
-        ${this.cvState.opportunityId ? '<button class="act bridge" onclick="Scout.reviewEvidenceForMaster()">review answers for master CV</button>' : ''}
+        <button class="act" data-action="run-cv-quality-review">run quality review</button>
+        ${this.cvState.opportunityId ? '<button class="act bridge" data-action="review-evidence-for-master">review answers for master CV</button>' : ''}
       </div>`;
     this.cvState.quality = quality;
   },
@@ -1219,10 +1216,10 @@ const Scout = {
     const picker = this.chatPickerHtml();
     const prep = c.purpose === 'interview-prep';
     const prepControls = prep ? `<div class="controls" style="padding:8px 12px;flex-wrap:wrap">
-      <button class="act bridge" onclick="Scout.usePrepPrompt('interviewPrep')">generate pack</button>
-      <button class="act" onclick="Scout.usePrepPrompt('prepRefresh')">refresh research</button>
-      <button class="act" onclick="Scout.usePrepPrompt('prepQuestions')">practise questions</button>
-      <button class="act" onclick="Scout.usePrepPrompt('prepMock')">mock interview</button>
+      <button class="act bridge" data-action="use-prep-prompt" data-prompt="interviewPrep">generate pack</button>
+      <button class="act" data-action="use-prep-prompt" data-prompt="prepRefresh">refresh research</button>
+      <button class="act" data-action="use-prep-prompt" data-prompt="prepQuestions">practise questions</button>
+      <button class="act" data-action="use-prep-prompt" data-prompt="prepMock">mock interview</button>
     </div>` : '';
     d.innerHTML = `
       <div class="chat-head">
@@ -1230,20 +1227,20 @@ const Scout = {
         ${c.engine ? `<span class="chip" style="margin-left:0">${this.esc(c.engine)}</span>` : ''}
         <span id="usage-meters" class="meta"></span>
         ${c.engine && c.data.cliSessionId
-          ? '<button class="act" onclick="Scout.handoffChat()">summarise &amp; switch</button>'
+          ? '<button class="act" data-action="handoff-chat">summarise &amp; switch</button>'
           : ''}
         ${c.engine === 'codex' && codexTaskUrl(c.data.cliSessionId)
-          ? '<button class="act" onclick="Scout.openCodexTask()">open in Codex</button>'
+          ? '<button class="act" data-action="open-codex-task">open in Codex</button>'
           : ''}
-        <button class="act" style="margin-left:auto" onclick="Scout.closeChat()">close</button>
+        <button class="act" style="margin-left:auto" data-action="close-chat">close</button>
       </div>
       <div class="chat-companion">${scoutMarkup(c.streaming ? 'thinking' : 'listening')}<div class="scout-bubble tail-left"><span id="scout-chat-status">${c.streaming ? 'I’m thinking…' : prep ? 'Build your prep pack, refresh research, or practise here.' : 'Ask me anything about this opportunity.'}</span></div></div>
       ${prepControls}
       <div id="chat-body" class="chat-body">${c.engine ? '' : picker}</div>
       <div class="chat-foot" ${c.engine ? '' : 'style="display:none"'}>
-        <textarea id="chat-input" placeholder="message ${this.esc(c.engine || '')} - Enter sends, Shift+Enter for a new line" onkeydown="Scout.chatKey(event)"></textarea>
-        <button class="act" id="chat-send" onclick="Scout.sendChat()">send</button>
-        <button class="act" id="chat-stop" style="display:none" onclick="Scout.stopChat()">stop</button>
+        <textarea id="chat-input" placeholder="message ${this.esc(c.engine || '')} - Enter sends, Shift+Enter for a new line" data-keydown-action="chat-key"></textarea>
+        <button class="act" id="chat-send" data-action="send-chat">send</button>
+        <button class="act" id="chat-stop" style="display:none" data-action="stop-chat">stop</button>
       </div>`;
     this.renderChatMessages();
     this.setChatBusy(c.streaming);
@@ -1263,8 +1260,8 @@ const Scout = {
     const prep = this.chat?.purpose === 'interview-prep';
     return `<div class="chat-picker">
       <div class="label">choose an engine for ${onboarding ? 'setup' : prep ? 'interview prep' : 'this job'}</div>
-      <button class="act" onclick="Scout.pickEngine('claude')">Claude</button>
-      <button class="act" onclick="Scout.pickEngine('codex')">Codex</button>
+      <button class="act" data-action="pick-engine" data-engine="claude">Claude</button>
+      <button class="act" data-action="pick-engine" data-engine="codex">Codex</button>
     </div>`;
   },
 
@@ -1338,7 +1335,7 @@ const Scout = {
     if (this.chat?.id === 'setup-onboarding') return '';
     const slug = this.slugOf(this.company(this.chat.id));
     return (this.chat.data.filesTouched || []).includes(`applications/${slug}/cv.typ`)
-      ? `<div class="chat-msg system"><a href="#" onclick="event.preventDefault();Scout.seeCv(${this.jsArg(slug)},${this.jsArg(this.chat.id)})">view rendered CV</a></div>`
+      ? `<div class="chat-msg system"><a href="#" data-action="see-cv" data-slug="${this.esc(slug)}" data-id="${this.esc(this.chat.id)}">view rendered CV</a></div>`
       : '';
   },
 
@@ -1660,6 +1657,97 @@ const Scout = {
     if (tab === 'cv') this.renderCv();
   },
 
+  runAction(element) {
+    const { action, id, key, tab, date, index, slug, prefill, prompt, engine } = element.dataset;
+    switch (action) {
+      case 'show-discovery': return this.showDiscovery();
+      case 'dismiss-discoveries': return this.dismissDiscoveries();
+      case 'sort': return this.setSort(key);
+      case 'open-entry': return this.openEntry(tab, id);
+      case 'open-report': return this.openReport(date);
+      case 'complete-stage': return this.completeStage(id, Number(index));
+      case 'toggle-source': return this.toggleSourcePanel(id, element);
+      case 'mark-applied': return this.markApplied(id);
+      case 'mark-accepted': return this.markAccepted(id);
+      case 'mark-rejected': return this.rejectOpportunity(id);
+      case 'see-cv': return this.seeCv(slug, id || null);
+      case 'choose-cv-options': return this.chooseCvOptions(id);
+      case 'see-cover-letter': return this.seeCoverLetter(slug);
+      case 'open-chat': return this.openChat(id, prefill);
+      case 'open-company-history': return this.openCompanyHistory(id);
+      case 'open-interview-prep': return this.openInterviewPrep(id);
+      case 'remove-company-communication': return this.removeCompanyCommunication(id);
+      case 'open-company-role-chat': return this.openCompanyRoleChat(id);
+      case 'close-company-history': return this.closeCompanyHistory();
+      case 'open-cv': return this.openCv(element.dataset.cvPath, slug || null, element.dataset.opportunityId || null);
+      case 'save-cv': return this.saveCv();
+      case 'download-cv': return this.downloadCv();
+      case 'open-chat-for-cv': return this.openChatForCv();
+      case 'fullscreen-cv': return this.fullscreenCv();
+      case 'open-cv-pdf': return this.openCvPdf();
+      case 'run-cv-quality-review': return this.runCvQualityReview();
+      case 'review-evidence-for-master': return this.reviewEvidenceForMaster();
+      case 'use-prep-prompt': return this.usePrepPrompt(prompt);
+      case 'handoff-chat': return this.handoffChat();
+      case 'open-codex-task': return this.openCodexTask();
+      case 'close-chat': return this.closeChat();
+      case 'send-chat': return this.sendChat();
+      case 'stop-chat': return this.stopChat();
+      case 'pick-engine': return this.pickEngine(engine);
+      default: return undefined;
+    }
+  },
+
+  bindDelegatedActions() {
+    document.addEventListener?.('click', (event) => {
+      const action = event.target.closest?.('[data-action]');
+      if (action) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.runAction(action);
+        return;
+      }
+      if (event.target.closest?.('a, button, input, select, textarea, label, form')) return;
+      const card = event.target.closest?.('.card[data-id]');
+      if (card) this.expandCard(card.dataset.id, card);
+    });
+    document.addEventListener?.('keydown', (event) => {
+      if (event.target.matches?.('[data-keydown-action="chat-key"]')) {
+        this.chatKey(event);
+        return;
+      }
+      if (!['Enter', ' '].includes(event.key)) return;
+      const action = event.target.closest?.('[data-action]');
+      if (action) {
+        event.preventDefault();
+        this.runAction(action);
+        return;
+      }
+      const card = event.target.closest?.('.card[data-id]');
+      if (card) {
+        event.preventDefault();
+        this.expandCard(card.dataset.id, card);
+      }
+    });
+    document.addEventListener?.('change', (event) => {
+      const element = event.target;
+      if (element.dataset.changeAction === 'commute-filter') {
+        this.setCommuteFilter(element.dataset.key, element.type === 'checkbox' ? element.checked : element.value);
+      } else if (element.dataset.changeAction === 'cv-zoom') this.setCvZoom(element.value);
+    });
+    document.addEventListener?.('input', (event) => {
+      if (event.target.dataset.inputAction !== 'cv-dirty') return;
+      this.cvState.dirty = true;
+      const dirty = document.getElementById('cv-dirty');
+      if (dirty) dirty.textContent = 'unsaved';
+    });
+    document.addEventListener?.('submit', (event) => {
+      if (event.target.dataset.submitAction !== 'save-company-communication') return;
+      event.preventDefault();
+      this.saveCompanyCommunication();
+    });
+  },
+
   init() {
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     window.addEventListener?.('offline', () => this.setHostAvailable(false));
@@ -1673,6 +1761,7 @@ const Scout = {
     document.getElementById?.('sync-status')?.addEventListener('click', () => window.ScoutSetup?.openSettings?.());
     document.getElementById?.('cv-options-cancel')?.addEventListener('click', () => this.closeCvOptions());
     document.getElementById?.('cv-options-continue')?.addEventListener('click', () => this.startCvFromOptions());
+    this.bindDelegatedActions();
     window.addEventListener?.('focus', () => this.refreshSyncStatus({ retry: true }));
     document.addEventListener?.('visibilitychange', () => { if (!document.hidden) this.refreshSyncStatus({ retry: true }); });
     this.loadOpportunities();
