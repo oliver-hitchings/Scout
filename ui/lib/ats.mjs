@@ -16,6 +16,7 @@ async function getJson(url, fetchImpl) {
 
 function normalise(job, portal, fields) {
   return {
+    providerId: String(fields.providerId || ''),
     title: fields.title || '',
     company: portal.name,
     description: fields.description || '',
@@ -33,6 +34,7 @@ function normalise(job, portal, fields) {
 export async function fetchGreenhouse(portal, fetchImpl = globalThis.fetch) {
   const data = await getJson(`https://api.greenhouse.io/v1/boards/${encodeURIComponent(portal.token)}/jobs?content=true`, fetchImpl);
   return (data.jobs || []).map((job) => normalise(job, portal, {
+    providerId: job.id,
     title: job.title,
     description: stripHtml(job.content),
     url: job.absolute_url,
@@ -45,6 +47,7 @@ export async function fetchLever(portal, fetchImpl = globalThis.fetch) {
   const data = await getJson(`https://api.lever.co/v0/postings/${encodeURIComponent(portal.token)}?mode=json`, fetchImpl);
   const rows = Array.isArray(data) ? data : [];
   return rows.map((job) => normalise(job, portal, {
+    providerId: job.id,
     title: job.text,
     description: stripHtml(job.descriptionPlain || job.description),
     url: job.hostedUrl,
@@ -56,6 +59,7 @@ export async function fetchLever(portal, fetchImpl = globalThis.fetch) {
 export async function fetchAshby(portal, fetchImpl = globalThis.fetch) {
   const data = await getJson(`https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(portal.token)}`, fetchImpl);
   return (data.jobs || []).map((job) => normalise(job, portal, {
+    providerId: job.id,
     title: job.title,
     description: stripHtml(job.descriptionPlain || job.descriptionHtml),
     url: job.jobUrl,

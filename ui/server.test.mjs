@@ -62,6 +62,8 @@ test('security headers protect pages and private APIs are never cacheable', asyn
   const page = await request({ path: '/' });
   assert.equal(page.status, 200);
   assert.match(page.headers['content-security-policy'], /frame-ancestors 'none'/);
+  assert.match(page.headers['content-security-policy'], /script-src 'self'/);
+  assert.doesNotMatch(page.headers['content-security-policy'], /script-src[^;]*'unsafe-inline'/);
   assert.equal(page.headers['x-frame-options'], 'DENY');
   assert.equal(page.headers['x-content-type-options'], 'nosniff');
   const api = await request({ path: '/api/app-info' });
@@ -102,6 +104,25 @@ test('remote owner mutations require HTTPS Origin and administration remains loc
   const localOnly = await request({ method: 'POST', path: '/api/remote-access/disable', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
   assert.equal(localOnly.status, 403);
   assert.match(JSON.parse(localOnly.text).error, /only be changed on the Scout host/);
+  const remoteUpdate = await request({ method: 'POST', path: '/api/update/download', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
+  assert.equal(remoteUpdate.status, 403);
+});
+
+test('local device settings keep update downloads explicitly opt-in', async () => {
+  const host = `127.0.0.1:${port}`;
+  const response = await request({
+    method: 'POST', path: '/api/device/settings',
+    headers: { host, origin: `http://${host}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ updatePolicy: 'download' }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(response.text).settings.updates.policy, 'download');
+  const invalid = await request({
+    method: 'POST', path: '/api/device/settings',
+    headers: { host, origin: `http://${host}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ updatePolicy: 'install-silently' }),
+  });
+  assert.equal(invalid.status, 400);
 });
 
 test('streamed chat endpoints reject missing Tailscale identity before opening SSE', async () => {

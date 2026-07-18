@@ -74,6 +74,7 @@ function normalise(hit, options) {
     v5.company_tagline || '', v5.company_sector_and_industry || '', (v5.company_activities || []).join(', '),
   ].filter(Boolean).join(' ');
   return {
+    providerId: String(hit.objectID || hit.id || hit.job_information?.id || ''),
     title: hit.job_information?.title || '',
     company: v5.company_name || '',
     description,
@@ -170,7 +171,7 @@ export async function fetchHiringCafe(queries = DEFAULT_HIRING_CAFE_QUERIES, fet
         if (hit.is_expired) continue;
         const job = normalise(hit, options);
         count += 1;
-        const key = `${job.company.toLowerCase().trim()}|${job.title.toLowerCase().trim()}`;
+        const key = job.providerId || job.url || `${job.company.toLowerCase().trim()}|${job.title.toLowerCase().trim()}|${job.location.toLowerCase().trim()}`;
         if (seen.has(key)) continue;
         seen.add(key);
         jobs.push(job);

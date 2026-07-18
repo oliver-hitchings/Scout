@@ -5,15 +5,21 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   loadDeviceSettings, pendingDeviceSections, saveDeviceSettings, setWindowsStartup,
-  windowsStartupStatus, windowsStartupTaskXml,
+  updateDownloadDirectory, windowsStartupStatus, windowsStartupTaskXml,
 } from './deviceSettings.mjs';
 
 test('device settings persist outside the app and retain defaults', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-device-')); const file = path.join(root, 'state.json');
   const initial = loadDeviceSettings({ file }); assert.equal(initial.startWithWindows, false);
-  assert.equal(initial.schemaVersion, 2); assert.equal(initial.remoteAccess.enabled, false);
+  assert.equal(initial.schemaVersion, 3); assert.equal(initial.remoteAccess.enabled, false);
+  assert.equal(initial.updates.policy, 'notify');
   initial.startWithWindows = true; saveDeviceSettings(initial, { file });
   assert.equal(loadDeviceSettings({ file }).startWithWindows, true); fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('verified update downloads stay in device-local state rather than the workspace', () => {
+  const directory = updateDownloadDirectory({ LOCALAPPDATA: 'C:\\Users\\Owner\\AppData\\Local' }, 'win32');
+  assert.match(directory, /AppData[\\/]Local[\\/]Scout[\\/]updates$/);
 });
 
 test('new Windows setup section prompts once and honours deferral', () => {

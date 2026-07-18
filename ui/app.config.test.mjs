@@ -28,7 +28,19 @@ test('custom CV recommendations are preselected but remain optional', () => {
   assert.match(html, /id="cv-option-xyz"[^>]*checked/);
   assert.match(html, /id="cv-option-humanize"[^>]*checked/);
   assert.match(html, /recommends both options, but they are optional/i);
-  assert.match(html, /app\.js\?v=beta-11/);
+  assert.match(html, /app\.js\?v=beta-12-1/);
+});
+
+test('strict CSP-compatible UI markup uses delegated actions instead of inline handlers', () => {
+  const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /\son(?:click|change|input|keydown|submit)\s*=/i);
+  assert.doesNotMatch(html, /\son(?:click|change|input|keydown|submit)\s*=/i);
+  assert.match(html, /app\.js\?v=beta-12-1/);
+  assert.match(fs.readFileSync(new URL('./service-worker.js', import.meta.url), 'utf8'), /scout-shell-beta-12-1/);
+  assert.match(source, /data-action="open-entry"/);
+  assert.match(source, /\.card\[data-id\]/);
+  assert.match(source, /bindDelegatedActions/);
 });
 
 test('company history keeps real correspondence separate from role-specific Scout chats', () => {

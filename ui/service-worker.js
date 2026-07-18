@@ -1,6 +1,6 @@
-const CACHE = 'scout-shell-remote-hosting-1';
+const CACHE = 'scout-shell-beta-12-1';
 const SHELL = [
-  '/', '/app.js?v=beta-10', '/setup.js?v=beta-10',
+  '/', '/app.js?v=beta-12-1', '/setup.js?v=beta-12-1',
   '/manifest.webmanifest', '/assets/scout-icon.png', '/assets/scout-idle.png',
   '/assets/scout-thinking.png', '/assets/scout-searching.png', '/assets/scout-warning.png',
 ];

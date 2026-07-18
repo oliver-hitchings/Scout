@@ -49,6 +49,7 @@ function salaryText(min, max, options) {
 
 function normalise(item, options) {
   return {
+    providerId: String(item.id || ''),
     title: item.title || '',
     company: item.company?.display_name || '',
     description: item.description || '',
@@ -80,7 +81,7 @@ export async function fetchAdzuna(options, fetchImpl = globalThis.fetch) {
       const found = (data.results || []).map((item) => normalise(item, values));
       sources[query] = found.length;
       for (const job of found) {
-        const key = `${job.company.toLowerCase().trim()}|${job.title.toLowerCase().trim()}`;
+        const key = job.providerId || job.url || `${job.company.toLowerCase().trim()}|${job.title.toLowerCase().trim()}|${job.location.toLowerCase().trim()}`;
         if (seen.has(key)) continue;
         seen.add(key);
         jobs.push(job);
