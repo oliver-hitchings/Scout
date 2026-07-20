@@ -1,6 +1,6 @@
-const CACHE = 'scout-shell-beta-13-1';
+const CACHE = 'scout-shell-beta-13-2';
 const SHELL = [
-  '/', '/reportView.js?v=beta-13-1', '/app.js?v=beta-13-1', '/setup.js?v=beta-13-1',
+  '/', '/reportView.js?v=beta-13-2', '/app.js?v=beta-13-2', '/setup.js?v=beta-13-2',
   '/manifest.webmanifest', '/assets/scout-icon.png', '/assets/scout-idle.png',
   '/assets/scout-thinking.png', '/assets/scout-searching.png', '/assets/scout-warning.png',
 ];
