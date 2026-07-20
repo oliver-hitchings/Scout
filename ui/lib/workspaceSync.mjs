@@ -145,10 +145,15 @@ export async function verifyPrivateGithubRemote(value, options = {}) {
 function repoReady(root, options = {}) {
   const result = runGit(root, ['rev-parse', '--show-toplevel'], options);
   if (!result.ok) return false;
-  const top = path.resolve(result.stdout);
+  const canonical = (value) => {
+    const resolved = path.resolve(value);
+    try { return fs.realpathSync.native(resolved); } catch { return resolved; }
+  };
+  const top = canonical(result.stdout);
+  const workspace = canonical(root);
   return process.platform === 'win32'
-    ? top.toLowerCase() === path.resolve(root).toLowerCase()
-    : top === path.resolve(root);
+    ? top.toLowerCase() === workspace.toLowerCase()
+    : top === workspace;
 }
 
 function sensitiveTrackedPath(value) {
