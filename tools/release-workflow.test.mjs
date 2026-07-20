@@ -42,7 +42,7 @@ test('tagged release deploys the private VPS before publication', () => {
   assert.match(workflow, /publish:[\s\S]*needs: \[windows, macos, linux, deploy-vps\]/);
   assert.match(deploy, /status --porcelain --untracked-files=normal/);
   assert.match(deploy, /refs\/tags\/v\$version:refs\/tags\/v\$version/);
-  assert.match(deploy, /refs\/heads\/agent\/beta12-release-candidate/);
+  assert.match(deploy, /refs\/heads\/codex\/beta13-release-candidate/);
   assert.match(deploy, /npm ci[\s\S]*npm test[\s\S]*systemctl restart/);
   assert.match(deploy, /127\.0\.0\.1:8459\/api\/app-info/);
   assert.match(deploy, /cmp --silent "\$serve_before" "\$serve_after"/);

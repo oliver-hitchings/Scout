@@ -15,7 +15,7 @@ import { compactCandidates, SCAN_ASSESSMENT_SCHEMA, validateAssessments, writeSc
 import { isMainModule } from '../ui/lib/mainModule.mjs';
 import { runCvQuality } from '../ui/lib/cvQuality.mjs';
 import { queueWorkspaceSync } from '../ui/lib/workspaceSync.mjs';
-import { registerDailySchedule, registerUnixSchedule, removeSchedule, runScheduledNow, scheduleStatus, schedulerRegistrationScript } from '../ui/lib/scheduler.mjs';
+import { registerDailySchedule, registerUnixSchedule, removeLegacySchedule, removeSchedule, runScheduledNow, scheduleStatus, schedulerRegistrationScript } from '../ui/lib/scheduler.mjs';
 import {
   loadWorkspaceConfig, resolveWorkspaceRoot, seedWorkspace as seedWorkspaceFiles,
   syncManagedInstructions, workspacePaths, writeWorkspaceConfig,
@@ -182,9 +182,15 @@ export async function runScanWith(root, provider, mode, {
   if (!status.installed || !status.authenticated) throw new Error(`${provider} is not installed and authenticated; run scout doctor`);
   syncManagedInstructions(APP_ROOT, root);
   const config = loadWorkspaceConfig(root);
-  const lock = acquireLockFn(root, { agent: provider, mode });
-  if (!lock.ok) return { ok: false, error: 'another scan is already running', lock: lock.lock };
   const startedAt = new Date().toISOString();
+  const lock = acquireLockFn(root, { agent: provider, mode });
+  if (!lock.ok) {
+    const artifacts = writeScanArtifacts(root, {
+      provider, mode, sources: {}, candidates: [], assessmentResult: null, policy: config.triage,
+      exclusions: config.search?.exclusions || [], startedAt, error: 'another scan is already running', skipped: true,
+    });
+    return { ok: false, status: 'skipped', error: 'another scan is already running', lock: lock.lock, scan: artifacts.run };
+  }
   let result;
   let collected = null;
   let candidates = [];
@@ -241,22 +247,27 @@ export async function runScanWith(root, provider, mode, {
   return result;
 }
 
-export function installSchedule(root, time, provider) {
+export function installSchedule(root, time, provider, { id = `${provider}-primary`, mode = 'primary' } = {}) {
   if (!['codex', 'claude'].includes(provider)) throw new Error('schedule provider must be codex or claude');
+  if (!['primary', 'second-pass'].includes(mode)) throw new Error('schedule mode must be primary or second-pass');
   const config = loadWorkspaceConfig(root);
+  removeLegacySchedule();
   const cli = fileURLToPath(import.meta.url);
   if (process.platform !== 'win32') {
-    const result = registerUnixSchedule({ platform: process.platform, command: process.execPath, args: [cli, 'scan', '--workspace', root, '--provider', provider, '--mode', 'primary'], workingDirectory: APP_ROOT, time });
-    if (result.ok) { config.schedule = { enabled: true, time, provider }; writeWorkspaceConfig(root, config); }
+    const result = registerUnixSchedule({ id, platform: process.platform, command: process.execPath, args: [cli, 'scan', '--workspace', root, '--provider', provider, '--mode', mode], workingDirectory: APP_ROOT, time });
+    if (result.ok) {
+      config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, provider, mode }];
+      writeWorkspaceConfig(root, config);
+    }
     return result;
   }
   const scriptFile = path.join(os.tmpdir(), `scout-task-${process.pid}.ps1`);
   fs.writeFileSync(scriptFile, schedulerRegistrationScript(), 'utf8');
   try {
-    const argumentsText = `"${cli}" scan --workspace "${root}" --provider ${provider} --mode primary`;
-    const result = registerDailySchedule({ scriptFile, command: process.execPath, argumentsText, workingDirectory: APP_ROOT, time });
+    const argumentsText = `"${cli}" scan --workspace "${root}" --provider ${provider} --mode ${mode}`;
+    const result = registerDailySchedule({ id, scriptFile, command: process.execPath, argumentsText, workingDirectory: APP_ROOT, time });
     if (result.ok) {
-      config.schedule = { enabled: true, time, provider };
+      config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, provider, mode }];
       writeWorkspaceConfig(root, config);
     }
     return result;
@@ -294,7 +305,7 @@ async function main() {
   }
   if (command === 'scan') {
     const config = loadWorkspaceConfig(root);
-    const provider = argValue('--provider', argv) || config.schedule?.provider || config.ai?.provider;
+    const provider = argValue('--provider', argv) || config.ai?.provider;
     const result = await runScan(root, provider, argValue('--mode', argv) || 'primary');
     print(result);
     if (!result.ok) process.exitCode = 1;
@@ -345,23 +356,31 @@ async function main() {
   }
   if (command === 'schedule') {
     const action = argv[1] || 'status';
-    if (action === 'status') return print(scheduleStatus());
+    const config = loadWorkspaceConfig(root);
+    const id = argValue('--id', argv) || config.schedule?.jobs?.[0]?.id || 'primary';
+    if (action === 'status') return print({
+      ok: true,
+      runs: config.schedule.jobs.map((job) => ({ ...job, ...scheduleStatus({ id: job.id }) })),
+    });
     if (action === 'remove') {
-      const result = removeSchedule();
+      const result = removeSchedule({ id });
       if (result.ok) {
-        const config = loadWorkspaceConfig(root);
-        config.schedule = { ...config.schedule, enabled: false };
+        config.schedule.jobs = config.schedule.jobs.map((job) => job.id === id ? { ...job, enabled: false } : job);
         writeWorkspaceConfig(root, config);
       }
       return print(result);
     }
-    if (action === 'run-now') return print(runScheduledNow());
+    if (action === 'run-now') return print(runScheduledNow({ id }));
     if (action === 'install') {
-      const config = loadWorkspaceConfig(root);
-      return print(installSchedule(root, argValue('--time', argv) || config.schedule?.time || '07:30', argValue('--provider', argv) || config.ai?.provider));
+      const provider = argValue('--provider', argv) || config.ai?.provider;
+      const mode = argValue('--mode', argv) || 'primary';
+      return print(installSchedule(root, argValue('--time', argv) || '07:30', provider, {
+        id: argValue('--id', argv) || `${provider}-${mode}`,
+        mode,
+      }));
     }
   }
-  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude [--mode primary|second-pass]\n  schedule install|status|remove|run-now [--time HH:MM] [--provider PROVIDER]`);
+  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude [--mode primary|second-pass]\n  schedule install|status|remove|run-now [--id ID] [--time HH:MM] [--provider PROVIDER] [--mode primary|second-pass]`);
 }
 
 const isMain = isMainModule(import.meta.url);

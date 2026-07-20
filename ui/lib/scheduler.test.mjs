@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { linuxSystemdUnits, macLaunchAgent, nextScheduledRun, registerDailySchedule, scheduleSummary, schedulerRegistrationScript, taskXml } from './scheduler.mjs';
+import { linuxSystemdUnits, macLaunchAgent, nativeScheduleNames, nextScheduledRun, registerDailySchedule, scheduleSummary, schedulerRegistrationScript, taskXml } from './scheduler.mjs';
 
 test('scheduled task is catch-up enabled, non-overlapping and time limited', () => {
   const xml = taskXml({ command: 'node.exe', args: ['tools/scout.mjs', 'scan'], workingDirectory: 'C:\\Scout', time: '07:30', userId: 'user', now: new Date(2026, 6, 11, 8, 0) });
@@ -26,15 +26,24 @@ test('nextScheduledRun chooses today or tomorrow in local time', () => {
 });
 
 test('scheduleSummary distinguishes saved configuration from a live task', () => {
-  const config = { ai: { provider: 'claude' }, schedule: { enabled: true, time: '07:30', provider: 'claude' } };
-  const missing = scheduleSummary(config, { lastRunAt: null }, { ok: false, supported: true }, new Date('2026-07-11T06:00:00.000Z'));
+  const config = { ai: { provider: 'claude' }, schedule: { jobs: [
+    { id: 'claude-primary', enabled: true, time: '07:30', provider: 'claude', mode: 'primary' },
+    { id: 'codex-second-pass', enabled: true, time: '08:30', provider: 'codex', mode: 'second-pass' },
+  ] } };
+  const missing = scheduleSummary(config, { lastRunAt: null }, [{ ok: false, supported: true }, { ok: false, supported: true }], new Date('2026-07-11T06:00:00.000Z'));
   assert.equal(missing.configured, true);
   assert.equal(missing.enabled, false);
-  const live = scheduleSummary(config, { lastRunAt: '2026-07-11T05:00:00Z', healthy: false, degraded: true }, { ok: true, supported: true }, new Date('2026-07-11T06:00:00.000Z'));
+  const live = scheduleSummary(config, { lastRunAt: '2026-07-11T05:00:00Z', healthy: false, degraded: true }, [{ ok: true, supported: true }, { ok: true, supported: true }], new Date('2026-07-11T06:00:00.000Z'));
   assert.equal(live.enabled, true);
+  assert.equal(live.runs.length, 2);
   assert.equal(live.lastResult, 'degraded');
   const next = new Date(live.nextRunAt);
   assert.deepEqual([next.getHours(), next.getMinutes()], [7, 30]);
+});
+
+test('each named job receives a distinct native scheduler identity', () => {
+  assert.notDeepEqual(nativeScheduleNames('claude-primary'), nativeScheduleNames('codex-second-pass'));
+  assert.equal(nativeScheduleNames('codex-second-pass').linux, 'scout-daily-scan-codex-second-pass');
 });
 
 test('native registration creates a persistent least-privilege daily task', () => {

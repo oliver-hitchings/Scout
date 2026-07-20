@@ -36,8 +36,27 @@ const fakeCapabilities = (spawn) => ({ spawn });
 
 test('GitHub repository URLs reject credentials and non-GitHub remotes', () => {
   assert.equal(validateGithubUrl('https://github.com/example/scout-workspace').url, 'https://github.com/example/scout-workspace.git');
+  assert.deepEqual(validateGithubUrl('git@github.com:example/scout-workspace.git'), {
+    url: 'git@github.com:example/scout-workspace.git', owner: 'example', repo: 'scout-workspace',
+    transport: 'ssh', identity: 'example/scout-workspace',
+  });
   assert.throws(() => validateGithubUrl('https://token@github.com/example/repo'), /credential-free/);
   assert.throws(() => validateGithubUrl('https://example.com/example/repo'), /credential-free/);
+  assert.throws(() => validateGithubUrl('git@example.com:example/repo'), /GitHub HTTPS or SSH/);
+});
+
+test('SSH backup transport does not require Git Credential Manager', async () => {
+  const f = fixture();
+  const connected = await connectWorkspaceSync(f.root, {
+    remoteUrl: 'git@github.com:example/scout-workspace.git', passphrase: 'correct horse battery staple',
+  }, {
+    verifyRemote: async () => ({ url: f.remote, empty: true, transport: 'ssh' }),
+    spawn: (command, args, options) => args[0] === 'credential-manager'
+      ? { status: 1, stdout: '', stderr: 'not installed' }
+      : spawnSync(command, args, options),
+  });
+  assert.equal(connected.status.state, 'synced');
+  fs.rmSync(f.base, { recursive: true, force: true });
 });
 
 test('privacy verification rejects a repository visible without authentication', async () => {
@@ -83,6 +102,21 @@ test('local-only checkpoints never contact a Git remote', async () => {
   assert.match(git(f.root, 'log', '-1', '--pretty=%s'), /local only change/);
   assert.equal(calls.some((args) => ['fetch', 'push', 'pull', 'ls-remote'].includes(args[0])), false);
   fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('a workspace nested under another checkout never checkpoints the parent repository', async () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-parent-repo-'));
+  git(parent, 'init');
+  const root = path.join(parent, 'private-workspace');
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'workspace.json'), '{"schemaVersion":2}\n');
+  fs.writeFileSync(path.join(root, 'data', 'opportunities.json'), '{"opportunities":[]}\n');
+  fs.writeFileSync(path.join(root, '.gitignore'), '.scout/\n');
+  const result = await runWorkspaceSync(root, 'nested workspace');
+  assert.equal(result.state, 'disabled');
+  assert.equal(fs.existsSync(path.join(root, '.git')), false);
+  assert.equal(git(parent, 'status', '--porcelain'), '?? private-workspace/');
+  fs.rmSync(parent, { recursive: true, force: true });
 });
 
 test('workspace upgrade untracks legacy chats without deleting transcripts', async () => {

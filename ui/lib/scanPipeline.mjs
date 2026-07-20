@@ -234,7 +234,7 @@ export function validateWrittenScanArtifacts(root, expectedRun) {
   return { tracker, report, run };
 }
 
-export function writeScanArtifacts(root, { provider, mode, sources, queries = [], candidates, assessmentResult, policy, exclusions = [], startedAt, error = null }) {
+export function writeScanArtifacts(root, { provider, mode, sources, queries = [], candidates, assessmentResult, policy, exclusions = [], startedAt, error = null, skipped = false }) {
   const paths = workspacePaths(root);
   const timestamp = new Date().toISOString();
   const date = timestamp.slice(0, 10);
@@ -249,14 +249,33 @@ export function writeScanArtifacts(root, { provider, mode, sources, queries = []
     ? mergeTracker(existing, candidates, trustedAssessments.assessments, policy, date)
     : { tracker: existing, keepersAdded: 0, keepersUpdated: 0, discarded: { ...EMPTY_DISCARDED } };
   const run = {
-    schemaVersion: 1, timestamp, started_at: startedAt, agent: provider, mode, degraded,
+    schemaVersion: 2, timestamp, started_at: startedAt, agent: provider, mode, degraded, skipped,
     sources_checked: Object.entries(health).filter(([, item]) => item.configured !== false).map(([name]) => name),
     queries_checked: [...queries], candidates_found: candidates.length, keepers_added: merged.keepersAdded,
     duplicates_collapsed: candidates.reduce((total, candidate) => total + Math.max(0, Number(candidate.duplicateCount || 1) - 1), 0),
     keepers_updated: merged.keepersUpdated,
     discarded: merged.discarded, errors, source_health: health,
   };
-  const report = reportText({ date, degraded, source_health: health, kept: merged.tracker.opportunities, discarded: merged.discarded, errors });
+  const earlierRuns = fs.existsSync(paths.scanRuns)
+    ? fs.readFileSync(paths.scanRuns, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter((item) => item?.timestamp?.startsWith(date))
+    : [];
+  const dayRuns = [...earlierRuns, run];
+  const dayErrors = [...new Set(dayRuns.flatMap((item) => item.errors || []))];
+  const baseReport = reportText({
+    date,
+    degraded: dayRuns.some((item) => item.degraded),
+    source_health: health,
+    kept: merged.tracker.opportunities,
+    discarded: merged.discarded,
+    errors: dayErrors,
+  });
+  const runLines = dayRuns.map((item) => {
+    const sourcesSummary = Object.entries(item.source_health || {}).map(([name, value]) => `${name}: ${value.status}`).join(', ') || 'no sources';
+    return `- **${item.agent} ${item.mode}** at ${String(item.timestamp || '').slice(11, 16) || 'unknown time'} UTC - ${item.skipped ? 'skipped because another scan was running' : item.degraded ? 'degraded' : 'healthy'}; ${item.candidates_found || 0} candidate(s), ${item.keepers_added || 0} added, ${item.keepers_updated || 0} updated; ${sourcesSummary}.`;
+  }).join('\n');
+  const report = baseReport.replace('## Action today', `## Scan runs\n\n${runLines}\n\n## Action today`);
   if (!error) atomicWrite(paths.tracker, serializeTracker(merged.tracker));
   atomicWrite(path.join(paths.reports, `${date}.md`), report);
   fs.mkdirSync(path.dirname(paths.scanRuns), { recursive: true });

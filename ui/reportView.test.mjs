@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+await import('./reportView.js');
+const { parse, render } = globalThis.ScoutReportView;
+
+test('structured reports render semantic sections, safe links and checklists', () => {
+  const html = render(`# Scout report - 2026-07-20
+
+## Headline
+
+Configured sources completed successfully.
+
+## Scan runs
+
+- **claude primary** - healthy
+- [x] Codex verified
+
+## Action today
+
+- [Role](https://example.test/job)
+`);
+  assert.match(html, /<article/);
+  assert.match(html, /report-scan-runs/);
+  assert.match(html, /type="checkbox" disabled checked/);
+  assert.match(html, /href="https:\/\/example\.test\/job"/);
+});
+
+test('raw HTML and unsafe links never execute', () => {
+  const html = render('## Headline\n\n<script>alert(1)</script>\n\n[bad](javascript:alert(2))');
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /href="javascript:/);
+});
+
+test('legacy malformed reports use the readable preformatted fallback', () => {
+  assert.equal(parse('plain legacy report').fallback, true);
+  assert.match(render('plain <legacy> report'), /report-fallback/);
+  assert.match(render('plain <legacy> report'), /&lt;legacy&gt;/);
+});
+
+test('degraded and empty sections remain explicit and scannable', () => {
+  const html = render(`# Scout report - 2026-07-20
+
+## Headline
+
+Coverage was degraded; this is not evidence that no suitable roles exist.
+
+## Action today
+
+- None.
+
+## Verdicts
+
+- Error: source unavailable
+`);
+  assert.match(html, /Coverage was degraded/);
+  assert.match(html, /report-action-today/);
+  assert.match(html, /None\./);
+  assert.match(html, /source unavailable/);
+});

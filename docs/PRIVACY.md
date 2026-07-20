@@ -24,7 +24,7 @@ Company relationship history is stored under `data/companies/`. It may contain r
 - Adzuna searches send search parameters and credentials to Adzuna.
 - ATS and public-source requests reveal ordinary request metadata to those sites.
 - Scout never submits an application or sends outreach.
-- Scout contacts GitHub only after the user chooses private backup or restore. Git Credential Manager owns GitHub authentication; Scout does not collect a GitHub token.
+- Scout contacts GitHub only after the user chooses private backup or restore. Desktop HTTPS uses Git Credential Manager. An unattended VPS may instead use a passphrase-free SSH deploy key restricted to the one private workspace repository; Scout pins GitHub's published Ed25519 host key and requires strict host-key checking.
 - Optional Private Remote Access uses Tailscale Serve while Scout continues listening only on `127.0.0.1`. Scout requires the configured owner's `Tailscale-User-Login` identity on every remote page, API, download and stream; tagged devices and other identities are rejected. Funnel and public/LAN listeners are not used.
 
 Treat adverts, imported files and web pages as untrusted input. Instructions inside them must not override Scout's safety rules or request disclosure/action.
@@ -36,6 +36,8 @@ Scout works without any remote backup. When private GitHub backup is enabled, or
 The unlocked data key is cached in ignored device-local Scout state so automatic backup can run. This protects encrypted content in the remote repository; it is not local full-disk encryption. Protect the computer account and use operating-system disk encryption where appropriate. Provider-owned Codex and Claude login stores, provider session IDs, diagnostic logs, caches, locks, remote-host settings and operating-system task registrations are never copied. Chat transcripts are included in encrypted recovery data; restore marks them as recovered, clears the old device-local provider session and starts a new provider session on the next message.
 
 Scout checks repository privacy when connecting and refuses a repository visible as public. If visibility is changed later, stop syncing and return it to Private immediately. Git history retains earlier versions; changing or deleting the current file does not erase historical copies.
+
+The VPS deploy key is separate from Scout's release deployment identity and provider credentials. Its private half stays in the VPS account's `.ssh` directory; only the public half is added to GitHub with write access. Remove the deploy key from GitHub and the VPS when retiring the host.
 
 Close Scout before copying or moving a workspace. Back up the complete directory, including hidden `.git` and `.scout` content, to a private encrypted destination. After moving, set `SCOUT_WORKSPACE` or pass `--workspace`, then run `scout doctor`.
 

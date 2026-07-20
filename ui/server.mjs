@@ -25,12 +25,12 @@ import { disableRemoteAccess, enableRemoteAccess, remoteAccessStatus } from './l
 import { checkForUpdate, downloadVerifiedUpdate } from './lib/updates.mjs';
 import {
   confirmRecoveryKey, connectWorkspaceSync, detectGit, disableWorkspaceSync, pendingRecoveryKey,
-  queueWorkspaceSync, restoreWorkspaceFromGithub, syncStatus,
+  prepareGithubDeployKey, queueWorkspaceSync, restoreWorkspaceFromGithub, syncStatus,
 } from './lib/workspaceSync.mjs';
 import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
 import { loadEnv, saveEnv } from './lib/env.mjs';
 import {
-  loadWorkspaceConfig, resolveWorkspaceRoot, seedWorkspace, syncManagedInstructions,
+  loadWorkspaceConfig, migrateWorkspace, resolveWorkspaceRoot, seedWorkspace, syncManagedInstructions,
   workspacePaths, writeWorkspaceConfig,
 } from './lib/workspace.mjs';
 
@@ -47,7 +47,10 @@ const SCAN_RUNS = WORKSPACE.scanRuns;
 
 // Fresh installations remain uninitialised until the person chooses either a
 // new local workspace or Restore. Existing workspaces keep the legacy fast path.
-if (fs.existsSync(TRACKER) && path.resolve(APP_ROOT) !== path.resolve(WORKSPACE_ROOT)) syncManagedInstructions(APP_ROOT, WORKSPACE_ROOT);
+if (fs.existsSync(TRACKER) && path.resolve(APP_ROOT) !== path.resolve(WORKSPACE_ROOT)) {
+  migrateWorkspace(WORKSPACE_ROOT);
+  syncManagedInstructions(APP_ROOT, WORKSPACE_ROOT);
+}
 
 function workspaceInitialised() { return fs.existsSync(TRACKER) && fs.existsSync(WORKSPACE.config); }
 
@@ -116,7 +119,19 @@ function readScanHealth() {
 }
 
 function readScheduleSummary(config = loadWorkspaceConfig(WORKSPACE_ROOT), health = readScanHealth()) {
-  return scheduleSummary(config, health, scheduleStatus());
+  const records = fs.existsSync(SCAN_RUNS)
+    ? fs.readFileSync(SCAN_RUNS, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean)
+    : [];
+  const runs = Object.fromEntries((config.schedule?.jobs || []).map((job) => {
+    const record = records.findLast((item) => item.agent === job.provider && item.mode === job.mode);
+    return [job.id, {
+      lastRunAt: record?.timestamp || null,
+      lastResult: !record ? 'never' : record.degraded ? 'degraded' : 'healthy',
+    }];
+  }));
+  return scheduleSummary(config, { ...health, runs }, (config.schedule?.jobs || []).map((job) => scheduleStatus({ id: job.id })));
 }
 
 // Task 5 assigns handlers into this table: routes['POST /api/status'] = (req,res,body)=>{...}
@@ -252,6 +267,9 @@ function handleRead(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/app.js') {
     return serveStatic(res, path.join(__dirname, 'app.js'), 'text/javascript; charset=utf-8');
+  }
+  if (req.method === 'GET' && url.pathname === '/reportView.js') {
+    return serveStatic(res, path.join(__dirname, 'reportView.js'), 'text/javascript; charset=utf-8');
   }
   if (req.method === 'GET' && url.pathname === '/setup.js') {
     return serveStatic(res, path.join(__dirname, 'setup.js'), 'text/javascript; charset=utf-8');
@@ -542,6 +560,16 @@ routes['POST /api/sync/connect'] = async (req, res, body) => {
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 
+routes['POST /api/sync/deploy-key'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create the workspace before preparing a deploy key' });
+  try {
+    const result = prepareGithubDeployKey(WORKSPACE_ROOT);
+    res.setHeader('Cache-Control', 'no-store');
+    return replyJson(res, 200, { ok: true, publicKey: result.publicKey });
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
 routes['POST /api/sync/backup'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try { return replyJson(res, 200, await queueCheckpoint(b.reason || 'manual backup')); }
@@ -738,7 +766,7 @@ routes['POST /api/setup/config'] = (req, res, body) => {
       },
       commute: { ...current.commute, ...(b.commute || {}) },
       ai: { ...current.ai, ...(b.ai || {}) },
-      schedule: { ...current.schedule, ...(b.schedule || {}) },
+      schedule: b.schedule?.jobs ? { jobs: b.schedule.jobs } : current.schedule,
       setup: { ...current.setup, ...(b.setup || {}) },
     };
     writeWorkspaceConfig(WORKSPACE_ROOT, next);
@@ -952,18 +980,24 @@ routes['POST /api/schedule'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   const config = loadWorkspaceConfig(WORKSPACE_ROOT);
   try {
+    const mode = b.mode || 'primary';
+    const provider = b.provider || config.ai?.provider;
+    const id = b.id || `${provider}-${mode}`;
     let result;
     if (b.action === 'install') {
       const health = readScanHealth();
       if (!health.lastRunAt || !health.healthy) return replyJson(res, 409, { error: 'complete a healthy supervised scan before enabling daily scans' });
-      result = installSchedule(WORKSPACE_ROOT, b.time || config.schedule?.time || '07:30', b.provider || config.ai?.provider);
+      result = installSchedule(WORKSPACE_ROOT, b.time || '07:30', provider, { id, mode });
     } else if (b.action === 'remove') {
-      result = removeSchedule();
-      if (result.ok) { config.schedule = { ...config.schedule, enabled: false }; writeWorkspaceConfig(WORKSPACE_ROOT, config); }
-    } else if (b.action === 'run-now') result = runScheduledNow();
+      result = removeSchedule({ id });
+      if (result.ok) {
+        config.schedule.jobs = config.schedule.jobs.map((job) => job.id === id ? { ...job, enabled: false } : job);
+        writeWorkspaceConfig(WORKSPACE_ROOT, config);
+      }
+    } else if (b.action === 'run-now') result = runScheduledNow({ id });
     else return replyJson(res, 400, { error: 'action must be install, remove, or run-now' });
     if (result.ok) void queueCheckpoint(`schedule ${b.action}`);
-    return replyJson(res, result.ok ? 200 : 500, result);
+    return replyJson(res, result.ok ? 200 : 500, { ...result, id, schedule: readScheduleSummary() });
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 

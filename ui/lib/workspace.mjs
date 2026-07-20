@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const CURRENT_WORKSPACE_SCHEMA = 1;
+export const CURRENT_WORKSPACE_SCHEMA = 2;
 
 export const DEFAULT_WORKSPACE_CONFIG = Object.freeze({
   schemaVersion: CURRENT_WORKSPACE_SCHEMA,
@@ -48,9 +48,7 @@ export const DEFAULT_WORKSPACE_CONFIG = Object.freeze({
     model: null,
   },
   schedule: {
-    enabled: false,
-    time: '07:30',
-    provider: null,
+    jobs: [],
   },
   setup: {
     completedAt: null,
@@ -105,6 +103,26 @@ function cloneDefaults() {
   return JSON.parse(JSON.stringify(DEFAULT_WORKSPACE_CONFIG));
 }
 
+export function normaliseScheduleJobs(schedule = {}, fallbackProvider = null) {
+  const supplied = Array.isArray(schedule.jobs) ? schedule.jobs : null;
+  const legacy = !supplied && schedule.enabled
+    ? [{
+      id: `${schedule.provider || fallbackProvider || 'provider'}-primary`,
+      enabled: true,
+      time: schedule.time || '07:30',
+      provider: schedule.provider || fallbackProvider,
+      mode: 'primary',
+    }]
+    : [];
+  return (supplied || legacy).map((job) => ({
+    id: String(job.id || `${job.provider || fallbackProvider || 'provider'}-${job.mode || 'primary'}`),
+    enabled: Boolean(job.enabled),
+    time: job.time || '07:30',
+    provider: job.provider || fallbackProvider || null,
+    mode: job.mode || 'primary',
+  }));
+}
+
 export function mergeWorkspaceDefaults(value = {}) {
   const defaults = cloneDefaults();
   return {
@@ -122,7 +140,7 @@ export function mergeWorkspaceDefaults(value = {}) {
     commute: { ...defaults.commute, ...(value.commute || {}) },
     setup: { ...defaults.setup, ...(value.setup || {}), completedSections: { ...defaults.setup.completedSections, ...(value.setup?.completedSections || {}) } },
     ai: { ...defaults.ai, ...(value.ai || {}) },
-    schedule: { ...defaults.schedule, ...(value.schedule || {}) },
+    schedule: { jobs: normaliseScheduleJobs(value.schedule, value.ai?.provider) },
   };
 }
 
@@ -145,7 +163,17 @@ export function validateWorkspaceConfig(value) {
   if (!value.sources || typeof value.sources !== 'object') throw new Error('workspace sources must be an object');
   if (value.commute && typeof value.commute !== 'object') throw new Error('workspace commute must be an object');
   if (value.ai && ![null, 'codex', 'claude'].includes(value.ai.provider ?? null)) throw new Error('workspace ai.provider must be codex, claude, or null');
-  if (value.schedule && value.schedule.time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(value.schedule.time)) throw new Error('workspace schedule.time must be HH:MM');
+  if (!value.schedule || !Array.isArray(value.schedule.jobs)) throw new Error('workspace schedule.jobs must be an array');
+  const ids = new Set();
+  for (const job of value.schedule.jobs) {
+    if (!job || typeof job !== 'object' || Array.isArray(job)) throw new Error('workspace schedule jobs must be objects');
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(String(job.id || ''))) throw new Error('workspace schedule job id must use lower-case letters, numbers and hyphens');
+    if (ids.has(job.id)) throw new Error(`workspace schedule job id is duplicated: ${job.id}`);
+    ids.add(job.id);
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(job.time || ''))) throw new Error(`workspace schedule job ${job.id} time must be HH:MM`);
+    if (!['codex', 'claude'].includes(job.provider)) throw new Error(`workspace schedule job ${job.id} provider must be codex or claude`);
+    if (!['primary', 'second-pass'].includes(job.mode)) throw new Error(`workspace schedule job ${job.id} mode must be primary or second-pass`);
+  }
   return value;
 }
 
