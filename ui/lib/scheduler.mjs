@@ -41,6 +41,14 @@ function validateTime(value) {
   return value;
 }
 
+function validateTimezone(value) {
+  const timezone = String(value || '');
+  if (!/^[A-Za-z0-9_+\-/]+$/.test(timezone)) throw new Error('schedule timezone must be a valid IANA timezone');
+  try { new Intl.DateTimeFormat('en-GB', { timeZone: timezone }).format(new Date()); }
+  catch { throw new Error('schedule timezone must be a valid IANA timezone'); }
+  return timezone;
+}
+
 function quoteXml(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
@@ -77,9 +85,41 @@ export function scheduleStatus({ id = 'primary', spawn = spawnSync, platform = p
   return { ok: r.status === 0, supported: true, scheduler: 'windows-task-scheduler', output: String(r.stdout || r.stderr || '').trim() };
 }
 
-export function nextScheduledRun(time, now = new Date()) {
+function zonedParts(value, timezone) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(value);
+  return Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, Number(part.value)]));
+}
+
+function zonedInstant({ year, month, day, hour, minute }, timezone) {
+  const wallTime = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  let candidate = wallTime;
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const actual = zonedParts(new Date(candidate), timezone);
+    const actualWallTime = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, actual.second);
+    candidate += wallTime - actualWallTime;
+  }
+  return new Date(candidate);
+}
+
+export function nextScheduledRun(time, now = new Date(), timezone = null) {
   validateTime(time);
   const [hours, minutes] = time.split(':').map(Number);
+  if (timezone) {
+    const zone = validateTimezone(timezone);
+    const today = zonedParts(now, zone);
+    let next = zonedInstant({ year: today.year, month: today.month, day: today.day, hour: hours, minute: minutes }, zone);
+    if (next <= now) {
+      const tomorrow = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
+      next = zonedInstant({
+        year: tomorrow.getUTCFullYear(), month: tomorrow.getUTCMonth() + 1, day: tomorrow.getUTCDate(),
+        hour: hours, minute: minutes,
+      }, zone);
+    }
+    return next.toISOString();
+  }
   const next = new Date(now);
   next.setHours(hours, minutes, 0, 0);
   if (next <= now) next.setDate(next.getDate() + 1);
@@ -96,7 +136,7 @@ export function scheduleSummary(config = {}, scanHealth = null, tasks = [], now 
       ...job,
       enabled,
       configured: Boolean(job.enabled),
-      nextRunAt: enabled ? nextScheduledRun(job.time, now) : null,
+      nextRunAt: enabled ? nextScheduledRun(job.time, now, config.timezone || null) : null,
       lastRunAt: scanHealth?.runs?.[job.id]?.lastRunAt || null,
       lastResult: scanHealth?.runs?.[job.id]?.lastResult || 'never',
       taskOk: Boolean(task.ok),
@@ -174,16 +214,17 @@ export function removeLegacySchedule({ spawn = spawnSync, platform = process.pla
 }
 
 function systemdQuote(value) { const text = String(value); if (/\r|\n/.test(text)) throw new Error('schedule arguments cannot contain newlines'); return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
-export function linuxSystemdUnits({ id = 'primary', command, args, workingDirectory, time, pathValue = process.env.PATH || '' }) {
+export function linuxSystemdUnits({ id = 'primary', command, args, workingDirectory, time, timezone = 'Europe/London', pathValue = process.env.PATH || '' }) {
   const names = nativeScheduleNames(id);
   validateTime(time);
+  const zone = validateTimezone(timezone);
   return {
     service: `[Unit]\nDescription=Scout daily scan\n[Service]\nType=oneshot\nWorkingDirectory=${systemdQuote(workingDirectory)}\nEnvironment=${systemdQuote(`PATH=${pathValue}`)}\nExecStart=${[command, ...args].map(systemdQuote).join(' ')}\nRuntimeMaxSec=2700\n`,
-    timer: `[Unit]\nDescription=Run Scout daily (${id})\n[Timer]\nOnCalendar=*-*-* ${time}:00\nPersistent=true\nUnit=${names.linux}.service\n[Install]\nWantedBy=timers.target\n`,
+    timer: `[Unit]\nDescription=Run Scout daily (${id})\n[Timer]\nOnCalendar=*-*-* ${time}:00 ${zone}\nPersistent=true\nUnit=${names.linux}.service\n[Install]\nWantedBy=timers.target\n`,
   };
 }
 
-export function registerUnixSchedule({ id = 'primary', platform = process.platform, command, args, workingDirectory, time, spawn = spawnSync, home = os.homedir(), uid = process.getuid?.(), fileSystem = fs }) {
+export function registerUnixSchedule({ id = 'primary', platform = process.platform, command, args, workingDirectory, time, timezone = 'Europe/London', spawn = spawnSync, home = os.homedir(), uid = process.getuid?.(), fileSystem = fs }) {
   const names = nativeScheduleNames(id);
   if (platform === 'darwin') {
     const dir = path.join(home, 'Library', 'LaunchAgents'); fileSystem.mkdirSync(dir, { recursive: true }); const file = path.join(dir, `${names.mac}.plist`);
@@ -192,7 +233,7 @@ export function registerUnixSchedule({ id = 'primary', platform = process.platfo
     return { ok: r.status === 0, supported: true, output: String(r.stdout || r.stderr || '').trim() };
   }
   if (platform === 'linux') {
-    const dir = path.join(home, '.config', 'systemd', 'user'); fileSystem.mkdirSync(dir, { recursive: true }); const units = linuxSystemdUnits({ id, command, args, workingDirectory, time, pathValue: `/usr/local/bin:${path.join(home, '.local/bin')}:${path.join(home, '.npm-global/bin')}:${process.env.PATH || ''}` });
+    const dir = path.join(home, '.config', 'systemd', 'user'); fileSystem.mkdirSync(dir, { recursive: true }); const units = linuxSystemdUnits({ id, command, args, workingDirectory, time, timezone, pathValue: `/usr/local/bin:${path.join(home, '.local/bin')}:${path.join(home, '.npm-global/bin')}:${process.env.PATH || ''}` });
     fileSystem.writeFileSync(path.join(dir, `${names.linux}.service`), units.service); fileSystem.writeFileSync(path.join(dir, `${names.linux}.timer`), units.timer);
     let r = spawn('systemctl', ['--user', 'daemon-reload'], systemdUserOptions(uid, { encoding: 'utf8' })); if (r.status === 0) r = spawn('systemctl', ['--user', 'enable', '--now', `${names.linux}.timer`], systemdUserOptions(uid, { encoding: 'utf8' }));
     return { ok: r.status === 0, supported: r.error?.code !== 'ENOENT', output: String(r.stdout || r.stderr || '').trim() };

@@ -7,6 +7,8 @@ Beta 13's recommended VPS schedule is:
 - `claude-primary` at 07:30 in `primary` mode;
 - `codex-second-pass` at 08:30 in `second-pass` mode.
 
+Linux timers pin the workspace IANA timezone (normally `Europe/London`) in `OnCalendar`, so daylight-saving changes do not shift the intended wall-clock time even when the VPS itself runs UTC.
+
 The one-hour gap exceeds Scout's 45-minute native execution limit. The workspace lock remains authoritative: if a prior scan is still active, the later run is recorded as skipped and never overlaps it.
 
 ## Install and inspect

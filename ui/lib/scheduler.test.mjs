@@ -41,6 +41,12 @@ test('scheduleSummary distinguishes saved configuration from a live task', () =>
   assert.deepEqual([next.getHours(), next.getMinutes()], [7, 30]);
 });
 
+test('nextScheduledRun honours Europe/London across daylight saving time', () => {
+  assert.equal(nextScheduledRun('07:30', new Date('2026-07-11T06:00:00.000Z'), 'Europe/London'), '2026-07-11T06:30:00.000Z');
+  assert.equal(nextScheduledRun('07:30', new Date('2026-12-11T06:00:00.000Z'), 'Europe/London'), '2026-12-11T07:30:00.000Z');
+  assert.throws(() => nextScheduledRun('07:30', new Date(), 'Europe/London; reboot'), /valid IANA timezone/);
+});
+
 test('each named job receives a distinct native scheduler identity', () => {
   assert.notDeepEqual(nativeScheduleNames('claude-primary'), nativeScheduleNames('codex-second-pass'));
   assert.equal(nativeScheduleNames('codex-second-pass').linux, 'scout-daily-scan-codex-second-pass');
@@ -64,5 +70,5 @@ test('macOS launch agent uses a daily calendar and argument array', () => {
 
 test('Linux user timer is persistent, bounded and safely quoted', () => {
   const units = linuxSystemdUnits({ command: '/opt/scout/runtime/node', args: ['/opt/scout/app/tools/scout.mjs', 'scan', '--workspace', '/home/a/Scout Workspace'], workingDirectory: '/opt/scout/app', time: '07:30' });
-  assert.match(units.timer, /OnCalendar=\*-\*-\* 07:30:00/); assert.match(units.timer, /Persistent=true/); assert.match(units.service, /RuntimeMaxSec=2700/); assert.match(units.service, /"\/home\/a\/Scout Workspace"/);
+  assert.match(units.timer, /OnCalendar=\*-\*-\* 07:30:00 Europe\/London/); assert.match(units.timer, /Persistent=true/); assert.match(units.service, /RuntimeMaxSec=2700/); assert.match(units.service, /"\/home\/a\/Scout Workspace"/);
 });

@@ -254,7 +254,7 @@ export function installSchedule(root, time, provider, { id = `${provider}-primar
   removeLegacySchedule();
   const cli = fileURLToPath(import.meta.url);
   if (process.platform !== 'win32') {
-    const result = registerUnixSchedule({ id, platform: process.platform, command: process.execPath, args: [cli, 'scan', '--workspace', root, '--provider', provider, '--mode', mode], workingDirectory: APP_ROOT, time });
+    const result = registerUnixSchedule({ id, platform: process.platform, command: process.execPath, args: [cli, 'scan', '--workspace', root, '--provider', provider, '--mode', mode], workingDirectory: APP_ROOT, time, timezone: config.timezone });
     if (result.ok) {
       config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, provider, mode }];
       writeWorkspaceConfig(root, config);
