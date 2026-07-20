@@ -1,8 +1,11 @@
-const CACHE = 'scout-shell-beta-13-2';
+const BUILD = '__SCOUT_UI_BUILD__';
+const CACHE = `scout-shell-${BUILD}`;
 const SHELL = [
-  '/', '/reportView.js?v=beta-13-2', '/app.js?v=beta-13-2', '/setup.js?v=beta-13-2',
-  '/manifest.webmanifest', '/assets/scout-icon.png', '/assets/scout-idle.png',
-  '/assets/scout-thinking.png', '/assets/scout-searching.png', '/assets/scout-warning.png',
+  '/', `/reportView.js?v=${BUILD}`, `/app.js?v=${BUILD}`, `/setup.js?v=${BUILD}`,
+  `/manifest.webmanifest?v=${BUILD}`, `/assets/scout-icon.ico?v=${BUILD}`, `/assets/scout-icon.png?v=${BUILD}`,
+  `/assets/scout-idle.png?v=${BUILD}`, `/assets/scout-thinking.png?v=${BUILD}`,
+  `/assets/scout-searching.png?v=${BUILD}`, `/assets/scout-explaining.png?v=${BUILD}`,
+  `/assets/scout-found.png?v=${BUILD}`, `/assets/scout-warning.png?v=${BUILD}`,
 ];
 
 self.addEventListener('install', (event) => {
@@ -19,7 +22,16 @@ self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
-  const isShell = url.pathname === '/' || url.pathname === '/app.js' || url.pathname === '/setup.js' || url.pathname === '/reportView.js'
+  if (request.mode === 'navigate' || url.pathname === '/') {
+    event.respondWith(fetch(request).then((response) => {
+      if (response.ok && response.type === 'basic') {
+        caches.open(CACHE).then((cache) => cache.put('/', response.clone()));
+      }
+      return response;
+    }).catch(() => caches.match('/')));
+    return;
+  }
+  const isShell = url.pathname === '/app.js' || url.pathname === '/setup.js' || url.pathname === '/reportView.js'
     || url.pathname === '/manifest.webmanifest' || url.pathname.startsWith('/assets/');
   if (!isShell) return;
   event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then((response) => {

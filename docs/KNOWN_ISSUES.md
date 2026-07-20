@@ -3,6 +3,14 @@
 This page tracks confirmed problems in released Scout packages. Check
 [Troubleshooting](TROUBLESHOOTING.md) for general setup and diagnostic guidance.
 
+## Stale settings dialog in beta.13
+
+- **Affected release:** Scout `0.1.0-beta.13`
+- **First recorded:** 2026-07-20
+- **Status:** Resolved in Scout `0.1.0-beta.14`.
+
+A page kept open across an upgrade could retain the older settings wizard in memory. The backup status also opened that full wizard, and the older page had no close control. Refreshing loaded the corrected assets. Beta.14 separates backup details from Settings, separates established settings from onboarding, derives cache keys from the exact UI build and prompts safely when an open page is stale.
+
 ## Windows: Codex can be reported as not installed when it is present
 
 - **Affected release:** Scout `0.1.0-beta.9`

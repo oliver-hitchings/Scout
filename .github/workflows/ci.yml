@@ -29,3 +29,15 @@ jobs:
         run: npm run release:audit -- --root dist/release/stage --stage --require-markers
         env:
           SCOUT_RELEASE_MARKERS: ${{ secrets.SCOUT_RELEASE_MARKERS }}
+
+  browser-acceptance:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser

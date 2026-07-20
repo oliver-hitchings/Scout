@@ -10,7 +10,7 @@ const previousDeviceSettings = process.env.SCOUT_DEVICE_SETTINGS;
 const testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-server-test-'));
 process.env.SCOUT_WORKSPACE = testWorkspace;
 process.env.SCOUT_DEVICE_SETTINGS = path.join(testWorkspace, 'device-settings.json');
-const { APP_ROOT, APP_VERSION, WORKSPACE_ROOT, createServer, restartControl, shutdownControl } = await import('./server.mjs');
+const { APP_ROOT, APP_VERSION, UI_BUILD_ID, WORKSPACE_ROOT, createServer, restartControl, shutdownControl } = await import('./server.mjs');
 
 let server;
 let port;
@@ -199,8 +199,27 @@ test('app identity reports the serving build and private workspace', async () =>
   const response = await request({ path: '/api/app-info' });
   assert.equal(response.status, 200);
   assert.deepEqual(JSON.parse(response.text), {
-    name: 'Scout', version: APP_VERSION, appRoot: APP_ROOT, workspaceRoot: WORKSPACE_ROOT,
+    name: 'Scout', version: APP_VERSION, uiBuildId: UI_BUILD_ID, appRoot: APP_ROOT, workspaceRoot: WORKSPACE_ROOT,
   });
+});
+
+test('served shell and service worker receive the exact UI build id', async () => {
+  const page = await request({ path: '/' });
+  assert.equal(page.headers['cache-control'], 'no-cache');
+  assert.match(page.text, new RegExp(`meta name="scout-ui-build" content="${UI_BUILD_ID}"`));
+  assert.match(page.text, new RegExp(`app\\.js\\?v=${UI_BUILD_ID}`));
+  assert.match(page.text, new RegExp(`scout-icon\\.png\\?v=${UI_BUILD_ID}`));
+  assert.doesNotMatch(page.text, /__SCOUT_UI_BUILD__/);
+
+  const manifest = await request({ path: '/manifest.webmanifest' });
+  assert.equal(manifest.headers['cache-control'], 'no-cache');
+  assert.match(manifest.text, new RegExp(`scout-icon\\.png\\?v=${UI_BUILD_ID}`));
+  assert.doesNotMatch(manifest.text, /__SCOUT_UI_BUILD__/);
+
+  const worker = await request({ path: '/service-worker.js' });
+  assert.equal(worker.headers['cache-control'], 'no-cache');
+  assert.match(worker.text, new RegExp(`const BUILD = '${UI_BUILD_ID}'`));
+  assert.doesNotMatch(worker.text, /__SCOUT_UI_BUILD__/);
 });
 
 test('restart responds first, then schedules the respawn', async () => {

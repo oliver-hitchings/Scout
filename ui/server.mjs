@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +41,20 @@ export const REPO_ROOT = APP_ROOT; // retained for API compatibility
 export const WORKSPACE_ROOT = resolveWorkspaceRoot({ appRoot: APP_ROOT });
 export const PORT = Number(process.env.PORT) || 8459;
 export const APP_VERSION = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version;
+const UI_BUILD_FILES = [
+  'index.html', 'app.js', 'setup.js', 'reportView.js', 'service-worker.js', 'manifest.webmanifest',
+  'assets/scout-icon.ico', 'assets/scout-icon.png', 'assets/scout-idle.png',
+  'assets/scout-thinking.png', 'assets/scout-searching.png', 'assets/scout-explaining.png',
+  'assets/scout-found.png', 'assets/scout-warning.png',
+];
+function computeUiBuildId() {
+  const hash = createHash('sha256');
+  for (const name of UI_BUILD_FILES) {
+    hash.update(name).update('\0').update(fs.readFileSync(path.join(__dirname, name))).update('\0');
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+export const UI_BUILD_ID = computeUiBuildId();
 const WORKSPACE = workspacePaths(WORKSPACE_ROOT);
 const TRACKER = WORKSPACE.tracker;
 const REPORTS_DIR = WORKSPACE.reports;
@@ -102,6 +117,12 @@ function serveStatic(res, file, type) {
   const buf = fs.readFileSync(file);
   res.writeHead(200, { 'Content-Type': type, 'Content-Length': buf.length, 'Cache-Control': 'public, max-age=300' });
   res.end(buf);
+}
+
+function serveUiTemplate(res, name, type) {
+  const body = fs.readFileSync(path.join(__dirname, name), 'utf8').replaceAll('__SCOUT_UI_BUILD__', UI_BUILD_ID);
+  res.setHeader('Cache-Control', 'no-cache');
+  return sendText(res, 200, type, body);
 }
 
 function reportDates() {
@@ -263,7 +284,7 @@ function currentDeviceSettings() {
 
 function handleRead(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/') {
-    return serveStatic(res, path.join(__dirname, 'index.html'), 'text/html; charset=utf-8');
+    return serveUiTemplate(res, 'index.html', 'text/html; charset=utf-8');
   }
   if (req.method === 'GET' && url.pathname === '/app.js') {
     return serveStatic(res, path.join(__dirname, 'app.js'), 'text/javascript; charset=utf-8');
@@ -275,10 +296,10 @@ function handleRead(req, res, url) {
     return serveStatic(res, path.join(__dirname, 'setup.js'), 'text/javascript; charset=utf-8');
   }
   if (req.method === 'GET' && url.pathname === '/manifest.webmanifest') {
-    return serveStatic(res, path.join(__dirname, 'manifest.webmanifest'), 'application/manifest+json; charset=utf-8');
+    return serveUiTemplate(res, 'manifest.webmanifest', 'application/manifest+json; charset=utf-8');
   }
   if (req.method === 'GET' && url.pathname === '/service-worker.js') {
-    return serveStatic(res, path.join(__dirname, 'service-worker.js'), 'text/javascript; charset=utf-8');
+    return serveUiTemplate(res, 'service-worker.js', 'text/javascript; charset=utf-8');
   }
   if (req.method === 'GET' && url.pathname.startsWith('/lib/')) {
     const name = url.pathname.slice('/lib/'.length);
@@ -357,7 +378,7 @@ function handleRead(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/app-info') {
     return sendJson(res, 200, {
-      name: 'Scout', version: APP_VERSION, appRoot: APP_ROOT, workspaceRoot: WORKSPACE_ROOT,
+      name: 'Scout', version: APP_VERSION, uiBuildId: UI_BUILD_ID, appRoot: APP_ROOT, workspaceRoot: WORKSPACE_ROOT,
     });
   }
   if (req.method === 'GET' && url.pathname === '/api/remote-access/status') {

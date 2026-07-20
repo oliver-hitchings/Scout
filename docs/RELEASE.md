@@ -18,7 +18,7 @@ This is the canonical clean-history public application repository. Release only 
 
    ```powershell
    npm ci --omit=dev
-   node tools/build-release.mjs --installer --version 0.1.0-beta.13
+   node tools/build-release.mjs --installer --version 0.1.0-beta.14
    ```
 
    Set `ISCC_PATH` when required. The installer is named
@@ -41,7 +41,7 @@ Tailnet policy should allow `tag:scout-deploy` to reach only TCP 22 on the Scout
 
 The OAuth client needs only the `auth_keys` scope and permission to create `tag:scout-deploy` devices. The workflow sends [the reviewed deployment script](../tools/deploy-vps.sh) over the private SSH connection. It refuses a dirty or unexpected checkout, verifies that the release ref resolves to the workflow commit, runs `npm ci` and `npm test`, restarts the service, checks the version on `127.0.0.1:8459`, confirms the Tailscale Serve configuration did not change and runs the remote-hosting preflight. On failure after checkout, it restores the previous application commit and dependencies before restarting the service. It never changes the separate workspace or provider credential directories.
 
-Before tagging a release, manually dispatch **Cross-platform release candidate** from `codex/beta13-release-candidate` with version `0.1.0-beta.13` and **Deploy VPS** selected. First select **Test rollback** while the VPS still runs the previous commit; that job must fail deliberately and log a healthy rollback. Then dispatch it again without **Test rollback** and require success. Workflow dispatch never enters the publication job.
+Before tagging a release, update the protected `codex/release-candidate` branch to the reviewed commit, then manually dispatch **Cross-platform release candidate** from that branch with the package version and **Deploy VPS** selected. First select **Test rollback** while the VPS still runs the previous commit; that job must fail deliberately and log a healthy rollback. Then dispatch it again without **Test rollback** and require success. Workflow dispatch never enters the publication job.
 
 ## Required privacy review
 

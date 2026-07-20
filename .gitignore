@@ -19,6 +19,8 @@ data/chats/
 node_modules/
 dist/
 installer/output/
+test-results/
+playwright-report/
 
 # managed private workspace when kept beside a development checkout
 /workspace/

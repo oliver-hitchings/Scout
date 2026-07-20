@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  includePublicSourcePath, includeReleasePath, PUBLIC_SOURCE_FILES, RELEASE_FILES,
+  includePublicSourcePath, includeReleasePath, productionDependencyFilter, productionLockfile,
+  productionPackageManifest, PUBLIC_SOURCE_FILES, RELEASE_FILES,
   sha256, stagePublicSource, stageRelease, writeChecksums,
 } from './build-release.mjs';
 
@@ -37,6 +38,43 @@ test('release tree filter omits tests and snapshots', () => {
   assert.equal(includeReleasePath('node_modules/mammoth/test/test-data/sample.docx'), false);
 });
 
+test('production dependency filter excludes development-only browser tooling', () => {
+  const include = productionDependencyFilter({
+    packages: {
+      'node_modules/runtime': { version: '1.0.0' },
+      'node_modules/runtime/node_modules/transitive': { version: '1.0.0' },
+      'node_modules/@playwright/test': { version: '1.0.0', dev: true },
+      'node_modules/playwright': { version: '1.0.0', dev: true },
+    },
+  });
+  assert.equal(include('runtime/index.js'), true);
+  assert.equal(include('runtime/node_modules/transitive/index.js'), true);
+  assert.equal(include('@playwright'), false);
+  assert.equal(include('playwright/index.js'), false);
+});
+
+test('production manifests remove development-only browser tooling', () => {
+  const manifest = productionPackageManifest({
+    dependencies: { runtime: '1.0.0' },
+    devDependencies: { '@playwright/test': '1.0.0' },
+    scripts: { start: 'node app.js', 'test:browser': 'playwright test' },
+  });
+  assert.deepEqual(manifest.dependencies, { runtime: '1.0.0' });
+  assert.equal(manifest.devDependencies, undefined);
+  assert.deepEqual(manifest.scripts, { start: 'node app.js' });
+
+  const lock = productionLockfile({
+    packages: {
+      '': { dependencies: { runtime: '1.0.0' }, devDependencies: { '@playwright/test': '1.0.0' } },
+      'node_modules/runtime': { version: '1.0.0' },
+      'node_modules/@playwright/test': { version: '1.0.0', dev: true },
+    },
+  });
+  assert.equal(lock.packages[''].devDependencies, undefined);
+  assert.ok(lock.packages['node_modules/runtime']);
+  assert.equal(lock.packages['node_modules/@playwright/test'], undefined);
+});
+
 test('public source manifest includes tests and workflows but excludes private roots and installer output', () => {
   const sources = PUBLIC_SOURCE_FILES.map((entry) => entry.source);
   assert.ok(sources.includes('ui'));
@@ -64,7 +102,12 @@ test('public source staging contains contributor inputs without private workspac
       }
     } else {
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, entry.source === 'package.json' ? '{"version":"1.0.0"}' : 'ok');
+      const content = entry.source === 'package.json'
+        ? '{"version":"1.0.0","devDependencies":{"@playwright/test":"1.0.0"}}'
+        : entry.source === 'package-lock.json'
+        ? '{"lockfileVersion":3,"packages":{"":{"devDependencies":{"@playwright/test":"1.0.0"}},"node_modules/@playwright/test":{"version":"1.0.0","dev":true}}}'
+        : 'ok';
+      fs.writeFileSync(target, content);
     }
   }
   fs.mkdirSync(path.join(root, 'profile'), { recursive: true });
@@ -90,7 +133,12 @@ test('staging copies only manifest content and bundled runtime', () => {
       fs.writeFileSync(path.join(target, 'runtime.test.mjs'), 'private fixture');
     } else {
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, entry.source === 'package.json' ? '{"version":"1.0.0"}' : 'ok');
+      const content = entry.source === 'package.json'
+        ? '{"version":"1.0.0","devDependencies":{"@playwright/test":"1.0.0"}}'
+        : entry.source === 'package-lock.json'
+        ? '{"lockfileVersion":3,"packages":{"":{"devDependencies":{"@playwright/test":"1.0.0"}},"node_modules/@playwright/test":{"version":"1.0.0","dev":true}}}'
+        : 'ok';
+      fs.writeFileSync(target, content);
     }
   }
   fs.mkdirSync(path.join(root, 'profile'), { recursive: true });
@@ -103,6 +151,8 @@ test('staging copies only manifest content and bundled runtime', () => {
   assert.equal(fs.existsSync(path.join(staged.appDir, 'README.md')), true);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'docs', 'QUICK_START.md')), true);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'docs', 'INSTALL_VPS.md')), true);
+  assert.doesNotMatch(fs.readFileSync(path.join(staged.appDir, 'package.json'), 'utf8'), /playwright/i);
+  assert.doesNotMatch(fs.readFileSync(path.join(staged.appDir, 'package-lock.json'), 'utf8'), /playwright/i);
   assert.equal(fs.readFileSync(path.join(stageDir, 'runtime', 'ScoutRuntime.exe'), 'utf8'), 'runtime');
 });
 
