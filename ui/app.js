@@ -311,13 +311,19 @@ const Scout = {
   async registerServiceWorker() {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
     try {
+      let controlled = Boolean(navigator.serviceWorker.controller);
       const registration = await navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' });
       this.serviceWorkerRegistration = registration;
       const watch = (worker) => worker?.addEventListener?.('statechange', () => {
-        if (worker.state === 'installed' && navigator.serviceWorker.controller) this.showUiUpdate();
+        if (worker.state === 'installed' && controlled) this.showUiUpdate();
       });
       registration.addEventListener?.('updatefound', () => watch(registration.installing));
-      navigator.serviceWorker.addEventListener?.('controllerchange', () => this.showUiUpdate());
+      navigator.serviceWorker.addEventListener?.('controllerchange', () => {
+        // The first controller is normal PWA installation, not an update. Only
+        // a subsequent controller replacement should prompt for a refresh.
+        if (controlled) this.showUiUpdate();
+        controlled = true;
+      });
     } catch { /* installed-app support never blocks the dashboard */ }
   },
 

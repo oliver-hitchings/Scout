@@ -48,6 +48,16 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('#sync-status')).toBeVisible();
 });
 
+test('first service worker installation does not pretend Scout has updated', async ({ page }) => {
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((resolve) => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true }));
+    }
+  });
+  await expect(page.locator('#ui-update-banner')).toBeHidden();
+});
+
 test('backup status opens dedicated details and advanced backup settings', async ({ page }) => {
   const sync = page.locator('#sync-status');
   await sync.click();

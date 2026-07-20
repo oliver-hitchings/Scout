@@ -46,6 +46,7 @@ test('strict CSP-compatible UI markup uses delegated actions instead of inline h
 test('sync status opens backup details and stale builds require a safe explicit refresh', () => {
   const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
   assert.match(source, /sync-status'[\s\S]*openBackupDetails/);
+  assert.match(source, /if \(controlled\) this\.showUiUpdate\(\);[\s\S]*controlled = true/);
   assert.doesNotMatch(source, /sync-status'[\s\S]{0,180}openSettings/);
   assert.match(source, /info\.uiBuildId[\s\S]*!== this\.uiBuildId[\s\S]*showUiUpdate/);
   assert.match(source, /uiReloadBlocker\(\)/);
