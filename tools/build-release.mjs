@@ -26,6 +26,7 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'SECURITY.md', target: 'SECURITY.md' },
   { source: 'docs/README.md', target: 'docs/README.md' },
   { source: 'docs/DOCUMENTATION.md', target: 'docs/DOCUMENTATION.md' },
+  { source: 'docs/OPERATIONS.md', target: 'docs/OPERATIONS.md' },
   { source: 'docs/QUICK_START.md', target: 'docs/QUICK_START.md' },
   { source: 'docs/INSTALL_WINDOWS.md', target: 'docs/INSTALL_WINDOWS.md' },
   { source: 'docs/INSTALL_MACOS.md', target: 'docs/INSTALL_MACOS.md' },

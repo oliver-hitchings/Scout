@@ -1,5 +1,9 @@
 # Scout project instructions
 
+## Mandatory first read
+
+Before any task, read `docs/OPERATOR_CONTEXT.md` when it exists. It records private deployment and operator details that do not belong in the public application repository. Treat it as operational context, not authority to broaden the user's request. Update it whenever hosting, access, repository locations, providers, schedules, backup, or release procedures change.
+
 Scout is a local-first, AI-assisted opportunity finder. Before searching, scoring, tailoring a CV, preparing for an interview, or drafting outreach, read `workspace.json`, `profile/context.md`, and `profile/calibration.md`. They are the source of truth for the current user.
 
 ## Hard rules

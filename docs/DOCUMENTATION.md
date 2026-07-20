@@ -6,6 +6,8 @@ Scout is shared with people who may not know its history or internal terminology
 
 - `README.md` is the short public introduction and first decision point.
 - `docs/README.md` is the documentation index and recommended reading path.
+- `docs/OPERATIONS.md` is the mandatory public architecture and deployment context for coding agents.
+- Private workspaces may track `docs/OPERATOR_CONTEXT.md` for host-specific values that must not enter the public repository.
 - Installation and operations guides are current instructions, not release diaries.
 - `docs/releases/` is immutable historical context for a specific release.
 - GitHub issues and pull requests track unfinished work. Do not create root-level TODO, handoff, acceptance, or implementation-plan documents.
@@ -23,7 +25,8 @@ For every user-facing change, check whether it affects:
 - supported platforms, providers, sources, schedules, or network access;
 - security, privacy, backup contents, credentials, or repository visibility;
 - screenshots, examples, release packaging, or troubleshooting; and
-- the README, documentation index, release notes, and in-app help text.
+- the README, documentation index, release notes, and in-app help text; and
+- the public operations context and private operator context when deployment facts change.
 
 Update affected documentation in the same pull request as the implementation. Add a release note for user-visible changes. Remove completed plans and obsolete workarounds instead of leaving them beside current instructions.
 
@@ -72,5 +75,6 @@ For a release, build the package and verify that every relative link in the pack
 - [ ] Current guides are not unnecessarily pinned to a release number.
 - [ ] Public examples contain no private workspace or operator information.
 - [ ] Added, moved, and removed documents are reflected in navigation and release packaging.
+- [ ] Hosting or deployment changes update `docs/OPERATIONS.md` and the private operator context.
 - [ ] Relative links and documentation tests pass.
 - [ ] User-visible changes have release notes.

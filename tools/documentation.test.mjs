@@ -95,11 +95,22 @@ test('current documentation contains no common encoding or private-path leaks', 
   assert.deepEqual(findings, []);
 });
 
-test('maintainer instructions require documentation upkeep and privacy review', () => {
+test('maintainer instructions require operations context, documentation upkeep and privacy review', () => {
   for (const name of ['AGENTS.md', 'CLAUDE.md', 'CONTRIBUTING.md']) {
     const content = fs.readFileSync(path.join(root, name), 'utf8');
     assert.match(content, /docs\/DOCUMENTATION\.md|Documentation maintenance/i, name);
   }
+  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+    assert.match(fs.readFileSync(path.join(root, name), 'utf8'), /Before any task, read `docs\/OPERATIONS\.md`/, name);
+  }
+  for (const name of ['templates/managed/AGENTS.md', 'templates/managed/CLAUDE.md']) {
+    assert.match(fs.readFileSync(path.join(root, name), 'utf8'), /Before any task, read `docs\/OPERATOR_CONTEXT\.md` when it exists/, name);
+  }
+  const operations = fs.readFileSync(path.join(root, 'docs', 'OPERATIONS.md'), 'utf8');
+  for (const phrase of ['authoritative running host', '127.0.0.1:8459', '07:30 primary', '08:30 second pass', 'Pushing or merging a branch does not by itself update the live VPS', 'Maintenance contract']) {
+    assert.match(operations, new RegExp(phrase, 'i'), phrase);
+  }
+  assert.doesNotMatch(operations, /tail\d+\.ts\.net|[A-Z]:\\Users\\/i);
   const policy = fs.readFileSync(path.join(root, 'docs', 'DOCUMENTATION.md'), 'utf8');
   assert.match(policy, /release notes, and in-app help text/i);
   assert.match(policy, /same pull request as the implementation/i);

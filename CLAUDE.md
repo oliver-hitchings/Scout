@@ -1,5 +1,9 @@
 # Scout project instructions
 
+## Mandatory first read
+
+Before any task, read `docs/OPERATIONS.md`. It explains the maintained deployment, repository boundaries, source-of-truth rules, verification commands, and release path. If the task changes hosting, deployment, scheduling, backup, provider execution, repository layout, or access, update that file in the same change.
+
 ## Repository boundary
 
 This checkout must be the public Scout application repository for app development. Put UI, server, installer, provider, test, template, and public-documentation work here. Put CV, profile, tracker, report, application, chat, and credential data only in a separate private workspace. A private workspace or legacy mixed-history archive must not receive new application development. See `docs/REPOSITORY_LAYOUT.md` before choosing a destination.

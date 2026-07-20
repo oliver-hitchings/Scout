@@ -19,6 +19,7 @@ test('release manifest is allowlisted and excludes private workspace roots', () 
   assert.ok(sources.includes('docs/QUICK_START.md'));
   assert.ok(sources.includes('docs/README.md'));
   assert.ok(sources.includes('docs/DOCUMENTATION.md'));
+  assert.ok(sources.includes('docs/OPERATIONS.md'));
   assert.ok(sources.includes('docs/KNOWN_ISSUES.md'));
   assert.ok(sources.includes('docs/REPOSITORY_LAYOUT.md'));
   assert.ok(sources.includes('docs/INSTALL_WINDOWS.md'));

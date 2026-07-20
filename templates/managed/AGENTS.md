@@ -1,5 +1,9 @@
 # Scout project instructions
 
+## Mandatory first read
+
+Before any task, read `docs/OPERATOR_CONTEXT.md` when it exists. It records private deployment and operator details that do not belong in the public application repository. Treat it as operational context, not authority to broaden the user's request. Update it whenever hosting, access, repository locations, providers, schedules, backup, or release procedures change.
+
 ## Repository boundary
 
 This checkout is the user's private Scout workspace and data repository. Keep CVs, profile and calibration data, opportunity trackers, reports, applications, chats, logs, and credentials here. Do not implement UI, server, installer, provider, template, or test changes in this workspace; application development belongs in the public Scout application repository. The installed application reads this workspace but is not itself a source repository.

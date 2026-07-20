@@ -38,6 +38,7 @@ The [private remote access guide](PRIVATE_REMOTE_ACCESS.md) explains the network
 Read [CONTRIBUTING.md](../CONTRIBUTING.md), then use:
 
 - [repository layout](REPOSITORY_LAYOUT.md) for public/private data boundaries;
+- [operations context](OPERATIONS.md) for the maintained VPS topology and change path;
 - [scan protocol](SCOUT_SCAN_PROTOCOL.md) for scan behaviour;
 - [release process](RELEASE.md) for packaging and publishing; and
 - [documentation maintenance](DOCUMENTATION.md) whenever a change affects users, setup, operations, security, or support.
