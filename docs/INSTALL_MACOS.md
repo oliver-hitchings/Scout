@@ -1,6 +1,6 @@
 # Install Scout on macOS
 
-Scout supports macOS 13 or newer on Apple Silicon and Intel Macs. Beta.5 is unsigned, local-first and requires your own authenticated Codex or Claude account.
+Scout supports macOS 13 or newer on Apple Silicon and Intel Macs. The beta package is unsigned, local-first and requires your own authenticated Codex or Claude account.
 
 Private Remote Access is optional. After normal setup, install [Tailscale](https://tailscale.com/download), sign in, and enable **Settings -> Private Remote Access**. Connect clients and install the home-screen app as described in [Private Remote Access](PRIVATE_REMOTE_ACCESS.md). The Mac must be awake and signed in.
 
@@ -14,7 +14,7 @@ Scout stores private data in `~/Documents/Scout Workspace` unless `SCOUT_WORKSPA
 
 ## Optional login startup
 
-Scout does not install macOS login startup automatically in this release. For a source checkout, create `~/Library/LaunchAgents/dev.scout.host.plist` with absolute paths for your Node executable and Scout checkout:
+The packaged macOS app does not install login startup automatically. For a source checkout, create `~/Library/LaunchAgents/dev.scout.host.plist` with absolute paths for your Node executable and Scout checkout:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -34,4 +34,4 @@ Scout does not install macOS login startup automatically in this release. For a 
 </dict></plist>
 ```
 
-Validate and start it with `plutil -lint ~/Library/LaunchAgents/dev.scout.host.plist` and `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.scout.host.plist`. Remove it with `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.scout.host.plist`. This starts only after that user signs in and stores no password. Packaged macOS supervision remains manual for this release.
+Validate and start it with `plutil -lint ~/Library/LaunchAgents/dev.scout.host.plist` and `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.scout.host.plist`. Remove it with `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.scout.host.plist`. This starts only after that user signs in and stores no password. Packaged macOS supervision remains manual.

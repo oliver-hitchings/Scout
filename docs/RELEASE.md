@@ -1,10 +1,10 @@
 # Release Process
 
-This is the canonical clean-history public application repository. Release only from this repository. Never copy commits, files or Git history from the private `scout-workspace` repository or the legacy mixed-history `StartupFinder` archive.
+Release only from this clean-history public application repository. Never copy commits, files, or Git history from a private workspace repository or a legacy mixed-history archive.
 
 ## Release gates
 
-1. Start from a reviewed commit with a clean working tree. Run `npm ci`, `npm test`, `npm audit --audit-level=moderate` and `git diff --check`.
+1. Start from a reviewed commit with a clean working tree. Complete the [documentation maintenance checklist](DOCUMENTATION.md), then run `npm ci`, `npm test`, `npm audit --audit-level=moderate` and `git diff --check`.
 2. Complete code/security review, a fresh-workspace onboarding browser smoke test and representative CV import tests.
 3. Configure personal markers for the audit without committing personal values. Run `npm run release:audit`; findings must be resolved, not waived casually.
 4. Stage the allowlisted bundle:
@@ -18,7 +18,8 @@ This is the canonical clean-history public application repository. Release only 
 
    ```powershell
    npm ci --omit=dev
-   node tools/build-release.mjs --installer --version 0.1.0-beta.13
+   $Version = (Get-Content package.json | ConvertFrom-Json).version
+   node tools/build-release.mjs --installer --version $Version
    ```
 
    Set `ISCC_PATH` when required. The installer is named
@@ -41,7 +42,9 @@ Tailnet policy should allow `tag:scout-deploy` to reach only TCP 22 on the Scout
 
 The OAuth client needs only the `auth_keys` scope and permission to create `tag:scout-deploy` devices. The workflow sends [the reviewed deployment script](../tools/deploy-vps.sh) over the private SSH connection. It refuses a dirty or unexpected checkout, verifies that the release ref resolves to the workflow commit, runs `npm ci` and `npm test`, restarts the service, checks the version on `127.0.0.1:8459`, confirms the Tailscale Serve configuration did not change and runs the remote-hosting preflight. On failure after checkout, it restores the previous application commit and dependencies before restarting the service. It never changes the separate workspace or provider credential directories.
 
-Before tagging a release, manually dispatch **Cross-platform release candidate** from `codex/beta13-release-candidate` with version `0.1.0-beta.13` and **Deploy VPS** selected. First select **Test rollback** while the VPS still runs the previous commit; that job must fail deliberately and log a healthy rollback. Then dispatch it again without **Test rollback** and require success. Workflow dispatch never enters the publication job.
+Before tagging a release, update the stable `codex/release-candidate` branch to the reviewed commit and manually dispatch **Cross-platform release candidate** from that branch with the exact `package.json` version and **Deploy VPS** selected. First select **Test rollback** while the VPS still runs the previous commit; that job must fail deliberately and log a healthy rollback. Then dispatch it again without **Test rollback** and require success. Workflow dispatch never enters the publication job.
+
+Record live acceptance in the pull request or release record. Confirm owner access, rejection of a different Tailscale identity, crash recovery, reboot recovery, provider authentication, both scheduled jobs, a completed encrypted backup, and a temporary isolated restore. Do not keep a completed acceptance checklist as a current root document.
 
 ## Required privacy review
 
@@ -53,4 +56,4 @@ The release audit detects configured personal markers and likely secret assignme
 
 Use semantic application versions and explicit workspace `schemaVersion`. Release notes must identify migrations, privacy/network changes, provider/source changes and manual actions. Retain the previous installer and checksums for rollback, but never publish a private workspace or its backups.
 
-The first beta remains unsigned until a certificate and secure signing pipeline exist. Checksums verify bytes only; they do not provide publisher identity.
+Beta packages remain unsigned until a certificate and secure signing pipeline exist. Checksums verify bytes only; they do not provide publisher identity.

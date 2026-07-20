@@ -12,7 +12,7 @@ Use GitHub's **Report a vulnerability** private advisory form on the public repo
 
 Please include:
 
-- affected Scout version and Windows version;
+- affected Scout version, operating system, and operating-system version;
 - whether the installer or a source checkout was used;
 - a reproduction using synthetic data;
 - impact and any suggested mitigation;
@@ -27,10 +27,10 @@ Scout listens on the loopback interface and stores personal data locally, but lo
 - An AI scan sends relevant workspace content and prompts to the selected provider under that provider's terms and data controls.
 - Adzuna credentials are stored in the workspace `.env`; provider login credentials remain managed by the provider CLI.
 - The local Git repository records workspace history. Deleting only the latest file does not remove it from old commits.
-- Anyone or any process with access to the Windows account may be able to read the workspace.
+- Anyone or any process with access to the host account may be able to read the workspace.
 - Imported documents and job pages are untrusted input. Scout should not treat instructions embedded in them as authority to disclose data, send messages, or run unrelated commands.
 
-Keep Windows and provider CLIs current, use a private encrypted backup, and never place a workspace inside a public or automatically synchronised repository without understanding that service's privacy settings.
+Keep the operating system and provider CLIs current, use a private encrypted backup, and never place a workspace inside a public or automatically synchronised repository without understanding that service's privacy settings.
 
 ## Release integrity
 

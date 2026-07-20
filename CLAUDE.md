@@ -1,5 +1,9 @@
 # Scout project instructions
 
+## Repository boundary
+
+This checkout must be the public Scout application repository for app development. Put UI, server, installer, provider, test, template, and public-documentation work here. Put CV, profile, tracker, report, application, chat, and credential data only in a separate private workspace. A private workspace or legacy mixed-history archive must not receive new application development. See `docs/REPOSITORY_LAYOUT.md` before choosing a destination.
+
 Scout is a local-first, AI-assisted opportunity finder. Before searching, scoring, tailoring a CV, preparing for an interview, or drafting outreach, read `workspace.json`, `profile/context.md`, and `profile/calibration.md`. They are the source of truth for the current user.
 
 ## Hard rules
@@ -18,3 +22,11 @@ Scout is a local-first, AI-assisted opportunity finder. Before searching, scorin
 - Tailored material: `applications/<company-slug>/` with `cv.typ`, rendered `cv.pdf`, and `outreach.md` where applicable.
 - Use absolute ISO dates (`YYYY-MM-DD`) and the configured currency.
 - Preserve tracker, calibration, and application history; append dated evidence rather than erasing it.
+
+## Documentation maintenance
+
+- Read `docs/DOCUMENTATION.md` before changing user-visible behaviour, setup, configuration, operations, security, privacy, or support material.
+- Update implementation, current guides, in-app help, tests, and release notes together.
+- Remove completed plans and obsolete workarounds. Track unfinished work in issues or pull requests, not root-level TODO or handoff documents.
+- Keep current guides version-neutral unless a compatibility boundary genuinely requires a version.
+- Before committing, scrub documentation, examples, logs, fixtures, and screenshots for private workspace data, credentials, personal paths, hostnames, and private repository details.

@@ -4,7 +4,7 @@ Thank you for helping make Scout safer and more useful. The most important contr
 
 ## Before you start
 
-- Use [`oliver-hitchings/Scout`](https://github.com/oliver-hitchings/Scout), the canonical clean-history public application repository. Do not develop in the private workspace or the legacy mixed-history `StartupFinder` repository. See [Repository layout](docs/REPOSITORY_LAYOUT.md).
+- Make application changes in this public application repository, not in a private workspace or a legacy mixed-history archive. See [Repository layout](docs/REPOSITORY_LAYOUT.md).
 - Discuss substantial UI, workspace-schema, provider, or source changes in an issue first.
 - Keep Scout local-first and provider-neutral.
 - Preserve the rule that applications and outreach are drafts for human review only.
@@ -23,7 +23,7 @@ Before opening a pull request, check `git diff --cached` and the complete branch
 
 ## Development loop
 
-Use Node.js 20 or later on Windows 10/11.
+Use Node.js 24 LTS on a supported Windows, macOS, or Linux development host.
 
 ```powershell
 npm install
@@ -49,10 +49,10 @@ Do not run destructive migration or scheduler tests against your real workspace.
 - Use direct child-process invocation with explicit arguments; do not introduce `shell: true` for user-controlled content.
 - Treat missing source data as uncertainty and individual source failures as degraded coverage.
 - Add focused tests for behaviour and failure modes.
-- Update the relevant guide when adding a public command, configuration field, migration, provider, source, or installer behaviour.
+- Follow [Documentation maintenance](docs/DOCUMENTATION.md) whenever a change affects commands, configuration, setup, migrations, providers, sources, installers, operations, privacy, or user-visible copy.
 
 ## Pull requests
 
-Explain the user-facing change, tests run, privacy impact, migration impact, and any manual Windows verification. Keep unrelated changes separate. A maintainer may ask for a new synthetic fixture or release-audit marker before merging.
+Explain the user-facing change, tests run, privacy impact, migration impact, and relevant manual platform verification. Complete the pull-request documentation and privacy checklist. Keep unrelated changes separate. A maintainer may ask for a new synthetic fixture or release-audit marker before merging.
 
 See [docs/RELEASE.md](docs/RELEASE.md) for the clean-room release process and [SECURITY.md](SECURITY.md) for private vulnerability reports.

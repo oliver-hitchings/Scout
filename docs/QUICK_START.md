@@ -7,10 +7,11 @@ Scout is a local-first opportunity finder for Windows, macOS and Linux. It keeps
 Download the Windows installer and its `checksums.txt` from the same GitHub release. Compare the installer SHA-256 hash before running it:
 
 ```powershell
-Get-FileHash .\Scout-0.1.0-beta.13-windows-x64.exe -Algorithm SHA256
+$Installer = Get-Item .\Scout-*-windows-x64.exe
+Get-FileHash -LiteralPath $Installer.FullName -Algorithm SHA256
 ```
 
-The first unsigned beta may trigger Microsoft SmartScreen. A matching checksum proves file integrity, not publisher trust. Scout installs for the current user under `%LOCALAPPDATA%\Programs\Scout` and does not require administrator rights.
+An unsigned beta may trigger Microsoft SmartScreen. A matching checksum proves file integrity, not publisher trust. Scout installs for the current user under `%LOCALAPPDATA%\Programs\Scout` and does not require administrator rights.
 
 For a source checkout, install Node.js 24 LTS, then run `npm ci` and `npm start`.
 
@@ -22,7 +23,7 @@ Scout works fully without GitHub. Optional private backup requires Git and Git C
 
 When enabling backup, choose a recovery passphrase and save the one-time emergency recovery key. Normal CV, profile and tracker files remain readable in the private repository so Git history remains useful. `.env`, generated PDF/DOCX files, chat transcripts and Scout recovery state are stored as authenticated encrypted blobs. Do not make the repository public.
 
-Restore clones into a temporary directory, validates the workspace, decrypts recovery data and installs it only after Scout doctor passes. On the new computer, sign in to Codex or Claude again and explicitly choose whether to re-enable Windows startup and scheduled scans.
+Scout's restore flow clones into a temporary directory, validates the workspace, decrypts recovery data and installs it only after Scout doctor passes. On the new computer, sign in to Codex or Claude again and explicitly choose whether to re-enable host startup and scheduled scans.
 
 From a source checkout:
 

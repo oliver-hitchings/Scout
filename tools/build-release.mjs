@@ -18,11 +18,14 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'tools/fetch-adzuna.mjs', target: 'tools/fetch-adzuna.mjs' },
   { source: 'tools/fetch-ats.mjs', target: 'tools/fetch-ats.mjs' },
   { source: 'tools/fetch-hiring-cafe.mjs', target: 'tools/fetch-hiring-cafe.mjs' },
+  { source: 'tools/deploy-vps.sh', target: 'tools/deploy-vps.sh' },
   { source: 'templates', target: 'templates', tree: true },
   { source: 'skills', target: 'skills', tree: true },
   { source: 'README.md', target: 'README.md' },
   { source: 'CONTRIBUTING.md', target: 'CONTRIBUTING.md' },
   { source: 'SECURITY.md', target: 'SECURITY.md' },
+  { source: 'docs/README.md', target: 'docs/README.md' },
+  { source: 'docs/DOCUMENTATION.md', target: 'docs/DOCUMENTATION.md' },
   { source: 'docs/QUICK_START.md', target: 'docs/QUICK_START.md' },
   { source: 'docs/INSTALL_WINDOWS.md', target: 'docs/INSTALL_WINDOWS.md' },
   { source: 'docs/INSTALL_MACOS.md', target: 'docs/INSTALL_MACOS.md' },
@@ -38,6 +41,8 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'docs/AUTOMATION.md', target: 'docs/AUTOMATION.md' },
   { source: 'docs/UPGRADES.md', target: 'docs/UPGRADES.md' },
   { source: 'docs/TROUBLESHOOTING.md', target: 'docs/TROUBLESHOOTING.md' },
+  { source: 'docs/KNOWN_ISSUES.md', target: 'docs/KNOWN_ISSUES.md' },
+  { source: 'docs/REPOSITORY_LAYOUT.md', target: 'docs/REPOSITORY_LAYOUT.md' },
   { source: 'docs/RELEASE.md', target: 'docs/RELEASE.md' },
   { source: 'docs/releases', target: 'docs/releases', tree: true },
   { source: 'docs/SCOUT_SCAN_PROTOCOL.md', target: 'docs/SCOUT_SCAN_PROTOCOL.md' },
@@ -63,10 +68,10 @@ export const PUBLIC_SOURCE_FILES = Object.freeze([
     'tools/fetch-adzuna.mjs', 'tools/fetch-ats.mjs', 'tools/fetch-hiring-cafe.mjs',
     'tools/scan-lock.mjs', 'tools/scan-lock.test.mjs', 'tools/scan-skill-parity.test.mjs',
     'tools/scout.mjs', 'tools/scout.test.mjs',
-    'tools/remote-access.mjs', 'tools/remote-hosting-preflight.mjs', 'tools/remote-hosting-preflight.test.mjs', 'tools/remote-hosting-docs.test.mjs', 'tools/deploy-vps.sh', 'tools/windows-host.test.mjs',
+    'tools/remote-access.mjs', 'tools/remote-hosting-preflight.mjs', 'tools/remote-hosting-preflight.test.mjs', 'tools/remote-hosting-docs.test.mjs', 'tools/documentation.test.mjs', 'tools/deploy-vps.sh', 'tools/windows-host.test.mjs',
   ].map((source) => ({ source, target: source })),
   ...PUBLIC_DOCS,
-  ...['.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'REMOTE_HOSTING_TODO.md', 'CONTRIBUTING.md', 'SECURITY.md', 'package.json', 'package-lock.json', 'LICENSE']
+  ...['.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'package.json', 'package-lock.json', 'LICENSE']
     .map((source) => ({ source, target: source })),
 ]);
 

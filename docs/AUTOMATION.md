@@ -2,7 +2,7 @@
 
 Scout can register multiple named, per-user scheduler jobs. Scheduling is optional and may be enabled only after a successful supervised scan.
 
-Beta 13's recommended VPS schedule is:
+The recommended VPS schedule is:
 
 - `claude-primary` at 07:30 in `primary` mode;
 - `codex-second-pass` at 08:30 in `second-pass` mode.

@@ -2,11 +2,11 @@
 
 Scout is local-first by default. Private Remote Access is optional and makes one signed-in computer the canonical Scout host. Phone and laptop browsers then use that one running Scout process, private workspace, chat transcripts and active provider sessions. Clients do not clone or directly edit the workspace.
 
-## Requirements and cost
+## Requirements
 
 - A desktop host must be awake, connected to the internet, signed in to its operating-system user account and running Scout. A dedicated Ubuntu VPS may instead use the constrained, reboot-safe user service in [Host Scout on a private VPS](INSTALL_VPS.md).
 - Install [Tailscale](https://tailscale.com/download) on the host and every client, then sign in with the same user login on each device.
-- Tailscale's [Personal plan](https://tailscale.com/pricing) is currently free and intended for personal, non-commercial use. Business and organisational users must check the current plan and terms themselves.
+- Check [Tailscale's current plans and terms](https://tailscale.com/pricing) for your intended personal or organisational use. Scout does not control third-party pricing or eligibility.
 - Codex or Claude authentication stays in the host user's provider-owned profile. Scout never copies `%USERPROFILE%\.codex`, provider credentials or authentication stores to another device.
 
 Scout uses private [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve), not Funnel. The backend remains on `127.0.0.1:8459`; there is no LAN listener, router port-forward or public Scout endpoint.
@@ -31,7 +31,7 @@ scout remote preflight --require-enabled
 
 It checks the supervised startup registration, exact Scout-owned Serve mapping, loopback-only network policy, local API classification, security and cache headers, and the installable web-app manifest. It does not print the configured owner login or any provider credentials. The report lists the remaining phone, alternate-identity, crash-recovery and reboot checks separately.
 
-Maintainers completing a release should work through the root [Private Remote Hosting: Outstanding Tasks](../REMOTE_HOSTING_TODO.md) checklist and attach the resulting evidence to the feature PR or release record.
+Maintainers completing a release should record the live host, alternate-identity, crash-recovery, reboot, provider, scheduler, backup, and restore evidence required by the [release process](RELEASE.md).
 
 ## Connect a phone or laptop
 
