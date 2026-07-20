@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#3525cd">
+  <meta name="scout-ui-build" content="__SCOUT_UI_BUILD__">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Scout">
   <title>Scout</title>
-  <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="icon" href="/assets/scout-icon.ico" sizes="any">
-  <link rel="icon" type="image/png" href="/assets/scout-icon.png">
-  <link rel="apple-touch-icon" href="/assets/scout-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest?v=__SCOUT_UI_BUILD__">
+  <link rel="icon" href="/assets/scout-icon.ico?v=__SCOUT_UI_BUILD__" sizes="any">
+  <link rel="icon" type="image/png" href="/assets/scout-icon.png?v=__SCOUT_UI_BUILD__">
+  <link rel="apple-touch-icon" href="/assets/scout-icon.png?v=__SCOUT_UI_BUILD__">
   <style>
     :root {
       --scout-fallback: none;
@@ -186,6 +187,18 @@
     }
     .update-banner p { margin: 0; }
     .update-banner-actions { display:flex; gap:8px; flex-wrap:wrap; flex-shrink:0; }
+    #ui-update-banner {
+      position: fixed;
+      z-index: 140;
+      top: calc(12px + env(safe-area-inset-top));
+      left: 50%;
+      width: min(1052px, calc(100vw - 24px));
+      margin: 0;
+      transform: translateX(-50%);
+      box-shadow: var(--shadow-hover);
+      pointer-events: none;
+    }
+    #ui-update-banner .update-banner-actions { pointer-events: auto; }
 
     /* Cards */
     .card {
@@ -556,6 +569,22 @@
     .setup-provider.available { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
     .setup-provider input { margin-right: 6px; }
     .setup-provider .meta { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
+    .settings-hub { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .settings-card {
+      display:grid;
+      gap:4px;
+      min-height:92px;
+      padding:16px;
+      text-align:left;
+      color:var(--fg);
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:var(--radius-card);
+      cursor:pointer;
+    }
+    .settings-card:hover, .settings-card:focus-visible { border-color:var(--accent); box-shadow:var(--shadow-hover); }
+    .settings-card strong { font-size:15px; }
+    .settings-card span { color:var(--muted); font-size:12px; }
     .setup-actions { display: flex; align-items: center; gap: 8px; padding: 16px 24px 22px; border-top: 1px solid var(--line); }
     .setup-actions .primary { margin-left: auto; color: var(--on-primary); background: var(--primary); border-color: var(--primary); }
     .setup-actions .danger-link { border: 0; background: none; color: var(--muted); text-decoration: underline; cursor: pointer; }
@@ -579,13 +608,14 @@
     .setup-conversation { display:grid; grid-template-columns:220px minmax(0,1fr); gap:20px; align-items:start; }
     .setup-scout { width:220px; display:grid; place-items:center; padding-top:12px; }
     .setup-scout img { width:210px; height:210px; object-fit:contain; }
-    .setup-scout-frame { display:block; width:210px; height:210px; background-image:url('/assets/scout-idle.png'),var(--scout-fallback); background-size:400% 400%,contain; background-position:0 0,center; background-repeat:no-repeat; }
+    .setup-scout-frame { display:block; width:210px; height:210px; background-image:url('/assets/scout-idle.png?v=__SCOUT_UI_BUILD__'),var(--scout-fallback); background-size:400% 400%,contain; background-position:0 0,center; background-repeat:no-repeat; }
     .setup-scout-welcome { animation:setup-scout-wave 2s step-end 1; }
     @keyframes setup-scout-wave { 0%{background-position:0 0} 35%{background-position:100% 33.333%} 60%{background-position:33.333% 66.667%} 100%{background-position:0 0} }
     @media (max-width: 650px) {
       .setup-overlay { padding: 0; }
       .setup-dialog { max-height: 100vh; max-height: 100dvh; min-height: 100vh; min-height: 100dvh; border-radius: 0; }
       .setup-grid, .setup-provider-list { grid-template-columns: 1fr; }
+      .settings-hub { grid-template-columns:1fr; }
       .setup-conversation { grid-template-columns:1fr; justify-items:center; }
       .setup-scout { width:140px; padding-top:0; }
       .setup-scout img { width:132px; height:132px; }
@@ -776,6 +806,7 @@
 </head>
 <body>
   <div id="host-unavailable" class="host-unavailable hidden" role="status">Scout's host is unavailable. Keep this page open and wake or sign in to the host computer. Offline editing is not supported.</div>
+  <aside id="ui-update-banner" class="update-banner hidden" role="status" aria-live="polite"></aside>
   <aside id="update-banner" class="update-banner hidden" role="status" aria-live="polite"></aside>
   <header>
     <b>Scout</b>
@@ -832,8 +863,8 @@
     </div>
   </div>
   <div id="scout-arrival" class="scout-arrival hidden"></div>
-  <script src="/reportView.js?v=beta-13-2"></script>
-  <script src="/app.js?v=beta-13-2"></script>
-  <script type="module" src="/setup.js?v=beta-13-2"></script>
+  <script src="/reportView.js?v=__SCOUT_UI_BUILD__"></script>
+  <script src="/app.js?v=__SCOUT_UI_BUILD__"></script>
+  <script type="module" src="/setup.js?v=__SCOUT_UI_BUILD__"></script>
 </body>
 </html>

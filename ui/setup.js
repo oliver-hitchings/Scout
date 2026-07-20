@@ -4,6 +4,16 @@ const STEPS = ['Welcome', 'AI provider', 'Your search', 'Adzuna', 'Import CV', '
 // decision to finish the optional AI enrichment later.
 const SETUP_DEFERRED_KEY = 'scout.setup.legacySkipped.v1';
 const SUPPORTED_CV = /\.(pdf|docx|md|markdown|txt)$/i;
+const DISMISSIBLE_VIEWS = new Set(['hub', 'section', 'retune', 'backup-details']);
+const SETTINGS_SECTIONS = [
+  ['search', 'Search & profile', 'Roles, locations, compensation, commute and exclusions'],
+  ['providers', 'AI providers', 'Choose the signed-in provider Scout uses'],
+  ['sources', 'Sources', 'Public sources and optional Adzuna credentials'],
+  ['scans', 'Scans & schedule', 'Run a supervised scan and manage daily jobs'],
+  ['backup', 'Backup', 'Private repository status, recovery and manual backup'],
+  ['remote', 'Remote access', 'Owner-only access through Tailscale'],
+  ['app', 'App & device', 'Application updates and device startup'],
+];
 
 export function splitList(value) {
   return String(value || '')
@@ -96,12 +106,18 @@ const Setup = {
   pendingRecoveryKey: null,
   settingsOpen: false,
   settingsReturnFocus: null,
+  view: 'closed',
+  settingsSection: null,
+  refreshSequence: 0,
 
   el(id) { return document.getElementById(id); },
 
   async init() {
     if (!this.el('setup-overlay')) return;
-    this.el('setup-back').addEventListener('click', () => this.move(-1));
+    this.el('setup-back').addEventListener('click', () => {
+      if (this.view === 'section') this.showSettingsHub();
+      else this.move(-1);
+    });
     this.el('setup-next').addEventListener('click', () => this.next());
     this.el('setup-skip').addEventListener('click', () => this.deferSetup());
     this.el('setup-close').addEventListener('click', () => this.closeSettings());
@@ -115,46 +131,63 @@ const Setup = {
   },
 
   async refreshStatus({ keepOpen = false } = {}) {
+    const sequence = ++this.refreshSequence;
     try {
-      this.status = await requestJson('/api/setup/status');
-      if (this.status.bootstrap) {
+      const status = await requestJson('/api/setup/status');
+      if (sequence !== this.refreshSequence) return;
+      this.status = status;
+      if (status.bootstrap) {
+        this.view = 'onboarding';
         this.proposal = null;
         this.el('setup-overlay').classList.remove('hidden');
         this.renderBootstrap();
         return;
       }
-      if (this.status.sync?.enabled && !this.pendingRecoveryKey) {
+      if (status.sync?.enabled && !this.pendingRecoveryKey) {
         const pending = await requestJson('/api/sync/recovery-key', {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
         });
+        if (sequence !== this.refreshSequence) return;
         this.pendingRecoveryKey = pending.recoveryKey || null;
       }
-      this.proposal = (await requestJson('/api/setup/proposal')).proposal;
-      window.Scout?.applyWorkspaceConfig?.(this.status.config);
-      this.el('setup-title').textContent = this.status.established ? 'Scout settings' : 'Set up Scout';
-      this.el('setup-subtitle').textContent = this.status.established
+      const proposal = await requestJson('/api/setup/proposal');
+      if (sequence !== this.refreshSequence) return;
+      this.proposal = proposal.proposal;
+      window.Scout?.applyWorkspaceConfig?.(status.config);
+      this.el('setup-title').textContent = status.established ? 'Scout settings' : 'Set up Scout';
+      this.el('setup-subtitle').textContent = status.established
         ? 'Review or retune your existing private workspace.'
         : 'A private workspace, tuned to your search.';
+      if (keepOpen && DISMISSIBLE_VIEWS.has(this.view)) {
+        this.el('setup-overlay').classList.remove('hidden');
+        this.render();
+        return;
+      }
       const skipped = this.status.trackerExists && localStorage.getItem(SETUP_DEFERRED_KEY) === 'true';
       const pending = this.status.pendingSetupSections || [];
       if (!keepOpen && this.pendingRecoveryKey) {
+        this.view = 'incremental';
         this.el('setup-overlay').classList.remove('hidden');
         this.render();
         return;
       }
       if (!keepOpen && pending.length && (this.status.setupComplete || this.status.established || this.status.ready || skipped)) {
+        this.view = 'incremental';
         this.incrementalSection = pending[0];
         this.el('setup-overlay').classList.remove('hidden');
         this.render();
         return;
       }
       if (!keepOpen && (this.status.setupComplete || this.status.established || this.status.ready || skipped)) {
+        this.view = 'closed';
         this.el('setup-overlay').classList.add('hidden');
         return;
       }
+      this.view = 'onboarding';
       this.el('setup-overlay').classList.remove('hidden');
       this.render();
     } catch (error) {
+      if (sequence !== this.refreshSequence) return;
       this.el('setup-overlay').classList.remove('hidden');
       this.el('setup-body').innerHTML = '<h2>Scout setup could not be loaded</h2><p>Check that the local Scout server is running, then retry.</p>';
       this.setMessage(error.message, 'error');
@@ -164,11 +197,12 @@ const Setup = {
     }
   },
 
-  async openSettings() {
+  async openSettings(section = null) {
     this.settingsOpen = true;
-    this.settingsReturnFocus = document.activeElement;
+    if (!this.settingsReturnFocus) this.settingsReturnFocus = document.activeElement;
+    this.view = section ? 'section' : 'hub';
+    this.settingsSection = section;
     this.incrementalSection = null;
-    this.step = 0;
     this.preferenceStep = 0;
     this.preferenceDraft = null;
     // Provider checks can take several seconds. Open the dialog immediately so
@@ -181,9 +215,28 @@ const Setup = {
     await this.refreshStatus({ keepOpen: true });
   },
 
+  async openBackupDetails() {
+    this.settingsOpen = true;
+    this.settingsReturnFocus = document.activeElement;
+    this.view = 'backup-details';
+    this.settingsSection = null;
+    this.incrementalSection = null;
+    this.el('setup-overlay').classList.remove('hidden');
+    this.el('setup-close').classList.remove('hidden');
+    this.el('setup-title').textContent = 'Backup details';
+    this.el('setup-subtitle').textContent = 'Checking the private backup status…';
+    this.el('setup-body').innerHTML = '<div class="setup-callout"><strong>Scout is checking your backup…</strong></div>';
+    await this.refreshStatus({ keepOpen: true });
+  },
+
   closeSettings() {
-    if (!this.settingsOpen || this.busy) return;
+    if (!DISMISSIBLE_VIEWS.has(this.view) || this.busy) return;
+    // Invalidate any status request started for the view being closed. A slow
+    // response must not reopen or replace a dialog after the user's intent.
+    this.refreshSequence += 1;
     this.settingsOpen = false;
+    this.view = 'closed';
+    this.settingsSection = null;
     this.el('setup-close').classList.add('hidden');
     this.el('setup-overlay').classList.add('hidden');
     const target = this.settingsReturnFocus;
@@ -239,10 +292,25 @@ const Setup = {
 
   render() {
     this.setMessage();
+    if (this.view === 'hub') return this.renderSettingsHub();
+    if (this.view === 'section') return this.renderSettingsSection();
+    if (this.view === 'backup-details') return this.renderBackupDetails();
+    if (this.view === 'retune') {
+      this.settingsOpen = true;
+      this.el('setup-close').classList.remove('hidden');
+      this.el('setup-title').textContent = 'Retune Scout';
+      this.el('setup-subtitle').textContent = 'Review staged changes before they affect your active search.';
+    } else {
+      this.settingsOpen = false;
+      this.el('setup-close').classList.add('hidden');
+    }
     this.el('setup-next').classList.remove('hidden');
     if (this.incrementalSection) return this.renderIncrementalSection();
     this.renderProgress();
     this.el('setup-back').classList.toggle('hidden', this.step === 0);
+    this.el('setup-back').textContent = this.view === 'retune' && this.step === 1
+      ? 'Back to settings'
+      : 'Back';
     // The optional hand-off uses the primary Finish for now action. Keep the
     // legacy footer control hidden so users are not offered duplicate exits.
     this.el('setup-skip').classList.add('hidden');
@@ -256,6 +324,160 @@ const Setup = {
       this.renderFirstScan,
     ];
     renderers[this.step].call(this);
+  },
+
+  prepareDismissibleView({ title, subtitle, back = false }) {
+    this.settingsOpen = true;
+    this.el('setup-overlay').classList.remove('hidden');
+    this.el('setup-close').classList.remove('hidden');
+    this.el('setup-title').textContent = title;
+    this.el('setup-subtitle').textContent = subtitle;
+    this.el('setup-progress').innerHTML = '';
+    this.el('setup-skip').classList.add('hidden');
+    this.el('setup-next').classList.add('hidden');
+    this.el('setup-back').classList.toggle('hidden', !back);
+    this.el('setup-back').textContent = back ? 'Back to settings' : 'Back';
+  },
+
+  showSettingsHub() {
+    this.view = 'hub';
+    this.settingsSection = null;
+    this.preferenceDraft = null;
+    this.preferenceStep = 0;
+    this.render();
+  },
+
+  renderSettingsHub() {
+    this.prepareDismissibleView({
+      title: 'Scout settings',
+      subtitle: 'Choose one area. Your existing workspace and history stay in place.',
+    });
+    this.el('setup-body').innerHTML = `
+      <div class="settings-hub">
+        ${SETTINGS_SECTIONS.map(([id, label, detail]) => `<button class="settings-card" type="button" data-settings-section="${id}"><strong>${label}</strong><span>${detail}</span></button>`).join('')}
+      </div>`;
+    this.el('setup-body').querySelectorAll('[data-settings-section]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this.view = 'section';
+        this.settingsSection = button.dataset.settingsSection;
+        this.render();
+      });
+    });
+  },
+
+  renderSettingsSection() {
+    const section = this.settingsSection;
+    const definition = SETTINGS_SECTIONS.find(([id]) => id === section) || SETTINGS_SECTIONS[0];
+    this.prepareDismissibleView({ title: definition[1], subtitle: definition[2], back: true });
+    if (section === 'search') return this.renderSearchSettings();
+    if (section === 'providers') return this.renderProviderSettings();
+    if (section === 'sources') return this.renderSourceSettings();
+    if (section === 'scans') return this.renderScanSettings();
+    if (section === 'backup') return this.renderBackupSettings();
+    if (section === 'remote') return this.renderRemoteSettings();
+    return this.renderAppSettings();
+  },
+
+  renderSearchSettings() {
+    const config = this.status?.config || {};
+    const search = config.search || {};
+    this.el('setup-body').innerHTML = `
+      <div class="setup-callout"><strong>${this.escape(config.profile?.displayName || 'Scout profile')}</strong>
+      <p>Roles: ${this.escape((search.roleFamilies || []).join(', ') || 'Not configured')}</p>
+      <p>Locations: ${this.escape((search.locations || []).join(', ') || 'Not configured')}</p>
+      <p>Minimum salary: ${search.salaryMinimum == null ? 'Not set' : `${this.escape(config.currency || '')} ${this.escape(search.salaryMinimum)}`}</p>
+      <p>Hard exclusions: ${this.escape((search.exclusions || []).join(', ') || 'None')}</p></div>
+      <p><button id="settings-retune-search" class="act primary" type="button">Retune my search</button></p>
+      <p class="meta">Retuning stages evidence-led changes for review. It does not reset tracker, application, report or chat history.</p>`;
+    this.el('settings-retune-search').addEventListener('click', () => {
+      this.view = 'retune';
+      this.step = 1;
+      this.preferenceStep = 0;
+      this.preferenceDraft = null;
+      this.render();
+    });
+  },
+
+  renderProviderSettings() {
+    this.el('setup-body').innerHTML = `
+      <div class="setup-provider-list">${this.providerCard('codex')}${this.providerCard('claude')}</div>
+      <p><button id="settings-save-provider" class="act primary" type="button">Save provider</button>
+      <button id="settings-refresh-providers" class="act" type="button">Refresh status</button></p>`;
+    this.el('settings-save-provider').addEventListener('click', () => this.saveProviderSetting());
+    this.el('settings-refresh-providers').addEventListener('click', () => this.refreshStatus({ keepOpen: true }));
+  },
+
+  async saveProviderSetting() {
+    const provider = this.selectedProvider();
+    if (!provider) return this.setMessage('Choose an installed, signed-in and compatible provider.', 'error');
+    try {
+      const result = await requestJson('/api/setup/config', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ai: { provider, model: null } }),
+      });
+      this.status.config = result.config;
+      window.Scout?.applyWorkspaceConfig?.(result.config);
+      this.setMessage('AI provider saved.', 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  renderSourceSettings() {
+    this.el('setup-body').innerHTML = `
+      <div class="setup-callout"><strong>Public sources</strong><p>Scout uses its configured public job sources without requiring credentials.</p></div>
+      <div class="setup-callout"><strong>Adzuna: ${this.status?.adzunaConfigured ? 'configured' : 'not configured'}</strong>
+      <p>Saved credentials are never displayed. Use Retune my search to add or replace them.</p></div>
+      <p><button id="settings-retune-sources" class="act" type="button">Retune search and sources</button></p>`;
+    this.el('settings-retune-sources').addEventListener('click', () => {
+      this.view = 'retune';
+      this.step = 2;
+      this.preferenceStep = 0;
+      this.preferenceDraft = null;
+      this.render();
+    });
+  },
+
+  renderScanSettings() {
+    this.renderFirstScan({ includeBackup: false });
+    this.el('setup-next').classList.add('hidden');
+  },
+
+  renderBackupSettings() {
+    this.el('setup-body').innerHTML = this.backupPanelHtml();
+    this.bindBackupPanel();
+  },
+
+  renderRemoteSettings() {
+    this.el('setup-body').innerHTML = this.remoteAccessPanelHtml();
+    this.bindRemoteAccessPanel();
+  },
+
+  renderAppSettings() {
+    const device = this.status?.device;
+    this.el('setup-body').innerHTML = device ? `
+      <div class="setup-callout"><strong>Application updates</strong>
+      <p>Notifications are on. Package downloads remain optional and are verified before installation.</p>
+      <label class="setup-field"><span><input id="setup-auto-download-updates" type="checkbox" ${device.updates?.policy === 'download' ? 'checked' : ''}> Download verified update packages automatically</span></label>
+      ${device.startupStatus?.supported ? `<label class="setup-field"><span><input id="setup-start-with-windows" type="checkbox" ${device.startWithWindows ? 'checked' : ''}> Start Scout when I sign into Windows</span></label>` : ''}
+      <p><button id="setup-save-device" class="act primary" type="button">Save device settings</button></p></div>
+      <p><button id="setup-restart" class="act" type="button">Restart Scout</button></p>` :
+      '<p>Device settings are unavailable on this host.</p>';
+    this.el('setup-save-device')?.addEventListener('click', () => this.saveDeviceSetting());
+    this.el('setup-restart')?.addEventListener('click', () => this.restartServer());
+  },
+
+  renderBackupDetails() {
+    this.prepareDismissibleView({
+      title: 'Backup details',
+      subtitle: 'Your work remains local even when the private backup needs attention.',
+    });
+    this.el('setup-body').innerHTML = `${this.backupPanelHtml()}
+      <p><button id="backup-advanced-settings" class="act" type="button">Advanced backup settings</button></p>`;
+    this.bindBackupPanel();
+    this.el('backup-advanced-settings').addEventListener('click', () => {
+      this.view = 'section';
+      this.settingsSection = 'backup';
+      this.render();
+    });
   },
 
   renderWelcome() {
@@ -489,7 +711,7 @@ const Setup = {
     this.el('setup-next').textContent = action.label;
   },
 
-  renderFirstScan() {
+  renderFirstScan({ includeBackup = true } = {}) {
     const health = this.status?.scanHealth || {};
     const schedule = this.status?.schedule || {};
     const healthy = Boolean(health.lastRunAt && health.healthy);
@@ -503,11 +725,11 @@ const Setup = {
       <label class="setup-field">Claude primary time<input id="setup-schedule-claude-time" type="time" value="${this.escape(schedule.runs?.find((run) => run.id === 'claude-primary')?.time || '07:30')}"></label>
       <label class="setup-field">Codex second-pass time<input id="setup-schedule-codex-time" type="time" value="${this.escape(schedule.runs?.find((run) => run.id === 'codex-second-pass')?.time || '08:30')}"></label>
       <p><button id="setup-schedule-save" class="act" type="button" ${healthy ? '' : 'disabled'}>${schedule.enabled ? 'Save both scan times' : 'Enable both daily scans'}</button>${schedule.configured ? ' <button id="setup-schedule-disable" class="act" type="button">Disable both scans</button>' : ''}</p></div></div>
-      ${this.backupPanelHtml()}`;
+      ${includeBackup ? this.backupPanelHtml() : ''}`;
     this.el('setup-run-scan').addEventListener('click', () => this.runSupervisedScan());
     this.el('setup-schedule-save').addEventListener('click', () => this.saveSchedule());
     this.el('setup-schedule-disable')?.addEventListener('click', () => this.disableSchedule());
-    this.bindBackupPanel();
+    if (includeBackup) this.bindBackupPanel();
     this.el('setup-next').textContent = 'Finish';
   },
 
@@ -781,6 +1003,10 @@ const Setup = {
 
   move(delta) {
     if (this.busy) return;
+    if (this.view === 'retune' && this.step === 1 && delta < 0) {
+      this.showSettingsHub();
+      return;
+    }
     if (this.step === 2 && delta < 0 && this.preferenceStep > 0) {
       this.capturePreferenceQuestion();
       this.preferenceStep -= 1;
@@ -807,6 +1033,7 @@ const Setup = {
         await this.saveDeviceSetting();
         await requestJson('/api/setup/section', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: this.incrementalSection.id, action: 'complete' }) });
         this.incrementalSection = null;
+        this.view = 'closed';
         this.el('setup-overlay').classList.add('hidden');
         return;
       }
@@ -887,6 +1114,11 @@ const Setup = {
         const result = await requestJson('/api/setup/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
         this.status.setupComplete = Boolean(result.completedAt);
         localStorage.removeItem(SETUP_DEFERRED_KEY);
+        if (this.view === 'retune') {
+          this.showSettingsHub();
+          return;
+        }
+        this.view = 'closed';
         this.el('setup-overlay').classList.add('hidden');
         return;
       }
@@ -913,12 +1145,13 @@ const Setup = {
   deferSetup() {
     if (this.incrementalSection) {
       requestJson('/api/setup/section', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: this.incrementalSection.id, action: 'defer' }) })
-        .then(() => { this.incrementalSection = null; this.el('setup-overlay').classList.add('hidden'); })
+        .then(() => { this.incrementalSection = null; this.view = 'closed'; this.el('setup-overlay').classList.add('hidden'); })
         .catch((error) => this.setMessage(error.message, 'error'));
       return;
     }
     if (!this.status?.trackerExists || this.status?.ready) return;
     localStorage.setItem(SETUP_DEFERRED_KEY, 'true');
+    this.view = 'closed';
     this.el('setup-overlay').classList.add('hidden');
   },
 };

@@ -37,3 +37,13 @@ test('manual settings has a persistent accessible close control', () => {
   assert.match(setup, /event\.key === 'Escape'[\s\S]*closeSettings\(\)/);
   assert.match(setup, /event\.target === this\.el\('setup-overlay'\)[\s\S]*closeSettings\(\)/);
 });
+
+test('established settings and backup use separate dismissible views', () => {
+  assert.match(setup, /DISMISSIBLE_VIEWS = new Set\(\['hub', 'section', 'retune', 'backup-details'\]\)/);
+  assert.match(setup, /async openBackupDetails\(\)/);
+  assert.match(setup, /renderSettingsHub\(\)/);
+  assert.match(setup, /Retune my search/);
+  assert.doesNotMatch(setup, /openSettings\(section = null\)[\s\S]{0,700}this\.step = 0/);
+  assert.match(html, /\.settings-hub\s*\{[^}]*grid-template-columns:repeat\(2/s);
+  assert.match(html, /@media \(max-width: 650px\)[\s\S]*\.settings-hub \{ grid-template-columns:1fr/);
+});

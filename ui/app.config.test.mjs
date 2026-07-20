@@ -28,7 +28,7 @@ test('custom CV recommendations are preselected but remain optional', () => {
   assert.match(html, /id="cv-option-xyz"[^>]*checked/);
   assert.match(html, /id="cv-option-humanize"[^>]*checked/);
   assert.match(html, /recommends both options, but they are optional/i);
-  assert.match(html, /app\.js\?v=beta-13-2/);
+  assert.match(html, /app\.js\?v=__SCOUT_UI_BUILD__/);
 });
 
 test('strict CSP-compatible UI markup uses delegated actions instead of inline handlers', () => {
@@ -36,11 +36,22 @@ test('strict CSP-compatible UI markup uses delegated actions instead of inline h
   const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /\son(?:click|change|input|keydown|submit)\s*=/i);
   assert.doesNotMatch(html, /\son(?:click|change|input|keydown|submit)\s*=/i);
-  assert.match(html, /app\.js\?v=beta-13-2/);
-  assert.match(fs.readFileSync(new URL('./service-worker.js', import.meta.url), 'utf8'), /scout-shell-beta-13-2/);
+  assert.match(html, /app\.js\?v=__SCOUT_UI_BUILD__/);
+  assert.match(fs.readFileSync(new URL('./service-worker.js', import.meta.url), 'utf8'), /scout-shell-\$\{BUILD\}/);
   assert.match(source, /data-action="open-entry"/);
   assert.match(source, /\.card\[data-id\]/);
   assert.match(source, /bindDelegatedActions/);
+});
+
+test('sync status opens backup details and stale builds require a safe explicit refresh', () => {
+  const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  assert.match(source, /sync-status'[\s\S]*openBackupDetails/);
+  assert.match(source, /if \(controlled\) this\.showUiUpdate\(\);[\s\S]*controlled = true/);
+  assert.doesNotMatch(source, /sync-status'[\s\S]{0,180}openSettings/);
+  assert.match(source, /info\.uiBuildId[\s\S]*!== this\.uiBuildId[\s\S]*showUiUpdate/);
+  assert.match(source, /uiReloadBlocker\(\)/);
+  assert.match(source, /location\.reload\(\)/);
+  assert.doesNotMatch(source, /controllerchange'[\s\S]{0,120}location\.reload/);
 });
 
 test('company history keeps real correspondence separate from role-specific Scout chats', () => {

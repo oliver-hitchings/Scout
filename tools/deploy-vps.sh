@@ -27,8 +27,8 @@ case "$mode" in
     target_ref="refs/tags/v$version"
     ;;
   rehearsal)
-    [[ $source_ref == refs/heads/codex/beta13-release-candidate && $force_failure =~ ^(true|false)$ ]] || {
-      printf 'Rehearsals are restricted to the Beta 13 release-candidate branch.\n' >&2
+    [[ $source_ref == refs/heads/codex/release-candidate && $force_failure =~ ^(true|false)$ ]] || {
+      printf 'Rehearsals are restricted to the protected release-candidate branch.\n' >&2
       exit 2
     }
     fetch_ref="$source_ref:refs/scout-deploy/rehearsal"
@@ -100,7 +100,7 @@ rollback() {
     printf 'Deployment failed; restoring Scout commit %s.\n' "$previous_commit" >&2
     rollback_failed=0
     git -C "$app_root" checkout --detach "$previous_commit" || rollback_failed=1
-    (cd "$app_root" && npm ci) || rollback_failed=1
+    (cd "$app_root" && npm ci --omit=dev) || rollback_failed=1
     previous_version=$(cd "$app_root" && node -p "require('./package.json').version") || rollback_failed=1
     sudo -n systemctl restart "$service" || rollback_failed=1
     rollback_healthy=false
@@ -145,7 +145,7 @@ fi
 
 (
   cd "$app_root"
-  npm ci
+  npm ci --omit=dev
   npm test
 )
 

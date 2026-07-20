@@ -1,11 +1,15 @@
 // Kept self-contained so a browser connected to a pre-update Scout server can
 // still boot. The matching modules contain the unit-tested canonical helpers.
+const SCOUT_UI_BUILD = typeof document !== 'undefined'
+  ? document.querySelector?.('meta[name="scout-ui-build"]')?.content || null
+  : null;
+const uiAsset = (pathname) => SCOUT_UI_BUILD ? `${pathname}?v=${encodeURIComponent(SCOUT_UI_BUILD)}` : pathname;
 const SCOUT_RUNTIME_STATES = {
-  idle: ['/assets/scout-idle.png', 'Scout is ready'], listening: ['/assets/scout-idle.png', 'Scout is listening'],
-  thinking: ['/assets/scout-thinking.png', 'Scout is thinking'], searching: ['/assets/scout-searching.png', 'Scout is searching'],
-  writing: ['/assets/scout-explaining.png', 'Scout is updating your files'], explaining: ['/assets/scout-explaining.png', 'Scout is explaining'],
-  found: ['/assets/scout-found.png', 'Scout found a strong match'], success: ['/assets/scout-found.png', 'Scout finished successfully'],
-  warning: ['/assets/scout-warning.png', 'Scout needs your attention'],
+  idle: [uiAsset('/assets/scout-idle.png'), 'Scout is ready'], listening: [uiAsset('/assets/scout-idle.png'), 'Scout is listening'],
+  thinking: [uiAsset('/assets/scout-thinking.png'), 'Scout is thinking'], searching: [uiAsset('/assets/scout-searching.png'), 'Scout is searching'],
+  writing: [uiAsset('/assets/scout-explaining.png'), 'Scout is updating your files'], explaining: [uiAsset('/assets/scout-explaining.png'), 'Scout is explaining'],
+  found: [uiAsset('/assets/scout-found.png'), 'Scout found a strong match'], success: [uiAsset('/assets/scout-found.png'), 'Scout finished successfully'],
+  warning: [uiAsset('/assets/scout-warning.png'), 'Scout needs your attention'],
 };
 const SCOUT_RUNTIME_ALIGNMENT = {
   idle: [1.7, 4.8], listening: [1.7, 4.8], thinking: [2.8, 3.2], searching: [0.6, -1.4],
@@ -75,6 +79,9 @@ const Scout = {
   scanRunning: false,
   lastSyncPullAt: null,
   companyHistory: null,
+  uiBuildId: SCOUT_UI_BUILD,
+  serviceWorkerRegistration: null,
+  uiUpdateAvailable: false,
 
   async api(pathname, opts) {
     try {
@@ -246,6 +253,78 @@ const Scout = {
     return (setup && !setup.classList.contains('hidden'))
       || !!this.chat?.streaming
       || !!activeInput?.matches?.('input, textarea, select');
+  },
+
+  uiReloadBlocker() {
+    if (this.cvState.dirty) return 'Save or discard the open CV changes first.';
+    if (this.chat?.streaming) return 'Wait for the current Scout response to finish first.';
+    if (this.scanRunning) return 'Wait for the current scan to finish first.';
+    if (window.ScoutSetup?.busy) return 'Wait for the current settings action to finish first.';
+    if (document.getElementById('setup-overlay') && !document.getElementById('setup-overlay').classList.contains('hidden')) {
+      return 'Close or finish the open Scout settings first.';
+    }
+    if (document.querySelector('.chat-drawer:not(.hidden), .cv-options-overlay:not(.hidden)')) {
+      return 'Close the open panel first so typed work is not lost.';
+    }
+    return null;
+  },
+
+  showUiUpdate() {
+    this.uiUpdateAvailable = true;
+    const banner = document.getElementById('ui-update-banner');
+    if (!banner) return;
+    banner.replaceChildren();
+    banner.classList.remove('hidden');
+    const copy = document.createElement('p');
+    copy.textContent = 'Scout has updated. Refresh this page to use the latest interface.';
+    const actions = document.createElement('div');
+    actions.className = 'update-banner-actions';
+    const refresh = document.createElement('button');
+    refresh.type = 'button';
+    refresh.className = 'act primary';
+    refresh.textContent = 'Refresh Scout';
+    refresh.addEventListener('click', () => this.refreshUpdatedUi(copy, refresh));
+    actions.append(refresh);
+    banner.append(copy, actions);
+  },
+
+  async refreshUpdatedUi(copy, button) {
+    const blocker = this.uiReloadBlocker();
+    if (blocker) {
+      copy.textContent = `Scout is ready to update. ${blocker}`;
+      return;
+    }
+    button.disabled = true;
+    button.textContent = 'Refreshing…';
+    try { void this.serviceWorkerRegistration?.update?.(); } catch { /* the build handshake remains authoritative */ }
+    location.reload();
+  },
+
+  async checkUiBuild() {
+    try {
+      const response = await fetch('/api/app-info', { cache: 'no-store' });
+      const info = await response.json();
+      if (response.ok && info.uiBuildId && this.uiBuildId && info.uiBuildId !== this.uiBuildId) this.showUiUpdate();
+    } catch { /* host availability is reported by normal application requests */ }
+  },
+
+  async registerServiceWorker() {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    try {
+      let controlled = Boolean(navigator.serviceWorker.controller);
+      const registration = await navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' });
+      this.serviceWorkerRegistration = registration;
+      const watch = (worker) => worker?.addEventListener?.('statechange', () => {
+        if (worker.state === 'installed' && controlled) this.showUiUpdate();
+      });
+      registration.addEventListener?.('updatefound', () => watch(registration.installing));
+      navigator.serviceWorker.addEventListener?.('controllerchange', () => {
+        // The first controller is normal PWA installation, not an update. Only
+        // a subsequent controller replacement should prompt for a refresh.
+        if (controlled) this.showUiUpdate();
+        controlled = true;
+      });
+    } catch { /* installed-app support never blocks the dashboard */ }
   },
 
   showStrongMatchArrival() {
@@ -1296,7 +1375,7 @@ const Scout = {
       };
       el.textContent = labels[status.state] || 'Backup status';
       el.dataset.state = status.state || 'disabled';
-      el.title = status.error || (status.enabled ? 'Open Backup & sync settings' : 'Private backup is optional');
+      el.title = status.error || (status.enabled ? 'Open backup details' : 'Private backup is optional');
       const pulledAt = retryStatus?.pulledAt || status.pulledAt;
       if (pulledAt && pulledAt !== this.lastSyncPullAt) {
         this.lastSyncPullAt = pulledAt;
@@ -1800,7 +1879,7 @@ const Scout = {
   },
 
   init() {
-    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+    this.registerServiceWorker();
     window.addEventListener?.('offline', () => this.setHostAvailable(false));
     window.addEventListener?.('online', () => this.loadOpportunities().catch(() => this.setHostAvailable(false)));
     document.querySelectorAll('nav button').forEach((b) =>
@@ -1809,16 +1888,31 @@ const Scout = {
         else if (b.dataset.tab) this.showTab(b.dataset.tab);
       }));
     document.getElementById?.('scan-now')?.addEventListener('click', () => this.scanNow());
-    document.getElementById?.('sync-status')?.addEventListener('click', () => window.ScoutSetup?.openSettings?.());
+    document.getElementById?.('sync-status')?.addEventListener('click', () => window.ScoutSetup?.openBackupDetails?.());
     document.getElementById?.('cv-options-cancel')?.addEventListener('click', () => this.closeCvOptions());
     document.getElementById?.('cv-options-continue')?.addEventListener('click', () => this.startCvFromOptions());
     this.bindDelegatedActions();
-    window.addEventListener?.('focus', () => this.refreshSyncStatus({ retry: true }));
-    document.addEventListener?.('visibilitychange', () => { if (!document.hidden) this.refreshSyncStatus({ retry: true }); });
+    window.addEventListener?.('focus', () => {
+      this.refreshSyncStatus({ retry: true });
+      this.serviceWorkerRegistration?.update?.();
+      this.checkUiBuild();
+    });
+    document.addEventListener?.('visibilitychange', () => {
+      if (!document.hidden) {
+        this.refreshSyncStatus({ retry: true });
+        this.serviceWorkerRegistration?.update?.();
+        this.checkUiBuild();
+      }
+    });
     this.loadOpportunities();
     this.refreshSyncStatus();
+    this.checkUiBuild();
     window.setTimeout?.(() => this.checkForAppUpdate(false), 2500);
     window.setInterval?.(() => this.refreshSyncStatus(), 5 * 60 * 1000);
+    window.setInterval?.(() => {
+      this.serviceWorkerRegistration?.update?.();
+      this.checkUiBuild();
+    }, 5 * 60 * 1000);
   },
 };
 window.Scout = Scout;

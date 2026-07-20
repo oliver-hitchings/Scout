@@ -91,6 +91,52 @@ export function includePublicSourcePath(relative) {
   return true;
 }
 
+export function productionDependencyFilter(lock) {
+  const productionPackages = Object.entries(lock.packages || {})
+    .filter(([key, metadata]) => key.startsWith('node_modules/') && metadata.dev !== true)
+    .map(([key]) => normalise(key.slice('node_modules/'.length)));
+  return (relative) => {
+    const value = normalise(relative);
+    return productionPackages.some((packagePath) =>
+      value === packagePath || value.startsWith(`${packagePath}/`) || packagePath.startsWith(`${value}/`));
+  };
+}
+
+export function productionPackageManifest(manifest) {
+  const production = structuredClone(manifest);
+  delete production.devDependencies;
+  if (production.scripts) {
+    for (const [name, command] of Object.entries(production.scripts)) {
+      if (/\bplaywright\b/i.test(command) || name === 'test:browser') delete production.scripts[name];
+    }
+  }
+  return production;
+}
+
+export function productionLockfile(lock) {
+  const production = structuredClone(lock);
+  if (production.packages) {
+    production.packages = Object.fromEntries(
+      Object.entries(production.packages).filter(([, metadata]) => metadata.dev !== true),
+    );
+    if (production.packages['']) delete production.packages[''].devDependencies;
+  }
+  if (production.dependencies) {
+    production.dependencies = Object.fromEntries(
+      Object.entries(production.dependencies).filter(([, metadata]) => metadata.dev !== true),
+    );
+  }
+  return production;
+}
+
+function writeProductionManifests(root, appDir) {
+  const manifest = JSON.parse(fs.readFileSync(required(root, 'package.json'), 'utf8'));
+  const lock = JSON.parse(fs.readFileSync(required(root, 'package-lock.json'), 'utf8'));
+  fs.writeFileSync(path.join(appDir, 'package.json'), `${JSON.stringify(productionPackageManifest(manifest), null, 2)}\n`);
+  fs.writeFileSync(path.join(appDir, 'package-lock.json'), `${JSON.stringify(productionLockfile(lock), null, 2)}\n`);
+  return lock;
+}
+
 function copyTree(source, target, relative = '', include = includeReleasePath) {
   const stat = fs.lstatSync(source);
   if (stat.isSymbolicLink()) throw new Error(`release input may not be a symbolic link: ${source}`);
@@ -154,7 +200,16 @@ export function stageRelease({
     }
   }
 
-  if (includeDependencies) copyTree(required(resolvedRoot, 'node_modules'), path.join(appDir, 'node_modules'));
+  const lock = writeProductionManifests(resolvedRoot, appDir);
+  if (includeDependencies) {
+    const includeProductionDependency = productionDependencyFilter(lock);
+    copyTree(
+      required(resolvedRoot, 'node_modules'),
+      path.join(appDir, 'node_modules'),
+      '',
+      (relative) => includeReleasePath(relative) && includeProductionDependency(relative),
+    );
+  }
   const runtimeDir = path.join(resolvedStage, 'runtime');
   fs.mkdirSync(runtimeDir, { recursive: true });
   const runtimeName = platform === 'win32' ? 'ScoutRuntime.exe' : 'node';
