@@ -99,7 +99,7 @@ test('runtime writes canonical scan records and preserves user tracker state', (
     sources: { hiring_cafe: { configured: true, status: 'healthy', count: 1, jobs: [] } },
     assessmentResult: { assessments: [assessment('met')] }, policy: { actionScore: 70, checkScore: 55 },
   });
-  assert.equal(artifacts.run.schemaVersion, 1);
+  assert.equal(artifacts.run.schemaVersion, 2);
   assert.deepEqual(artifacts.run.sources_checked, ['hiring_cafe']);
   assert.deepEqual(artifacts.run.queries_checked, ['engineer']);
   assert.equal(artifacts.run.candidates_found, 1);
@@ -111,6 +111,22 @@ test('runtime writes canonical scan records and preserves user tracker state', (
   assert.deepEqual(saved.log, [{ date: '2026-07-01', event: 'replied', note: '' }]);
   assert.equal(saved.eligibility.status, 'eligible');
   assert.equal(validateWrittenScanArtifacts(root, artifacts.run).run.agent, 'codex');
+});
+
+test('two same-day providers remain visible in one combined report', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-combined-report-'));
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'data', 'opportunities.json'), '{"updated":"2026-07-01","opportunities":[]}\n');
+  const input = {
+    sources: { ats: { configured: true, status: 'healthy', count: 0 } },
+    candidates: [], assessmentResult: { assessments: [] }, policy: {}, startedAt: new Date().toISOString(),
+  };
+  writeScanArtifacts(root, { ...input, provider: 'claude', mode: 'primary' });
+  const second = writeScanArtifacts(root, { ...input, provider: 'codex', mode: 'second-pass' });
+  const report = fs.readFileSync(second.report, 'utf8');
+  assert.match(report, /## Scan runs/);
+  assert.match(report, /claude primary/);
+  assert.match(report, /codex second-pass/);
 });
 
 test('later cross-provider reposts update one opportunity without losing user-owned state', () => {

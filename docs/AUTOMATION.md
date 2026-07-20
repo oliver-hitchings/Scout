@@ -1,34 +1,45 @@
-# Scheduled Scans
+# Scheduled scans
 
-Scout registers one per-user scheduler entry: `Scout Daily Scan` on Windows, `app.scout.daily-scan` on macOS, or `scout-daily-scan.timer` on Linux. Scheduling is optional and should only follow a successful supervised scan.
+Scout can register multiple named, per-user scheduler jobs. Scheduling is optional and may be enabled only after a successful supervised scan.
 
-The beta installer does not add `scout` to `PATH`. The examples below use
-`scout` as shorthand; installer users should invoke the bundled CLI as shown in
-[Quick Start](QUICK_START.md), or use the corresponding UI controls.
+Beta 13's recommended VPS schedule is:
+
+- `claude-primary` at 07:30 in `primary` mode;
+- `codex-second-pass` at 08:30 in `second-pass` mode.
+
+Linux timers pin the workspace IANA timezone (normally `Europe/London`) in `OnCalendar`, so daylight-saving changes do not shift the intended wall-clock time even when the VPS itself runs UTC.
+
+The one-hour gap exceeds Scout's 45-minute native execution limit. The workspace lock remains authoritative: if a prior scan is still active, the later run is recorded as skipped and never overlaps it.
 
 ## Install and inspect
 
 ```powershell
-scout schedule install --time 07:30 --provider codex
+scout schedule install --id claude-primary --time 07:30 --provider claude --mode primary
+scout schedule install --id codex-second-pass --time 08:30 --provider codex --mode second-pass
 scout schedule status
-scout schedule run-now
+scout schedule run-now --id claude-primary
 ```
 
-Use `claude` if that is the authenticated provider. Time is local 24-hour `HH:MM`. The task runs with the current user's interactive token and least privilege, starts when next available after a missed trigger, ignores overlapping instances, and has a 45-minute execution limit.
+Each job receives a distinct native identity, such as `Scout Daily Scan - claude-primary`, `app.scout.daily-scan.claude-primary`, or `scout-daily-scan-claude-primary.timer`. Jobs run as the current user with least privilege, catch up after a missed trigger, and stop after 45 minutes.
 
-The computer must be available and the user session or service manager active. Sleep, provider outages and network failures may delay or fail a scan. Linux systems without systemd user services report scheduling as unsupported while supervised scans remain available.
+On a headless Linux VPS, enable lingering for the dedicated Scout account so its user timers and D-Bus session remain available:
 
-## Logs and locking
-
-Scan result metadata is written under workspace `logs/`. Scout also uses a workspace scan lock to prevent competing runs. Inspect failed output without sharing private prompts or credentials. If a stale lock remains after a crash, first confirm no Scout/provider process is running before using the CLI lock commands.
+```sh
+sudo loginctl enable-linger "$(id -un)"
+systemctl --user status scout-daily-scan-claude-primary.timer
+systemctl --user status scout-daily-scan-codex-second-pass.timer
+```
 
 ## Change or remove
 
-Re-run `schedule install` with the desired time/provider to update the configured task, then verify status and `run-now`. To disable it:
+Re-run `schedule install` with the same ID to update one job. Remove jobs individually:
 
 ```powershell
-scout schedule remove
+scout schedule remove --id claude-primary
+scout schedule remove --id codex-second-pass
 scout schedule status
 ```
 
-Remove the schedule before deleting or moving its workspace, then reinstall it against the new path. Scout records the schedule as enabled only after Windows confirms creation and marks it disabled after confirmed removal. Treat `schedule status`/Task Scheduler as authoritative after every operation. Uninstalling the application should not be treated as schedule removal; explicitly remove and verify the task first.
+Remove all jobs before deleting or moving a workspace. Native scheduler status is authoritative. Uninstalling Scout does not implicitly remove saved jobs.
+
+Scan metadata is written under `logs/` and `data/scan-runs.jsonl`. Do not share private prompts, workspace content, or provider credentials when diagnosing failures.

@@ -538,16 +538,23 @@ const Scout = {
     const el = document.getElementById('tab-reports');
     if (!reports.length) { el.innerHTML = '<p>No reports yet.</p>'; return; }
     el.innerHTML = `<div class="report-list">
-      <div class="dates">${reports.map((d) => `<button class="act" data-action="open-report" data-date="${this.esc(d)}">${d}</button>`).join('')}</div>
+      <label class="report-date-select">Report date<select data-action="select-report">${reports.map((d) => `<option value="${this.esc(d)}">${d}</option>`).join('')}</select></label>
+      <nav class="dates" aria-label="Report dates">${reports.map((d) => `<button class="act" data-action="open-report" data-date="${this.esc(d)}">${d}</button>`).join('')}</nav>
       <div id="report-body" class="report-body" style="flex:1"></div></div>`;
     this.openReport(reports[0]);
   },
 
   async openReport(date) {
     const md = await this.api(`/api/reports/${date}`);
-    document.getElementById('report-body').textContent = md;
-    document.querySelectorAll('.report-list .dates button').forEach((b) =>
-      b.classList.toggle('active', b.dataset.date === date));
+    const body = document.getElementById('report-body');
+    body.innerHTML = globalThis.ScoutReportView?.render(md) || `<pre class="report-fallback">${this.esc(md)}</pre>`;
+    body.querySelector('#daily-report-title')?.focus({ preventScroll: true });
+    const select = document.querySelector('.report-date-select select');
+    if (select) select.value = date;
+    document.querySelectorAll('.report-list .dates button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.date === date);
+      b.setAttribute('aria-current', b.dataset.date === date ? 'date' : 'false');
+    });
   },
 
   openEntry(tab, id) {
@@ -1731,7 +1738,8 @@ const Scout = {
     });
     document.addEventListener?.('change', (event) => {
       const element = event.target;
-      if (element.dataset.changeAction === 'commute-filter') {
+      if (element.dataset.action === 'select-report') this.openReport(element.value);
+      else if (element.dataset.changeAction === 'commute-filter') {
         this.setCommuteFilter(element.dataset.key, element.type === 'checkbox' ? element.checked : element.value);
       } else if (element.dataset.changeAction === 'cv-zoom') this.setCvZoom(element.value);
     });

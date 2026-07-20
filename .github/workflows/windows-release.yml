@@ -159,6 +159,9 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
           ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+          fingerprint=$(ssh-keygen -lf ~/.ssh/known_hosts | awk 'NR == 1 { print $2, $NF }')
+          test -n "$fingerprint"
+          printf 'Pinned VPS host key fingerprint: %s\n' "$fingerprint"
       - name: Deploy the exact release tag and verify local health
         shell: bash
         env:
@@ -170,7 +173,7 @@ jobs:
           force_failure=false
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
             mode=rehearsal
-            [[ "$GITHUB_REF" == refs/heads/agent/beta12-release-candidate ]]
+            [[ "$GITHUB_REF" == refs/heads/codex/beta13-release-candidate ]]
             force_failure='${{ inputs.test_rollback }}'
           fi
           release_commit=$(git rev-parse HEAD)

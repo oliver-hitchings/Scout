@@ -85,6 +85,14 @@ Run `scout remote preflight --require-enabled`, then complete these live checks:
 
 Keep automatic security updates, VPS snapshots and Scout's encrypted private-workspace recovery configured. A provider session may still require periodic interactive reauthentication.
 
+## Enable Beta 13 scheduling and encrypted backup
+
+After one healthy supervised scan, open **Settings -> First scan** and enable the recommended Claude 07:30 primary and Codex 08:30 second-pass jobs. Scout pins the workspace timezone (normally `Europe/London`) in each systemd timer, so a UTC VPS still follows British daylight-saving time. Even when `scout-host.service` is system-level, these scans are user timers owned by `ubuntu`, so run `sudo loginctl enable-linger ubuntu`.
+
+For unattended backup, choose **Prepare VPS deploy key**. Add the displayed public key to the private `oliver-hitchings/scout-workspace` repository as a write-enabled deploy key, then connect `git@github.com:oliver-hitchings/scout-workspace.git` with a new recovery passphrase. Scout pins GitHub's published Ed25519 host key and configures repository-local SSH options; never disable `StrictHostKeyChecking`.
+
+Save the emergency recovery key outside the VPS. Run **Back up now**, confirm a successful timestamp, and restore into an isolated empty directory from another owner device before relying on the backup.
+
 ## Source-checkout service and Beta updates
 
 The private Beta host may instead use a system-level `scout-host.service` when the unit explicitly sets `User=ubuntu` (or another dedicated unprivileged owner), points at the source checkout and exports the separate `SCOUT_WORKSPACE` path. Scout itself must never run as root. This layout avoids user lingering and supports the gated tag deployment in [Release Process](RELEASE.md).

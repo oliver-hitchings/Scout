@@ -31,12 +31,30 @@ test('workspace paths stay under the selected root', () => {
   for (const value of Object.values(workspacePaths(root))) assert.ok(value === path.resolve(root) || value.startsWith(`${path.resolve(root)}${path.sep}`));
 });
 
-test('migration creates a valid schema-one workspace', () => {
+test('migration creates a valid current-schema workspace', () => {
   const root = temp();
   const result = migrateWorkspace(root);
   assert.equal(result.to, CURRENT_WORKSPACE_SCHEMA);
   const config = JSON.parse(fs.readFileSync(path.join(root, 'workspace.json'), 'utf8'));
   assert.equal(validateWorkspaceConfig(config).schemaVersion, CURRENT_WORKSPACE_SCHEMA);
+});
+
+test('schema-one daily schedule migrates to a named primary job with a backup', () => {
+  const root = temp();
+  fs.writeFileSync(path.join(root, 'workspace.json'), `${JSON.stringify({
+    schemaVersion: 1, locale: 'en-GB', currency: 'GBP', timezone: 'Europe/London',
+    search: { roleFamilies: [], sectors: [], locations: [], exclusions: [] },
+    triage: { actionScore: 70, checkScore: 55, nudgeDays: 8, closeoutDays: 10, staleDays: 10, decisionDays: 2 },
+    sources: {}, schedule: { enabled: true, time: '07:30', provider: 'claude' },
+  })}\n`);
+  const result = migrateWorkspace(root);
+  const config = JSON.parse(fs.readFileSync(path.join(root, 'workspace.json'), 'utf8'));
+  assert.equal(result.from, 1);
+  assert.ok(result.backup);
+  assert.equal(config.schemaVersion, 2);
+  assert.deepEqual(config.schedule.jobs, [{
+    id: 'claude-primary', enabled: true, time: '07:30', provider: 'claude', mode: 'primary',
+  }]);
 });
 
 test('workspace defaults are merged deeply for older schema-one files', () => {

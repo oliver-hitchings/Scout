@@ -142,6 +142,19 @@ The beta.11 version bump and release commit must remain separate from the featur
   releasing Beta 12. The live Beta 11 VPS was verified on this hotfix on
   2026-07-18.
 
+## 10. Beta 13 scope
+
+### Daily report view
+
+- [x] Replace the raw daily-report presentation with a clearer responsive view
+  that makes the headline, actions, near-miss checks, follow-ups, changes,
+  discarded counts and verdicts easy to scan on desktop and mobile.
+- [x] Keep the underlying Markdown report as the source of truth, preserve source
+  links and evidence, and fall back safely when an older or manually edited
+  report does not follow the current section structure.
+- [x] Add UI and accessibility coverage for representative full, degraded and
+  empty daily reports before the Beta 13 release candidate.
+
 ## Completed before handoff
 
 - [x] Feature implemented in a clean beta.10-based worktree without changing the original checkout.

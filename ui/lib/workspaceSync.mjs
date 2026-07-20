@@ -8,11 +8,12 @@ import {
 
 const SETTINGS = '.scout/sync.json';
 const STATUS = new Map();
+const GITHUB_ED25519_HOST = 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl';
 
 function runGit(cwd, args, options = {}) {
   const result = (options.spawn || spawnSync)('git', args, {
     cwd, encoding: 'utf8', windowsHide: true,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: options.allowPrompt ? '1' : '0' },
+    env: { ...process.env, ...(options.env || {}), GIT_TERMINAL_PROMPT: options.allowPrompt ? '1' : '0' },
   });
   return {
     ok: result.status === 0,
@@ -31,6 +32,31 @@ function atomicJson(file, value) {
 }
 
 function settingsPath(root) { return path.join(root, ...SETTINGS.split('/')); }
+
+export function prepareGithubDeployKey(root, options = {}) {
+  const home = options.home || process.env.HOME || process.env.USERPROFILE;
+  if (!home) throw new Error('Scout could not locate the account home directory');
+  const sshDir = path.join(home, '.ssh');
+  const keyPath = path.join(sshDir, 'scout-workspace-deploy');
+  const knownHosts = path.join(sshDir, 'scout-github-known-hosts');
+  fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(keyPath)) {
+    const created = (options.spawn || spawnSync)('ssh-keygen', [
+      '-t', 'ed25519', '-N', '', '-C', 'scout-workspace-backup', '-f', keyPath,
+    ], { encoding: 'utf8', windowsHide: true });
+    if (created.status !== 0) throw new Error(String(created.stderr || created.stdout || 'ssh-keygen failed').trim());
+  }
+  fs.chmodSync(keyPath, 0o600);
+  const known = fs.existsSync(knownHosts) ? fs.readFileSync(knownHosts, 'utf8') : '';
+  if (!known.split(/\r?\n/).includes(GITHUB_ED25519_HOST)) fs.appendFileSync(knownHosts, `${known && !known.endsWith('\n') ? '\n' : ''}${GITHUB_ED25519_HOST}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.chmodSync(knownHosts, 0o600);
+  const publicKey = fs.readFileSync(`${keyPath}.pub`, 'utf8').trim();
+  const sshCommand = `ssh -i "${keyPath}" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${knownHosts}"`;
+  ensureRepo(root, options);
+  const configured = runGit(root, ['config', 'core.sshCommand', sshCommand], options);
+  if (!configured.ok) throw new Error(configured.error);
+  return { ok: true, keyPath, knownHosts, publicKey };
+}
 
 export function loadSyncSettings(root) {
   const file = settingsPath(root);
@@ -57,14 +83,23 @@ export function confirmRecoveryKey(root) {
 }
 
 export function validateGithubUrl(value) {
+  const text = String(value || '').trim();
+  const ssh = text.match(/^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/);
+  if (ssh) return {
+    url: `git@github.com:${ssh[1]}/${ssh[2]}.git`,
+    owner: ssh[1], repo: ssh[2], transport: 'ssh', identity: `${ssh[1].toLowerCase()}/${ssh[2].toLowerCase()}`,
+  };
   let url;
-  try { url = new URL(String(value || '').trim()); } catch { throw new Error('Enter a valid GitHub HTTPS repository URL'); }
+  try { url = new URL(text); } catch { throw new Error('Enter a valid GitHub HTTPS or SSH repository URL'); }
   if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'github.com' || url.username || url.password || url.search || url.hash) {
-    throw new Error('Use a credential-free https://github.com/owner/repository URL');
+    throw new Error('Use a credential-free https://github.com/owner/repository or git@github.com:owner/repository URL');
   }
   const match = url.pathname.match(/^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/);
-  if (!match) throw new Error('Use a credential-free https://github.com/owner/repository URL');
-  return { url: `https://github.com/${match[1]}/${match[2]}.git`, owner: match[1], repo: match[2] };
+  if (!match) throw new Error('Use a credential-free https://github.com/owner/repository or git@github.com:owner/repository URL');
+  return {
+    url: `https://github.com/${match[1]}/${match[2]}.git`,
+    owner: match[1], repo: match[2], transport: 'https', identity: `${match[1].toLowerCase()}/${match[2].toLowerCase()}`,
+  };
 }
 
 export function detectGit(options = {}) {
@@ -89,14 +124,36 @@ export async function verifyPrivateGithubRemote(value, options = {}) {
   }
   if (visibility.status === 200) throw new Error('This GitHub repository is public. Change it to Private before connecting Scout');
   if (visibility.status !== 404) throw new Error(`GitHub privacy check failed (${visibility.status})`);
-  const access = runGit(process.cwd(), ['ls-remote', '--heads', parsed.url], { ...options, allowPrompt: true });
+  const cwd = options.cwd || process.cwd();
+  const configuredSsh = parsed.transport === 'ssh' ? runGit(cwd, ['config', '--get', 'core.sshCommand'], options) : null;
+  const access = runGit(cwd, ['ls-remote', '--heads', parsed.url], {
+    ...options,
+    allowPrompt: parsed.transport === 'https',
+    ...(parsed.transport === 'ssh' ? {
+      env: {
+        ...(options.env || {}),
+        GIT_SSH_COMMAND: configuredSsh?.ok
+          ? configuredSsh.stdout
+          : 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes',
+      },
+    } : {}),
+  });
   if (!access.ok) throw new Error(`GitHub sign-in or repository access failed: ${access.error}`);
   return { ...parsed, empty: !access.stdout, refs: access.stdout };
 }
 
 function repoReady(root, options = {}) {
-  const result = runGit(root, ['rev-parse', '--is-inside-work-tree'], options);
-  return result.ok && result.stdout === 'true';
+  const result = runGit(root, ['rev-parse', '--show-toplevel'], options);
+  if (!result.ok) return false;
+  const canonical = (value) => {
+    const resolved = path.resolve(value);
+    try { return fs.realpathSync.native(resolved); } catch { return resolved; }
+  };
+  const top = canonical(result.stdout);
+  const workspace = canonical(root);
+  return process.platform === 'win32'
+    ? top.toLowerCase() === workspace.toLowerCase()
+    : top === workspace;
 }
 
 function sensitiveTrackedPath(value) {
@@ -124,6 +181,10 @@ function assertNoTrackedSecrets(root, options = {}) {
 
 function ensureRepo(root, options = {}) {
   if (!repoReady(root, options)) {
+    const enclosing = runGit(root, ['rev-parse', '--show-toplevel'], options);
+    if (enclosing.ok) {
+      throw new Error('Private backup refuses a workspace nested inside another Git repository');
+    }
     const init = runGit(root, ['init'], options);
     if (!init.ok) throw new Error(init.error);
   }
@@ -137,7 +198,12 @@ function remoteUrl(root, options = {}) {
 }
 
 function setState(root, state, details = {}) {
-  const value = { state, checkedAt: new Date().toISOString(), ...details };
+  const checkedAt = new Date().toISOString();
+  const value = { state, checkedAt, ...details, ...(state === 'synced' ? { lastSuccessfulAt: checkedAt } : {}) };
+  if (state === 'synced') {
+    const settings = loadSyncSettings(root);
+    if (settings.enabled) saveSyncSettings(root, { ...settings, lastSuccessfulAt: checkedAt });
+  }
   STATUS.set(path.resolve(root), value);
   return value;
 }
@@ -146,7 +212,12 @@ export function syncStatus(root, options = {}) {
   const settings = loadSyncSettings(root);
   const git = detectGit(options);
   if (!settings.enabled) return { state: git.installed ? 'disabled' : 'setup-required', enabled: false, git, remoteUrl: remoteUrl(root, options) };
-  return { state: 'pending', enabled: true, git, remoteUrl: settings.remoteUrl, ...(STATUS.get(path.resolve(root)) || {}) };
+  return { state: 'pending', enabled: true, git, remoteUrl: settings.remoteUrl, lastSuccessfulAt: settings.lastSuccessfulAt || null, ...(STATUS.get(path.resolve(root)) || {}) };
+}
+
+function sameGithubRepository(left, right) {
+  try { return validateGithubUrl(left).identity === validateGithubUrl(right).identity; }
+  catch { return left === right; }
 }
 
 function commitAll(root, message, options = {}) {
@@ -266,19 +337,23 @@ export function queueWorkspaceSync(root, reason, options = {}) {
 export async function connectWorkspaceSync(root, { remoteUrl: value, passphrase }, options = {}) {
   const git = detectGit(options);
   if (!git.installed) throw new Error('Install Git before setting up private backup');
-  if (!git.credentialManager) throw new Error('Install Git Credential Manager before setting up private backup');
   const verified = options.verifyRemote
     ? await options.verifyRemote(value)
-    : await verifyPrivateGithubRemote(value, options);
+    : await verifyPrivateGithubRemote(value, { ...options, cwd: root });
+  const transport = verified.transport || (() => { try { return validateGithubUrl(value).transport; } catch { return 'https'; } })();
+  if (transport === 'https' && !git.credentialManager) throw new Error('Install Git Credential Manager before setting up an HTTPS private backup');
   ensureRepo(root, options);
   untrackLegacyChats(root, options);
   assertNoTrackedSecrets(root, options);
   const current = remoteUrl(root, options);
-  if (current && current !== verified.url) throw new Error('This workspace is already connected to a different origin');
+  if (current && !sameGithubRepository(current, verified.url)) throw new Error('This workspace is already connected to a different origin');
   if (!verified.empty && !current) throw new Error('This repository is not empty. Use Restore existing workspace instead');
   if (!current) {
     const add = runGit(root, ['remote', 'add', 'origin', verified.url], options);
     if (!add.ok) throw new Error(add.error);
+  } else if (current !== verified.url) {
+    const update = runGit(root, ['remote', 'set-url', 'origin', verified.url], options);
+    if (!update.ok) throw new Error(update.error);
   }
   const created = initializeRecoveryBackup(root, passphrase, { devicePreferences: deviceBackupPreferences(options.deviceSettings) });
   saveSyncSettings(root, {
@@ -320,10 +395,12 @@ function assertNoSymlinks(root, current = root) {
 export async function restoreWorkspaceFromGithub({ remoteUrl: value, targetRoot, secret }, options = {}) {
   if (!emptyDirectory(targetRoot)) throw new Error('Restore requires an empty workspace folder');
   const git = detectGit(options);
-  if (!git.installed || !git.credentialManager) throw new Error('Install Git and Git Credential Manager before restoring Scout');
+  if (!git.installed) throw new Error('Install Git before restoring Scout');
   const verified = options.verifyRemote
     ? await options.verifyRemote(value)
     : await verifyPrivateGithubRemote(value, options);
+  const transport = verified.transport || (() => { try { return validateGithubUrl(value).transport; } catch { return 'https'; } })();
+  if (transport === 'https' && !git.credentialManager) throw new Error('Install Git Credential Manager before restoring an HTTPS backup');
   if (verified.empty) throw new Error('The repository is empty; there is no Scout workspace to restore');
   const parent = path.dirname(path.resolve(targetRoot));
   fs.mkdirSync(parent, { recursive: true });

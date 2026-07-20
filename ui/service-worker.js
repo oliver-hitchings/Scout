@@ -1,6 +1,6 @@
-const CACHE = 'scout-shell-beta-12-1';
+const CACHE = 'scout-shell-beta-13-2';
 const SHELL = [
-  '/', '/app.js?v=beta-12-1', '/setup.js?v=beta-12-1',
+  '/', '/reportView.js?v=beta-13-2', '/app.js?v=beta-13-2', '/setup.js?v=beta-13-2',
   '/manifest.webmanifest', '/assets/scout-icon.png', '/assets/scout-idle.png',
   '/assets/scout-thinking.png', '/assets/scout-searching.png', '/assets/scout-warning.png',
 ];
@@ -19,7 +19,7 @@ self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
-  const isShell = url.pathname === '/' || url.pathname === '/app.js' || url.pathname === '/setup.js'
+  const isShell = url.pathname === '/' || url.pathname === '/app.js' || url.pathname === '/setup.js' || url.pathname === '/reportView.js'
     || url.pathname === '/manifest.webmanifest' || url.pathname.startsWith('/assets/');
   if (!isShell) return;
   event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then((response) => {

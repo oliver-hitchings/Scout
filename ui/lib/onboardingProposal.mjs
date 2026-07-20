@@ -177,7 +177,7 @@ function bullets(items) { return items.map((item) => `- ${item.text}\n  ${eviden
 export function renderOnboardingFiles(config, proposal, activatedAt = null) {
   const nextConfig = JSON.parse(JSON.stringify(config));
   nextConfig.triage = { ...nextConfig.triage, actionScore: proposal.calibration.actionScore, checkScore: proposal.calibration.checkScore };
-  nextConfig.schedule = { ...nextConfig.schedule, enabled: false, provider: nextConfig.ai?.provider || null };
+  nextConfig.schedule = { jobs: [] };
   if (activatedAt) nextConfig.setup = { ...nextConfig.setup, completedAt: activatedAt };
   validateWorkspaceConfig(nextConfig);
   const context = [
