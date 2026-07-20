@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
 const app = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+const setup = fs.readFileSync(new URL('./setup.js', import.meta.url), 'utf8');
 
 test('phone layout keeps navigation scrollable and primary controls touch sized', () => {
   assert.match(html, /@media \(max-width:700px\)/);
@@ -27,4 +28,12 @@ test('chat drawer stays interactive when opened from the setup modal', () => {
   const setupZ = Number(html.match(/\.setup-overlay\s*\{[^}]*z-index:\s*(\d+)/s)?.[1]);
   const chatZ = Number(html.match(/\.chat-drawer\s*\{[^}]*z-index:\s*(\d+)/s)?.[1]);
   assert.ok(chatZ > setupZ, `expected chat drawer z-index ${chatZ} above setup overlay ${setupZ}`);
+});
+
+test('manual settings has a persistent accessible close control', () => {
+  assert.match(html, /id="setup-close"[^>]*aria-label="Close settings"/);
+  assert.match(html, /\.setup-head\s*\{[^}]*position:\s*sticky/s);
+  assert.match(html, /\.setup-close\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/s);
+  assert.match(setup, /event\.key === 'Escape'[\s\S]*closeSettings\(\)/);
+  assert.match(setup, /event\.target === this\.el\('setup-overlay'\)[\s\S]*closeSettings\(\)/);
 });

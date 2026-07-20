@@ -94,6 +94,8 @@ const Setup = {
   proposal: null,
   restoredPreferences: null,
   pendingRecoveryKey: null,
+  settingsOpen: false,
+  settingsReturnFocus: null,
 
   el(id) { return document.getElementById(id); },
 
@@ -102,6 +104,13 @@ const Setup = {
     this.el('setup-back').addEventListener('click', () => this.move(-1));
     this.el('setup-next').addEventListener('click', () => this.next());
     this.el('setup-skip').addEventListener('click', () => this.deferSetup());
+    this.el('setup-close').addEventListener('click', () => this.closeSettings());
+    this.el('setup-overlay').addEventListener('click', (event) => {
+      if (event.target === this.el('setup-overlay')) this.closeSettings();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !this.el('setup-overlay').classList.contains('hidden')) this.closeSettings();
+    });
     await this.refreshStatus();
   },
 
@@ -156,6 +165,8 @@ const Setup = {
   },
 
   async openSettings() {
+    this.settingsOpen = true;
+    this.settingsReturnFocus = document.activeElement;
     this.incrementalSection = null;
     this.step = 0;
     this.preferenceStep = 0;
@@ -163,10 +174,21 @@ const Setup = {
     // Provider checks can take several seconds. Open the dialog immediately so
     // the Settings button never appears unresponsive while status is refreshed.
     this.el('setup-overlay').classList.remove('hidden');
+    this.el('setup-close').classList.remove('hidden');
     this.el('setup-title').textContent = 'Scout settings';
     this.el('setup-subtitle').textContent = 'Checking your private workspace…';
     this.el('setup-body').innerHTML = '<div class="setup-callout"><strong>Scout is checking your setup…</strong><p>This can take a few seconds while local AI providers are verified.</p></div>';
     await this.refreshStatus({ keepOpen: true });
+  },
+
+  closeSettings() {
+    if (!this.settingsOpen || this.busy) return;
+    this.settingsOpen = false;
+    this.el('setup-close').classList.add('hidden');
+    this.el('setup-overlay').classList.add('hidden');
+    const target = this.settingsReturnFocus;
+    this.settingsReturnFocus = null;
+    if (target?.isConnected) target.focus();
   },
 
   async restartServer() {
@@ -204,6 +226,7 @@ const Setup = {
     this.busy = busy;
     this.el('setup-next').disabled = busy;
     this.el('setup-back').disabled = busy;
+    this.el('setup-close').disabled = busy;
     for (const id of ['setup-run-scan', 'setup-schedule-save', 'setup-schedule-disable']) {
       const button = this.el(id); if (button) button.disabled = busy;
     }
