@@ -219,7 +219,7 @@ export function linuxSystemdUnits({ id = 'primary', command, args, workingDirect
   validateTime(time);
   const zone = validateTimezone(timezone);
   return {
-    service: `[Unit]\nDescription=Scout daily scan\n[Service]\nType=oneshot\nWorkingDirectory=${systemdQuote(workingDirectory)}\nEnvironment=${systemdQuote(`PATH=${pathValue}`)}\nExecStart=${[command, ...args].map(systemdQuote).join(' ')}\nRuntimeMaxSec=2700\n`,
+    service: `[Unit]\nDescription=Scout daily scan\n[Service]\nType=exec\nWorkingDirectory=${systemdQuote(workingDirectory)}\nEnvironment=${systemdQuote(`PATH=${pathValue}`)}\nExecStart=${[command, ...args].map(systemdQuote).join(' ')}\nRuntimeMaxSec=2700\n`,
     timer: `[Unit]\nDescription=Run Scout daily (${id})\n[Timer]\nOnCalendar=*-*-* ${time}:00 ${zone}\nPersistent=true\nUnit=${names.linux}.service\n[Install]\nWantedBy=timers.target\n`,
   };
 }
@@ -234,8 +234,13 @@ export function registerUnixSchedule({ id = 'primary', platform = process.platfo
   }
   if (platform === 'linux') {
     const dir = path.join(home, '.config', 'systemd', 'user'); fileSystem.mkdirSync(dir, { recursive: true }); const units = linuxSystemdUnits({ id, command, args, workingDirectory, time, timezone, pathValue: `/usr/local/bin:${path.join(home, '.local/bin')}:${path.join(home, '.npm-global/bin')}:${process.env.PATH || ''}` });
-    fileSystem.writeFileSync(path.join(dir, `${names.linux}.service`), units.service); fileSystem.writeFileSync(path.join(dir, `${names.linux}.timer`), units.timer);
-    let r = spawn('systemctl', ['--user', 'daemon-reload'], systemdUserOptions(uid, { encoding: 'utf8' })); if (r.status === 0) r = spawn('systemctl', ['--user', 'enable', '--now', `${names.linux}.timer`], systemdUserOptions(uid, { encoding: 'utf8' }));
+    const serviceFile = path.join(dir, `${names.linux}.service`);
+    const timerFile = path.join(dir, `${names.linux}.timer`);
+    fileSystem.writeFileSync(serviceFile, units.service); fileSystem.writeFileSync(timerFile, units.timer);
+    let r = spawn('systemd-analyze', ['--user', 'verify', serviceFile, timerFile], systemdUserOptions(uid, { encoding: 'utf8' }));
+    if (r.error?.code === 'ENOENT') r = { status: 0, stdout: '' };
+    if (r.status === 0) r = spawn('systemctl', ['--user', 'daemon-reload'], systemdUserOptions(uid, { encoding: 'utf8' }));
+    if (r.status === 0) r = spawn('systemctl', ['--user', 'enable', '--now', `${names.linux}.timer`], systemdUserOptions(uid, { encoding: 'utf8' }));
     return { ok: r.status === 0, supported: r.error?.code !== 'ENOENT', output: String(r.stdout || r.stderr || '').trim() };
   }
   return { ok: false, supported: false, error: 'Unix scheduling requires macOS or Linux' };

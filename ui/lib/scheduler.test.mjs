@@ -71,4 +71,5 @@ test('macOS launch agent uses a daily calendar and argument array', () => {
 test('Linux user timer is persistent, bounded and safely quoted', () => {
   const units = linuxSystemdUnits({ command: '/opt/scout/runtime/node', args: ['/opt/scout/app/tools/scout.mjs', 'scan', '--workspace', '/home/a/Scout Workspace'], workingDirectory: '/opt/scout/app', time: '07:30' });
   assert.match(units.timer, /OnCalendar=\*-\*-\* 07:30:00 Europe\/London/); assert.match(units.timer, /Persistent=true/); assert.match(units.service, /RuntimeMaxSec=2700/); assert.match(units.service, /"\/home\/a\/Scout Workspace"/);
+  assert.match(units.service, /Type=exec/);
 });
