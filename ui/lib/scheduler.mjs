@@ -214,12 +214,22 @@ export function removeLegacySchedule({ spawn = spawnSync, platform = process.pla
 }
 
 function systemdQuote(value) { const text = String(value); if (/\r|\n/.test(text)) throw new Error('schedule arguments cannot contain newlines'); return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
+function systemdPath(value) {
+  const text = String(value);
+  if (!path.posix.isAbsolute(text) || /\r|\n/.test(text)) throw new Error('schedule working directory must be an absolute path');
+  return [...Buffer.from(text)].map((byte) => (
+    (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+      || [45, 46, 47, 58, 95].includes(byte)
+      ? String.fromCharCode(byte)
+      : `\\x${byte.toString(16).padStart(2, '0')}`
+  )).join('');
+}
 export function linuxSystemdUnits({ id = 'primary', command, args, workingDirectory, time, timezone = 'Europe/London', pathValue = process.env.PATH || '' }) {
   const names = nativeScheduleNames(id);
   validateTime(time);
   const zone = validateTimezone(timezone);
   return {
-    service: `[Unit]\nDescription=Scout daily scan\n[Service]\nType=exec\nWorkingDirectory=${systemdQuote(workingDirectory)}\nEnvironment=${systemdQuote(`PATH=${pathValue}`)}\nExecStart=${[command, ...args].map(systemdQuote).join(' ')}\nRuntimeMaxSec=2700\n`,
+    service: `[Unit]\nDescription=Scout daily scan\n[Service]\nType=exec\nWorkingDirectory=${systemdPath(workingDirectory)}\nEnvironment=${systemdQuote(`PATH=${pathValue}`)}\nExecStart=${[command, ...args].map(systemdQuote).join(' ')}\nRuntimeMaxSec=2700\n`,
     timer: `[Unit]\nDescription=Run Scout daily (${id})\n[Timer]\nOnCalendar=*-*-* ${time}:00 ${zone}\nPersistent=true\nUnit=${names.linux}.service\n[Install]\nWantedBy=timers.target\n`,
   };
 }
