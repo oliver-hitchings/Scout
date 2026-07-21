@@ -34,6 +34,8 @@ If an already-open page still shows an older layout after Scout itself was upgra
 
 The header backup status opens **Backup details**. Use **Advanced backup settings** from there for configuration. The main **Settings** button opens the sectioned settings hub; first-run onboarding appears automatically only for an unfinished workspace.
 
+If Setup temporarily cannot reach the local Scout server, select **Retry** after the server is available. Retry reconnects in place: it does not reload the page or discard answers you have entered in the current onboarding or retuning step.
+
 ## Private backup cannot be enabled
 
 Backup is optional. Confirm Git and Git Credential Manager are installed, restart Scout after installation, and use a credential-free `https://github.com/owner/repository` URL. Connecting a local workspace requires an empty Private repository; use **Restore my existing workspace** for a repository that already contains Scout data. Scout refuses public repositories and refuses to push `.env`, generated PDF/DOCX files or other sensitive ignored paths when they are already tracked in Git.
