@@ -112,6 +112,7 @@ Open `http://127.0.0.1:8459`. Use a synthetic workspace for development and neve
 - [Install Scout on macOS](docs/INSTALL_MACOS.md)
 - [Install Scout on Linux](docs/INSTALL_LINUX.md)
 - [Host Scout on a private VPS](docs/INSTALL_VPS.md)
+- [Canonical VPS state and automatic backup](docs/VPS_BACKUP_AND_STATE.md)
 - [AI-assisted setup and retuning](docs/AI_SETUP.md)
 - [Configuration reference](docs/CONFIGURATION.md)
 - [Privacy and data handling](docs/PRIVACY.md)

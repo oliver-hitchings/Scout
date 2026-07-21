@@ -20,7 +20,7 @@ This is the canonical clean-history public application repository. Release only 
    npm ci --omit=dev
    node tools/typst-runtime.mjs install
    node tools/typst-runtime.mjs verify --compile
-   node tools/build-release.mjs --installer --version 0.1.0-beta.15
+   node tools/build-release.mjs --installer --version 0.1.0-beta.16
    ```
 
    Set `ISCC_PATH` when required. The installer is named

@@ -2,6 +2,8 @@
 
 Scout is local-first by default. Private Remote Access is optional and makes one signed-in computer the canonical Scout host. Phone and laptop browsers then use that one running Scout process, private workspace, chat transcripts and active provider sessions. Clients do not clone or directly edit the workspace.
 
+On a canonical VPS, encrypted private backup must be enabled before a remote client can change state. Scout writes client changes to the VPS and queues backup there; nothing depends on storage inside the phone or installed browser app. See [Canonical VPS state and automatic backup](VPS_BACKUP_AND_STATE.md).
+
 ## Requirements and cost
 
 - A desktop host must be awake, connected to the internet, signed in to its operating-system user account and running Scout. A dedicated Ubuntu VPS may instead use the constrained, reboot-safe user service in [Host Scout on a private VPS](INSTALL_VPS.md).

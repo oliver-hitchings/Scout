@@ -21,6 +21,7 @@ test('release manifest is allowlisted and excludes private workspace roots', () 
   assert.ok(sources.includes('docs/INSTALL_MACOS.md'));
   assert.ok(sources.includes('docs/INSTALL_LINUX.md'));
   assert.ok(sources.includes('docs/INSTALL_VPS.md'));
+  assert.ok(sources.includes('docs/VPS_BACKUP_AND_STATE.md'));
   assert.ok(sources.includes('docs/CV_QUALITY.md'));
   assert.ok(sources.includes('docs/releases'));
   assert.ok(sources.includes('docs/RELEASE.md'));

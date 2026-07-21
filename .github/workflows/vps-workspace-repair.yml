@@ -1,0 +1,100 @@
+name: Protected VPS workspace repair
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Protected maintenance operation
+        required: true
+        type: choice
+        options:
+          - prepare-key
+          - adopt-and-verify
+      expected_cv_sources:
+        description: Exact number of tailored CV sources expected after adoption
+        required: false
+        default: 3
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-22.04
+    environment: beta-vps
+    concurrency:
+      group: scout-beta-vps
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Join the private deployment tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:scout-deploy
+          ping: ${{ secrets.SCOUT_VPS_HOST }}
+      - name: Configure pinned SSH credentials
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SCOUT_VPS_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SCOUT_VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+      - name: Prepare the repository-scoped workspace deploy key
+        if: inputs.action == 'prepare-key'
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.SCOUT_VPS_HOST }}
+        run: |
+          set -euo pipefail
+          response=$(ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            scout-deploy@"$VPS_HOST" \
+            "curl --fail --silent --show-error -X POST -H 'content-type: application/json' --data '{}' http://127.0.0.1:8459/api/sync/deploy-key")
+          public_key=$(printf '%s' "$response" | jq -er '.publicKey | select(startswith("ssh-ed25519 "))')
+          printf 'Add this public key to the private workspace repository with write access:\n%s\n' "$public_key"
+      - name: Adopt the private workspace and verify backup plus CV rendering
+        if: inputs.action == 'adopt-and-verify'
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.SCOUT_VPS_HOST }}
+          REMOTE_URL: ${{ vars.SCOUT_WORKSPACE_REMOTE_URL }}
+          PASSPHRASE: ${{ secrets.SCOUT_WORKSPACE_PASSPHRASE }}
+          EXPECTED_CV_SOURCES: ${{ inputs.expected_cv_sources }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$REMOTE_URL"
+          test "${#PASSPHRASE}" -ge 12
+          payload=$(jq -cn --arg remote "$REMOTE_URL" --arg passphrase "$PASSPHRASE" \
+            '{remoteUrl:$remote,passphrase:$passphrase,confirmation:"replace-with-existing-private-workspace"}')
+          response=$(printf '%s' "$payload" | ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            scout-deploy@"$VPS_HOST" \
+            "curl --fail --silent --show-error -X POST -H 'content-type: application/json' --data-binary @- http://127.0.0.1:8459/api/workspace/adopt-private")
+          printf '%s' "$response" | jq -e '{ok,workspaceRoot,backupRoot,status:{state:.status.state,enabled:.status.enabled}} | select(.ok and .status.state=="synced" and .status.enabled==true)'
+
+          cv_index=$(ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            scout-deploy@"$VPS_HOST" "curl --fail --silent --show-error http://127.0.0.1:8459/api/cv")
+          source_count=$(printf '%s' "$cv_index" | jq '[.entries[] | select(.source == true or .source.available == true)] | length')
+          test "$source_count" -eq "$EXPECTED_CV_SOURCES"
+          printf '%s' "$cv_index" | jq -r '.entries[].slug' | while IFS= read -r slug; do
+            render_payload=$(jq -cn --arg slug "$slug" '{slug:$slug}')
+            render=$(printf '%s' "$render_payload" | ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              scout-deploy@"$VPS_HOST" \
+              "curl --fail --silent --show-error -X POST -H 'content-type: application/json' --data-binary @- http://127.0.0.1:8459/api/cv/render")
+            printf '%s' "$render" | jq -e 'select(.ok==true)' >/dev/null
+          done
+          rendered_index=$(ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            scout-deploy@"$VPS_HOST" "curl --fail --silent --show-error http://127.0.0.1:8459/api/cv")
+          pdf_count=$(printf '%s' "$rendered_index" | jq '[.entries[] | select((.source == true or .source.available == true) and (.pdf == true or .pdf.available == true))] | length')
+          test "$pdf_count" -eq "$EXPECTED_CV_SOURCES"
+          sync=$(ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            scout-deploy@"$VPS_HOST" "curl --fail --silent --show-error http://127.0.0.1:8459/api/sync/status")
+          printf '%s' "$sync" | jq -e 'select(.enabled==true and .state=="synced")' >/dev/null
+          printf 'Private workspace adopted: %s CV source(s), %s rendered PDF(s), automatic backup synced.\n' "$source_count" "$pdf_count"

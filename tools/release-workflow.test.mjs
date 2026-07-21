@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 const workflow = fs.readFileSync(new URL('../.github/workflows/windows-release.yml', import.meta.url), 'utf8');
+const workspaceRepair = fs.readFileSync(new URL('../.github/workflows/vps-workspace-repair.yml', import.meta.url), 'utf8');
 const deploy = fs.readFileSync(new URL('./deploy-vps.sh', import.meta.url), 'utf8');
 
 test('tagged release workflow validates version and requires private markers', () => {
@@ -52,6 +53,7 @@ test('tagged release deploys the private VPS before publication', () => {
   assert.match(deploy, /remote preflight --require-serve-mapping/);
   assert.match(deploy, /127\.0\.0\.1:8459\/api\/cv/);
   assert.match(deploy, /Array\.isArray\(index\.entries\)/);
+  assert.match(deploy, /entry\?\.source === true/);
   assert.match(deploy, /SCOUT_VPS_DEPLOY_USER:-scout-deploy/);
   assert.match(deploy, /SCOUT_VPS_SERVICE_USER:-ubuntu/);
   assert.match(deploy, /property=ExecStart/);
@@ -84,6 +86,20 @@ test('VPS dirty check permits only Scout managed Typst files', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('workspace repair is protected, local-only and verifies backup plus rendered CVs', () => {
+  assert.match(workspaceRepair, /environment: beta-vps/);
+  assert.match(workspaceRepair, /concurrency:[\s\S]*group: scout-beta-vps/);
+  assert.match(workspaceRepair, /tailscale\/github-action@v4/);
+  assert.match(workspaceRepair, /StrictHostKeyChecking=yes/);
+  assert.match(workspaceRepair, /127\.0\.0\.1:8459\/api\/sync\/deploy-key/);
+  assert.match(workspaceRepair, /127\.0\.0\.1:8459\/api\/workspace\/adopt-private/);
+  assert.match(workspaceRepair, /SCOUT_WORKSPACE_PASSPHRASE/);
+  assert.match(workspaceRepair, /expected_cv_sources/);
+  assert.match(workspaceRepair, /api\/cv\/render/);
+  assert.match(workspaceRepair, /api\/sync\/status/);
+  assert.doesNotMatch(workspaceRepair, /echo .*PASSPHRASE/);
 });
 
 test('package, installer and release notes use one beta version', () => {
