@@ -1115,7 +1115,7 @@ const Scout = {
     document.querySelectorAll('[data-cv-path]').forEach((b) =>
       b.classList.toggle('active', b.dataset.cvPath === pathRel));
     if (slug) await this.renderCvPreview(slug);
-    else document.getElementById('cv-preview').textContent = 'No PDF preview for this file.';
+    else document.getElementById('cv-preview').textContent = 'The master CV is source material only and has no PDF preview. Open or create a tailored CV to render a PDF.';
   },
 
   async saveCv() {

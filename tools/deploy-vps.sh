@@ -178,7 +178,7 @@ fi
 node "$app_root/tools/scout.mjs" remote preflight --require-serve-mapping
 node "$app_root/tools/typst-runtime.mjs" verify --compile
 cv_index=$(curl --fail --silent --show-error http://127.0.0.1:8459/api/cv)
-node -e 'const index=JSON.parse(process.argv[1]); if(!Array.isArray(index.entries)) process.exit(1); const sources=index.entries.filter(entry => entry?.source?.available).length; console.log(`Scout CV index exposes ${sources} source CV(s).`)' "$cv_index"
+node -e 'const index=JSON.parse(process.argv[1]); if(!Array.isArray(index.entries)) process.exit(1); const sources=index.entries.filter(entry => entry?.source === true || entry?.source?.available === true).length; console.log(`Scout CV index exposes ${sources} source CV(s).`)' "$cv_index"
 
 trap - ERR
 printf 'Scout %s is healthy; workspace, provider homes and Tailscale Serve mapping were preserved.\n' "$version"

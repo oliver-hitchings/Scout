@@ -45,6 +45,19 @@ test('VPS instructions keep headless hosting private, unprivileged and reboot sa
   assert.match(read('docs/PRIVATE_REMOTE_ACCESS.md'), /INSTALL_VPS\.md/);
 });
 
+test('canonical VPS guide documents automatic backup and a reproducible restore drill', () => {
+  const state = read('docs/VPS_BACKUP_AND_STATE.md');
+  for (const phrase of [
+    'VPS is the canonical Scout computer', 'queues a serialized Git checkpoint',
+    'five-minute periodic checkpoints', 'rejects remote state-changing requests',
+    'Prepare VPS deploy key', 'Back up now', 'Restore into an isolated empty directory',
+    'Do not run a second writable Scout host', 'interrupt outbound GitHub access',
+  ]) assert.match(state, new RegExp(phrase, 'i'), phrase);
+  assert.doesNotMatch(state, /oliver-hitchings|scout-workspace/);
+  assert.match(read('README.md'), /VPS_BACKUP_AND_STATE\.md/);
+  assert.match(read('docs/INSTALL_VPS.md'), /VPS_BACKUP_AND_STATE\.md/);
+});
+
 test('maintainer checklist keeps live acceptance and the beta.11 release separate', () => {
   assert.match(read('README.md'), /REMOTE_HOSTING_TODO\.md/);
   for (const phrase of ['gh auth login', 'mobile data', 'different Tailscale user', 'within 90 seconds', 'unrelated Tailscale Serve mapping', 'separate beta.11 version']) {

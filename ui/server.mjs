@@ -25,7 +25,7 @@ import { loadDeviceSettings, pendingDeviceSections, saveDeviceSettings, setWindo
 import { disableRemoteAccess, enableRemoteAccess, remoteAccessStatus } from './lib/remoteAccess.mjs';
 import { checkForUpdate, downloadVerifiedUpdate } from './lib/updates.mjs';
 import {
-  confirmRecoveryKey, connectWorkspaceSync, detectGit, disableWorkspaceSync, pendingRecoveryKey,
+  adoptExistingWorkspaceFromGithub, confirmRecoveryKey, connectWorkspaceSync, detectGit, disableWorkspaceSync, loadSyncSettings, pendingRecoveryKey,
   prepareGithubDeployKey, queueWorkspaceSync, restoreWorkspaceFromGithub, syncStatus,
 } from './lib/workspaceSync.mjs';
 import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
@@ -173,12 +173,27 @@ function loopbackSocket(address) {
 }
 
 const LOCAL_ONLY_ROUTES = new Set([
+  'POST /api/workspace/create',
+  'POST /api/workspace/restore',
   'POST /api/device/settings',
   'POST /api/update/download',
   'POST /api/setup/section',
   'POST /api/remote-access/enable',
   'POST /api/remote-access/disable',
   'POST /api/shutdown',
+  'POST /api/workspace/adopt-private',
+  'POST /api/sync/connect',
+  'POST /api/sync/deploy-key',
+  'POST /api/sync/disable',
+  'POST /api/sync/recovery-key',
+  'POST /api/sync/recovery-key/confirm',
+]);
+
+const REMOTE_MUTATION_WITHOUT_BACKUP = new Set([
+  'POST /api/sync/backup',
+  'POST /api/sync/retry',
+  'POST /api/update/check',
+  'POST /api/restart',
 ]);
 
 function applySecurityHeaders(res, url) {
@@ -244,6 +259,15 @@ export function requestAccess(req, url, settings = loadDeviceSettings()) {
     if (mediaType !== 'application/json') {
       return { ok: false, status: 415, error: 'application/json required' };
     }
+  }
+  if (mutatingApi && access === 'remote-owner'
+      && !REMOTE_MUTATION_WITHOUT_BACKUP.has(`${req.method} ${url.pathname}`)
+      && !loadSyncSettings(WORKSPACE_ROOT).enabled) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Encrypted private backup must be enabled on the Scout host before remote changes are allowed',
+    };
   }
   return { ok: true, access };
 }
@@ -567,6 +591,21 @@ routes['POST /api/workspace/restore'] = async (req, res, body) => {
     const health = doctor(WORKSPACE_ROOT, { requireProvider: false, appRoot: APP_ROOT });
     if (!health.ok) return replyJson(res, 409, { error: 'The restored workspace did not pass Scout doctor', doctor: health });
     return replyJson(res, 200, { ...result, doctor: health });
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
+routes['POST /api/workspace/adopt-private'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Adoption requires the existing workspace to be initialised' });
+  try {
+    const result = await adoptExistingWorkspaceFromGithub({
+      remoteUrl: b.remoteUrl, targetRoot: WORKSPACE_ROOT, passphrase: b.passphrase, confirmation: b.confirmation,
+    }, {
+      prepareWorkspace: (root) => syncManagedInstructions(APP_ROOT, root),
+      validateWorkspace: (root) => doctor(root, { requireProvider: false, appRoot: APP_ROOT }),
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    return replyJson(res, 200, result);
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 

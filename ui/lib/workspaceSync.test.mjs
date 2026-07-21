@@ -5,10 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  confirmRecoveryKey, connectWorkspaceSync, disableWorkspaceSync, loadSyncSettings, pendingRecoveryKey,
+  adoptExistingWorkspaceFromGithub, confirmRecoveryKey, connectWorkspaceSync, disableWorkspaceSync, loadSyncSettings, pendingRecoveryKey,
   queueWorkspaceSync, restoreWorkspaceFromGithub, runWorkspaceSync, syncStatus, validateGithubUrl,
   verifyPrivateGithubRemote,
 } from './workspaceSync.mjs';
+import { initializeRecoveryBackup } from './recoveryBackup.mjs';
 
 const EXAMPLE_ENV = ['SECRET', 'example'].join('=') + '\n';
 const CHANGED_ENV = ['SECRET', 'dummy'].join('=') + '\n';
@@ -124,15 +125,19 @@ test('workspace upgrade untracks legacy chats without deleting transcripts', asy
   fs.appendFileSync(path.join(f.root, '.gitignore'), 'data/chats/\n');
   fs.mkdirSync(path.join(f.root, 'data', 'chats'), { recursive: true });
   fs.writeFileSync(path.join(f.root, 'data', 'chats', 'example.json'), '{"messages":[]}\n');
+  fs.writeFileSync(path.join(f.root, 'AGENTS.md'), 'Managed instructions\n');
   git(f.root, 'init');
   git(f.root, 'config', 'user.name', 'Test');
   git(f.root, 'config', 'user.email', 'test@example.invalid');
   git(f.root, 'add', 'workspace.json', '.gitignore', 'data/opportunities.json');
   git(f.root, 'add', '-f', 'data/chats/example.json');
+  git(f.root, 'add', '-f', 'AGENTS.md');
   git(f.root, 'commit', '-m', 'legacy tracked chat');
   await runWorkspaceSync(f.root, 'make chats device local');
   assert.equal(fs.existsSync(path.join(f.root, 'data', 'chats', 'example.json')), true);
   assert.equal(git(f.root, 'ls-files', 'data/chats'), '');
+  assert.equal(fs.existsSync(path.join(f.root, 'AGENTS.md')), true);
+  assert.equal(git(f.root, 'ls-files', 'AGENTS.md'), '');
   fs.rmSync(f.base, { recursive: true, force: true });
 });
 
@@ -270,5 +275,109 @@ test('restore validation fails before installing the target workspace', async ()
   }), /did not pass Scout doctor/);
   assert.equal(fs.existsSync(target), false);
   assert.equal(fs.readdirSync(f.base).some((name) => name.startsWith('.scout-restore-')), false);
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('legacy private workspace adoption keeps a rollback copy and enables encrypted sync', async () => {
+  const f = fixture();
+  const source = path.join(f.base, 'legacy-source');
+  fs.mkdirSync(path.join(source, 'data'), { recursive: true });
+  fs.mkdirSync(path.join(source, 'applications', 'legacy-role'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'workspace.json'), '{"schemaVersion":1}\n');
+  fs.writeFileSync(path.join(source, 'data', 'opportunities.json'), '{"opportunities":[]}\n');
+  fs.writeFileSync(path.join(source, 'applications', 'legacy-role', 'cv.typ'), 'Legacy CV\n');
+  fs.writeFileSync(path.join(source, '.gitignore'), '.env\n.scout/\napplications/**/*.pdf\ndata/chats/\n');
+  git(source, 'init');
+  git(source, 'config', 'user.name', 'Test');
+  git(source, 'config', 'user.email', 'test@example.invalid');
+  git(source, 'add', '.');
+  git(source, 'commit', '-m', 'legacy private workspace');
+  git(source, 'remote', 'add', 'origin', f.remote);
+  git(source, 'push', '-u', 'origin', 'HEAD');
+
+  const home = path.join(f.base, 'home');
+  fs.mkdirSync(home);
+  const adopted = await adoptExistingWorkspaceFromGithub({
+    remoteUrl: 'git@github.com:example/scout-workspace.git', targetRoot: f.root,
+    passphrase: 'correct horse battery staple', confirmation: 'replace-with-existing-private-workspace',
+  }, {
+    home,
+    verifyRemote: async () => ({ url: f.remote, empty: false, transport: 'ssh' }),
+    validateWorkspace: () => ({ ok: true }),
+  });
+  assert.equal(adopted.ok, true);
+  assert.equal(fs.readFileSync(path.join(f.root, 'applications', 'legacy-role', 'cv.typ'), 'utf8').trim(), 'Legacy CV');
+  assert.equal(fs.existsSync(path.join(adopted.backupRoot, 'workspace.json')), true);
+  assert.equal(loadSyncSettings(f.root).enabled, true);
+  assert.match(pendingRecoveryKey(f.root), /^SCOUT-1-/);
+  assert.equal(git(f.root, 'status', '--porcelain'), '');
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('private workspace adoption unlocks existing recovery data and restores ignored chats', async () => {
+  const f = fixture();
+  const source = path.join(f.base, 'encrypted-source');
+  fs.mkdirSync(path.join(source, 'data', 'chats'), { recursive: true });
+  fs.mkdirSync(path.join(source, 'applications', 'existing-role'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'workspace.json'), '{"schemaVersion":1}\n');
+  fs.writeFileSync(path.join(source, 'data', 'opportunities.json'), '{"opportunities":[]}\n');
+  fs.writeFileSync(path.join(source, 'data', 'chats', 'private.json'), '{"messages":[]}\n');
+  fs.writeFileSync(path.join(source, 'applications', 'existing-role', 'cv.typ'), 'Existing CV\n');
+  fs.writeFileSync(path.join(source, '.gitignore'), '.env\n.scout/\napplications/**/*.pdf\ndata/chats/\n');
+  git(source, 'init');
+  git(source, 'config', 'user.name', 'Test');
+  git(source, 'config', 'user.email', 'test@example.invalid');
+  initializeRecoveryBackup(source, 'correct horse battery staple');
+  git(source, 'add', '.');
+  git(source, 'commit', '-m', 'encrypted private workspace');
+  git(source, 'remote', 'add', 'origin', f.remote);
+  git(source, 'push', '-u', 'origin', 'HEAD');
+
+  const home = path.join(f.base, 'home');
+  fs.mkdirSync(home);
+  const adopted = await adoptExistingWorkspaceFromGithub({
+    remoteUrl: 'git@github.com:example/scout-workspace.git', targetRoot: f.root,
+    passphrase: 'correct horse battery staple', confirmation: 'replace-with-existing-private-workspace',
+  }, {
+    home,
+    verifyRemote: async () => ({ url: f.remote, empty: false, transport: 'ssh' }),
+    validateWorkspace: () => ({ ok: true }),
+  });
+  assert.equal(adopted.restoredExistingRecovery, true);
+  assert.equal(adopted.recoveryKey, null);
+  assert.equal(pendingRecoveryKey(f.root), null);
+  const restoredChat = JSON.parse(fs.readFileSync(path.join(f.root, 'data', 'chats', 'private.json'), 'utf8'));
+  assert.equal(restoredChat.recovered.providerSessionReset, true);
+  assert.match(restoredChat.messages[0].text, /recovered on a new Scout host/);
+  assert.equal(git(f.root, 'ls-files', '--', 'data/chats/private.json'), '');
+  assert.equal(git(f.root, 'status', '--porcelain'), '');
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('legacy adoption validation failure leaves the original workspace installed', async () => {
+  const f = fixture();
+  const source = path.join(f.base, 'invalid-source');
+  fs.mkdirSync(path.join(source, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'workspace.json'), '{"schemaVersion":1}\n');
+  fs.writeFileSync(path.join(source, 'data', 'opportunities.json'), '{"opportunities":[]}\n');
+  git(source, 'init');
+  git(source, 'config', 'user.name', 'Test');
+  git(source, 'config', 'user.email', 'test@example.invalid');
+  git(source, 'add', '.');
+  git(source, 'commit', '-m', 'invalid private workspace');
+  git(source, 'remote', 'add', 'origin', f.remote);
+  git(source, 'push', '-u', 'origin', 'HEAD');
+  const home = path.join(f.base, 'home');
+  fs.mkdirSync(home);
+  await assert.rejects(() => adoptExistingWorkspaceFromGithub({
+    remoteUrl: 'git@github.com:example/scout-workspace.git', targetRoot: f.root,
+    passphrase: 'correct horse battery staple', confirmation: 'replace-with-existing-private-workspace',
+  }, {
+    home,
+    verifyRemote: async () => ({ url: f.remote, empty: false, transport: 'ssh' }),
+    validateWorkspace: () => ({ ok: false }),
+  }), /did not pass Scout doctor/);
+  assert.equal(fs.existsSync(path.join(f.root, 'workspace.json')), true);
+  assert.equal(fs.readdirSync(f.base).some((name) => name.startsWith('.scout-adopt-')), false);
   fs.rmSync(f.base, { recursive: true, force: true });
 });

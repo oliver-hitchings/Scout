@@ -54,6 +54,12 @@ test('sync status opens backup details and stale builds require a safe explicit 
   assert.doesNotMatch(source, /controllerchange'[\s\S]{0,120}location\.reload/);
 });
 
+test('master CV preview explains how to obtain a rendered PDF', () => {
+  const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  assert.match(source, /master CV is source material only and has no PDF preview/i);
+  assert.match(source, /Open or create a tailored CV to render a PDF/i);
+});
+
 test('company history keeps real correspondence separate from role-specific Scout chats', () => {
   const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
