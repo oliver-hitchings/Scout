@@ -42,6 +42,12 @@ Backup is optional. Confirm Git and Git Credential Manager are installed, restar
 
 **Offline — saved locally** means Scout made a local commit and will retry later. **Needs attention** means both the computer and GitHub have new history; Scout deliberately does not reset, rebase, merge or force-push. Preserve both copies and resolve the Git history manually before selecting **Retry**. Never delete `.git`, `.scout/sync.json` or `.scout-backup/` as a conflict workaround.
 
+## A scan reviewed candidates but kept zero
+
+This is not automatically a failed scan. Scout shows the number reviewed, number kept and the discard breakdown (hard exclusions, mandatory gates, below-threshold results and provider assessment discards), with a link to the dated report. Check source health first. If sources were healthy, zero keepers can be the correct result for strict salary, location, commute or evidence gates. Do not weaken a genuine hard gate merely to produce results.
+
+Scout refuses to start a scan when the approved profile, calibration or master CV is incomplete. If Setup reports an empty activated master CV and offers the validated recovery control, use it there; Scout backs up the current file and restores only the hash-checked reviewed staging copy. If the control is unavailable, preserve the workspace and inspect the reported mismatch.
+
 ## Restore fails
 
 Restore requires an empty target folder, the private repository HTTPS URL, and either the passphrase or emergency recovery key. Scout rejects malformed/tampered recovery data, symlinks, unsupported workspace schemas and workspaces that fail `scout doctor`. Codex/Claude authentication is not restored; sign in to the provider separately. Startup and scheduled scans require explicit confirmation on the new computer.

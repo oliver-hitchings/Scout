@@ -2,6 +2,8 @@
 
 Scout needs one installed and authenticated provider CLI. Codex and Claude are supported; a second provider is optional and can perform a second-pass review.
 
+For Codex, use the current [official Codex CLI installation guide](https://developers.openai.com/codex/cli/) and select the macOS, Linux or Windows instructions for the host. After installation, open Terminal or PowerShell, run `codex`, complete its sign-in flow, and verify `codex login status`. Scout needs that authenticated CLI session; signing in to a desktop app alone does not authenticate the command-line provider.
+
 Install each CLI only from its official provider documentation. Scout does not manage provider subscriptions, passwords or tokens.
 
 ## Verify outside Scout
@@ -20,9 +22,9 @@ claude auth login
 claude auth status
 ```
 
-Then refresh provider status in Scout. Scout checks the standard Windows npm, Node.js and `$HOME/.local/bin` locations directly, so a stale desktop `PATH` should not hide a normal Codex or Claude installation. macOS/Linux launchers include common Homebrew, `/usr/local/bin`, `$HOME/.local/bin` and npm-global locations; custom locations still require PATH configuration.
+Then refresh provider status in Scout. Scout checks standard Windows standalone, npm, Node.js and user-local locations directly, so a stale desktop `PATH` should not hide a normal installation. macOS and Linux checks include Homebrew, `/usr/local/bin`, `/usr/bin`, `$HOME/.local/bin`, `$HOME/.codex/bin`, `$HOME/.npm-global/bin` and `$HOME/bin`; custom locations still require PATH configuration.
 
-Scout uses the provider CLI, not a desktop application's embedded session. If Codex is installed but shown as signed out, run `codex login` and confirm `codex login status` in PowerShell before refreshing Scout.
+Scout uses the provider CLI, not a desktop application's embedded session. If Codex is installed but shown as signed out, run `codex`, complete sign-in, and confirm `codex login status` in the same host account before refreshing Scout.
 
 Scout separately reports installation, authentication and bounded structured-output compatibility. An authenticated CLI that is too old for schema-constrained output remains disabled until it is upgraded from the provider's official installer. Bounded setup, scans and fit assessments use one non-resumable turn with no provider file-writing tools; Scout's trusted runtime validates and writes the workspace artifacts.
 

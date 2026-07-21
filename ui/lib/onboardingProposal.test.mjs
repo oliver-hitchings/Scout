@@ -5,7 +5,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import {
   ONBOARDING_FILES, activateOnboardingProposal, buildOnboardingEvidence, createOnboardingProposal,
-  discardOnboardingProposal, readOnboardingProposal, validateOnboardingProposal,
+  activatedProposalRecovery, discardOnboardingProposal, readOnboardingProposal, recoverActivatedProposal,
+  validateOnboardingProposal,
 } from './onboardingProposal.mjs';
 import { DEFAULT_WORKSPACE_CONFIG, writeWorkspaceConfig } from './workspace.mjs';
 
@@ -100,4 +101,43 @@ test('activation rejects stale targets and rolls back every active file if docto
     const file = path.join(dir, ...relative.split('/'));
     assert.equal(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null, before[relative], relative);
   }
+});
+
+test('activated empty master CV recovery is narrow, backed up, and integrity checked', async () => {
+  const dir = root();
+  const staged = await createOnboardingProposal(dir, 'codex', { providerStatusFn: status, runStructuredTurnFn: run });
+  activateOnboardingProposal(dir, staged.proposalId, true, { doctorFn: healthyDoctor });
+  const active = path.join(dir, 'cv', 'master-cv.md');
+  const reviewed = fs.readFileSync(path.join(dir, '.scout', 'onboarding', 'cv', 'master-cv.md'), 'utf8');
+  fs.writeFileSync(active, '');
+  assert.equal(activatedProposalRecovery(dir).available, true);
+  assert.throws(() => recoverActivatedProposal(dir, false, { doctorFn: healthyDoctor }), /explicit recovery confirmation/);
+  const recovered = recoverActivatedProposal(dir, true, { doctorFn: healthyDoctor, now: () => '2026-07-14T11:00:00.000Z' });
+  assert.equal(recovered.restoredBytes, Buffer.byteLength(reviewed));
+  assert.equal(fs.readFileSync(active, 'utf8'), reviewed);
+  assert.equal(fs.statSync(path.join(recovered.backupDir, 'cv', 'master-cv.md')).size, 0);
+  assert.equal(activatedProposalRecovery(dir).available, false);
+});
+
+test('activated master CV recovery refuses unrelated active-file drift', async () => {
+  const dir = root();
+  const staged = await createOnboardingProposal(dir, 'codex', { providerStatusFn: status, runStructuredTurnFn: run });
+  activateOnboardingProposal(dir, staged.proposalId, true, { doctorFn: healthyDoctor });
+  fs.writeFileSync(path.join(dir, 'cv', 'master-cv.md'), '');
+  fs.appendFileSync(path.join(dir, 'profile', 'context.md'), '\nunreviewed change\n');
+  assert.equal(activatedProposalRecovery(dir).available, false);
+  assert.throws(() => recoverActivatedProposal(dir, true, { doctorFn: healthyDoctor }), /no longer matches/);
+});
+
+test('activated master CV recovery refuses workspace drift beyond activation time', async () => {
+  const dir = root();
+  const staged = await createOnboardingProposal(dir, 'codex', { providerStatusFn: status, runStructuredTurnFn: run });
+  activateOnboardingProposal(dir, staged.proposalId, true, { doctorFn: healthyDoctor });
+  fs.writeFileSync(path.join(dir, 'cv', 'master-cv.md'), '');
+  const workspaceFile = path.join(dir, 'workspace.json');
+  const config = JSON.parse(fs.readFileSync(workspaceFile, 'utf8'));
+  config.search.locations = ['Unreviewed place'];
+  fs.writeFileSync(workspaceFile, `${JSON.stringify(config, null, 2)}\n`);
+  assert.equal(activatedProposalRecovery(dir).available, false);
+  assert.throws(() => recoverActivatedProposal(dir, true, { doctorFn: healthyDoctor }), /workspace\.json no longer matches/);
 });

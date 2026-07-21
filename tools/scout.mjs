@@ -10,6 +10,7 @@ import { fetchConfiguredPortals } from '../ui/lib/ats.mjs';
 import { fetchHiringCafe } from '../ui/lib/hiringCafe.mjs';
 import { loadEnv } from '../ui/lib/env.mjs';
 import { providerStatus } from '../ui/lib/providers.mjs';
+import { setupReadiness } from '../ui/lib/setupReadiness.mjs';
 import { runStructuredTurn } from '../ui/lib/structuredTurn.mjs';
 import { compactCandidates, SCAN_ASSESSMENT_SCHEMA, validateAssessments, writeScanArtifacts } from '../ui/lib/scanPipeline.mjs';
 import { isMainModule } from '../ui/lib/mainModule.mjs';
@@ -111,8 +112,27 @@ export function migrateLegacyWorkspace(sourceRoot, targetRoot) {
   return { sourceRoot, targetRoot, verifiedFiles, committed: commit.status === 0, commitMessage: String(commit.stderr || commit.stdout || '').trim() };
 }
 
-export async function runScan(root, provider, mode) {
-  const result = await runScanWith(root, provider, mode);
+export function assertScanReady(root, provider, { providerStatusFn = providerStatus } = {}) {
+  const config = loadWorkspaceConfig(root);
+  const tracker = JSON.parse(fs.readFileSync(workspacePaths(root).tracker, 'utf8'));
+  const selected = config.ai?.provider;
+  const providers = Object.fromEntries([...new Set([selected, provider].filter(Boolean))].map((name) => [name, providerStatusFn(name)]));
+  const readiness = setupReadiness(root, config, providers, tracker);
+  const requestedProviderReady = Boolean(providers[provider]?.installed && providers[provider]?.authenticated
+    && providers[provider]?.capabilities?.structuredOutput !== false);
+  readiness.checks.requestedProvider = requestedProviderReady;
+  readiness.ready = readiness.ready && requestedProviderReady;
+  if (!readiness.ready) {
+    const missing = Object.entries(readiness.checks).filter(([, ready]) => !ready).map(([name]) => name);
+    throw new Error(`scan requires complete approved evidence and an authenticated provider; fix: ${missing.join(', ')}`);
+  }
+  return readiness;
+}
+
+export async function runScan(root, provider, mode, { onProgress = () => {} } = {}) {
+  onProgress({ phase: 'Validating approved evidence', current: 1, total: 5 });
+  assertScanReady(root, provider);
+  const result = await runScanWith(root, provider, mode, { onProgress });
   await queueWorkspaceSync(root, `complete ${mode || 'primary'} scan`).catch(() => {});
   return result;
 }
@@ -175,6 +195,7 @@ function buildScanContext(paths, config, candidates) {
 export async function runScanWith(root, provider, mode, {
   providerStatusFn = providerStatus, collectSourcesFn = collectScanSources,
   runStructuredTurnFn = runStructuredTurn, acquireLockFn = acquireScanLock, releaseLockFn = releaseScanLock,
+  onProgress = () => {},
 } = {}) {
   if (!['codex', 'claude'].includes(provider)) throw new Error('provider must be codex or claude');
   if (!['primary', 'second-pass'].includes(mode)) throw new Error('mode must be primary or second-pass');
@@ -195,6 +216,7 @@ export async function runScanWith(root, provider, mode, {
   let collected = null;
   let candidates = [];
   try {
+    onProgress({ phase: 'Collecting current opportunities', current: 2, total: 5 });
     collected = await collectSourcesFn(root, config);
     candidates = compactCandidates(collected.sources, 40);
     const bundleDir = path.join(root, '.scout', 'scan-input');
@@ -204,6 +226,7 @@ export async function runScanWith(root, provider, mode, {
     let assessmentResult = null;
     let usage = {};
     if (candidates.length) {
+      onProgress({ phase: `Scoring ${candidates.length} candidates`, current: 3, total: 5 });
       const paths = workspacePaths(root);
       const context = buildScanContext(paths, config, candidates);
       const prompt = [
@@ -222,11 +245,13 @@ export async function runScanWith(root, provider, mode, {
       assessmentResult = turn.value;
       usage = turn.usage;
     }
+    onProgress({ phase: 'Writing tracker and report', current: 4, total: 5 });
     const artifacts = writeScanArtifacts(root, {
       provider, mode, sources: collected.sources, queries: collected.queries, candidates, assessmentResult,
       policy: config.triage, exclusions: config.search?.exclusions || [], startedAt,
     });
     result = { ok: true, status: artifacts.run.degraded ? 'degraded' : candidates.length ? 'completed' : 'healthy-empty', scan: artifacts.run, usage };
+    onProgress({ phase: 'Scan completed', current: 5, total: 5 });
   } catch (error) {
     try {
       const artifacts = writeScanArtifacts(root, {

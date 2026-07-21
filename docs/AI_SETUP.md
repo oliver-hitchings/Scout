@@ -19,6 +19,8 @@ Answer Scout's setup questions for:
 
 Choose **Generate proposal**. Scout gives every supplied field and imported CV line a stable evidence ID. Every factual CV item, skill, qualification and achievement must cite one of those IDs. The provider proposes content, a 100-point rubric and search lanes; Scout validates them and stages:
 
+Proposal generation runs as a local background operation. Setup shows the current phase, step progress and elapsed time. You may choose **Continue in background**, close setup or close the browser; reopening setup reattaches to the same operation. Do not quit Scout while it is working, because quitting stops local provider work.
+
 1. `workspace.json`
 2. `profile/context.md`
 3. `profile/calibration.md`
@@ -33,4 +35,6 @@ Update the setup preferences with concrete feedback, then generate and review a 
 
 ## Recovery
 
-An interrupted proposal never changes active data. Reopen setup to review the current proposal, or discard it and generate another. Activation backups are under `.scout/backups`; see [Upgrades](UPGRADES.md).
+An interrupted proposal never changes active data. Reopen setup to review the current proposal, or discard it and generate another. Completed staged files are shown immediately and activation remains disabled until all five are reviewed. Activation verifies that every staged and active file is meaningful and hash-consistent. Activation backups are under `.scout/backups`; see [Upgrades](UPGRADES.md).
+
+If an activated master CV is unexpectedly empty, Setup offers **Restore reviewed master CV** only when the activation marker and staged CV are intact and every other active proposal file still matches staging. Scout backs up the current file, restores the reviewed staged copy and re-runs its integrity checks. If those narrow conditions are not met, preserve the workspace and diagnose the mismatch instead of copying files blindly.
