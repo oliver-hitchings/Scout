@@ -3,10 +3,12 @@ import { test } from 'node:test';
 import {
   assertSafeModel,
   commandInvocation,
+  createProviderDetector,
   providerEnvironment,
   providerCandidates,
   providerCommand,
   providerStatus,
+  providerStatusAsync,
 } from './providers.mjs';
 
 test('provider commands allow Windows resolution to choose native executables or cmd shims', () => {
@@ -21,6 +23,45 @@ test('provider status distinguishes install and authentication', () => {
   assert.equal(result.installed, true);
   assert.equal(result.authenticated, false);
   assert.deepEqual(calls[1][1], ['login', 'status']);
+});
+
+test('async provider status does not block the event loop', async () => {
+  let timerFired = false;
+  const run = async (command, args) => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    if (args.includes('--version')) return { status: 0, stdout: '1.2.3', stderr: '' };
+    if (args[0] === 'login') return { status: 0, stdout: 'logged in', stderr: '' };
+    return { status: 0, stdout: '--output-schema', stderr: '' };
+  };
+  const pending = providerStatusAsync('codex', { run, platform: 'linux', resolve: () => 'codex', exists: () => false });
+  setTimeout(() => { timerFired = true; }, 5);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(timerFired, true);
+  const result = await pending;
+  assert.equal(result.authenticated, true);
+  assert.equal(result.capabilities.structuredOutput, true);
+});
+
+test('provider detector shares an in-flight probe and caches the result briefly', async () => {
+  let calls = 0;
+  let clock = 1_000;
+  const detector = createProviderDetector({
+    ttlMs: 100,
+    now: () => clock,
+    status: async (provider) => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return { provider, installed: true, authenticated: true };
+    },
+  });
+  const [first, shared] = await Promise.all([detector(), detector()]);
+  assert.equal(calls, 2);
+  assert.deepEqual(shared, first);
+  assert.equal(await detector(), first);
+  assert.equal(calls, 2);
+  clock += 101;
+  await detector();
+  assert.equal(calls, 4);
 });
 
 test('Windows provider environment includes standard Codex and Claude install locations', () => {

@@ -14,7 +14,7 @@ import { scheduleStatus, scheduleSummary } from './lib/scheduler.mjs';
 import { loadPortals, portalSummary } from './lib/ats.mjs';
 import { JOB_CATEGORIES } from './lib/filters.mjs';
 import { buildSourcePayload, sourceUrlOf, SourceCache } from './lib/source.mjs';
-import { assertSafeModel, detectProviders } from './lib/providers.mjs';
+import { assertSafeModel, detectProvidersAsync } from './lib/providers.mjs';
 import { doctor } from './lib/doctor.mjs';
 import { extractCvText } from './lib/cvImport.mjs';
 import { setupReadiness } from './lib/setupReadiness.mjs';
@@ -311,7 +311,9 @@ function currentDeviceSettings() {
   return { ...settings, startupStatus: process.platform === 'win32' ? windowsStartupStatus() : { supported: false, enabled: false, mechanism: null } };
 }
 
-function handleRead(req, res, url) {
+export const providerDetection = { detect: detectProvidersAsync };
+
+async function handleRead(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/') {
     return serveUiTemplate(res, 'index.html', 'text/html; charset=utf-8');
   }
@@ -387,7 +389,7 @@ function handleRead(req, res, url) {
       });
     }
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
-    const providers = detectProviders();
+    const providers = await providerDetection.detect();
     const env = loadEnv(WORKSPACE_ROOT);
     const readiness = setupReadiness(WORKSPACE_ROOT, config, providers, readTracker());
     return sendJson(res, 200, {
@@ -405,7 +407,7 @@ function handleRead(req, res, url) {
       readiness: readiness.checks,
       scanHealth: readScanHealth(),
       schedule: readScheduleSummary(config),
-      doctor: doctor(WORKSPACE_ROOT, { appRoot: APP_ROOT }),
+      doctor: doctor(WORKSPACE_ROOT, { appRoot: APP_ROOT, providers }),
       git: detectGit(),
       sync: syncStatus(WORKSPACE_ROOT),
       device: currentDeviceSettings(),
@@ -565,8 +567,9 @@ export function createServer() {
       req.on('end', () => { if (!tooLarge) routes[routeKey](req, res, body, url); });
       return;
     }
-    const handled = handleRead(req, res, url);
-    if (handled === null) sendJson(res, 404, { error: 'not found' });
+    handleRead(req, res, url)
+      .then((handled) => { if (handled === null && !res.writableEnded) sendJson(res, 404, { error: 'not found' }); })
+      .catch((error) => { if (!res.writableEnded) sendJson(res, 500, { error: error.message }); });
   });
 }
 
@@ -877,12 +880,12 @@ routes['POST /api/setup/config'] = (req, res, body) => {
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 
-routes['POST /api/setup/complete'] = (req, res, body) => {
+routes['POST /api/setup/complete'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try {
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
     if (!config.setup?.completedAt) {
-      const readiness = setupReadiness(WORKSPACE_ROOT, config, detectProviders(), readTracker());
+      const readiness = setupReadiness(WORKSPACE_ROOT, config, await providerDetection.detect(), readTracker());
       if (!readiness.ready) return replyJson(res, 409, { error: 'review and activate a complete onboarding proposal before finishing setup' });
     }
     config.setup = { ...config.setup, completedAt: new Date().toISOString(), completedSections: completedWorkspaceSections({ completedAt: new Date().toISOString() }) };

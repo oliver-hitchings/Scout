@@ -10,7 +10,8 @@ const previousDeviceSettings = process.env.SCOUT_DEVICE_SETTINGS;
 const testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-server-test-'));
 process.env.SCOUT_WORKSPACE = testWorkspace;
 process.env.SCOUT_DEVICE_SETTINGS = path.join(testWorkspace, 'device-settings.json');
-const { APP_ROOT, APP_VERSION, UI_BUILD_ID, WORKSPACE_ROOT, createServer, restartControl, shutdownControl } = await import('./server.mjs');
+const { APP_ROOT, APP_VERSION, UI_BUILD_ID, WORKSPACE_ROOT, createServer, providerDetection, restartControl, shutdownControl } = await import('./server.mjs');
+const { seedWorkspace } = await import('./lib/workspace.mjs');
 
 let server;
 let port;
@@ -378,4 +379,31 @@ test('CV index keeps legacy sources visible and describes missing derived files'
   assert.deepEqual(index.entries.find((entry) => entry.slug === slug), {
     slug, source: true, pdf: false, outreach: false, evidence: false, quality: false,
   });
+});
+
+test('a slow setup provider probe does not delay unrelated API requests', { concurrency: false }, async () => {
+  seedWorkspace(APP_ROOT, testWorkspace);
+  const original = providerDetection.detect;
+  let release;
+  providerDetection.detect = () => new Promise((resolve) => { release = resolve; });
+  try {
+    const slowStatus = request({ path: '/api/setup/status' });
+    await assert.doesNotReject(async () => {
+      const deadline = Date.now() + 200;
+      while (!release && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 2));
+      if (!release) throw new Error('provider probe did not start');
+    });
+    const started = performance.now();
+    const appInfo = await request({ path: '/api/app-info' });
+    const elapsed = performance.now() - started;
+    assert.equal(appInfo.status, 200);
+    assert.ok(elapsed < 100, `unrelated API took ${elapsed.toFixed(1)}ms while provider status was pending`);
+    release({
+      codex: { installed: true, authenticated: true, capabilities: { structuredOutput: true } },
+      claude: { installed: false, authenticated: false },
+    });
+    assert.equal((await slowStatus).status, 200);
+  } finally {
+    providerDetection.detect = original;
+  }
 });
