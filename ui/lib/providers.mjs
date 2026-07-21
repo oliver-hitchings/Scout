@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn as spawnProcess, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -93,6 +93,85 @@ export function providerStatus(provider, {
     source: providerSource(installed.command, providerEnv, platform), attempts,
     // Some provider CLIs return account email/org identifiers as JSON. The UI
     // needs readiness, not account metadata, so never expose that raw output.
+    authMessage: installed.authenticated ? 'Logged in' : (rawAuthMessage.split(/\r?\n/, 1)[0] || 'Not logged in'),
+  };
+  Object.defineProperties(result, {
+    executable: { value: installed.command, enumerable: false },
+    env: { value: providerEnv, enumerable: false },
+  });
+  return result;
+}
+
+function runProviderCommand(command, args, options = {}) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawnProcess(command, args, {
+        ...options, stdio: ['ignore', 'pipe', 'pipe'], timeout: options.timeoutMs,
+      });
+    } catch (error) {
+      resolve({ status: null, stdout: '', stderr: '', error });
+      return;
+    }
+    const stdout = [];
+    const stderr = [];
+    let error = null;
+    child.stdout?.on('data', (chunk) => stdout.push(chunk));
+    child.stderr?.on('data', (chunk) => stderr.push(chunk));
+    child.on('error', (value) => { error = value; });
+    child.on('close', (status) => resolve({
+      status, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), error,
+    }));
+  });
+}
+
+export async function providerStatusAsync(provider, {
+  run = runProviderCommand,
+  platform = process.platform,
+  env = process.env,
+  resolve = resolveExecutable,
+  exists = fs.existsSync,
+  runtimePath = process.execPath,
+  timeoutMs = 10_000,
+} = {}) {
+  const providerEnv = providerEnvironment(env, platform, runtimePath);
+  const attempts = [];
+  let installed = null;
+  for (const candidate of providerCandidates(provider, { platform, env: providerEnv, resolve, exists, runtimePath })) {
+    const invoke = async (args) => {
+      const command = commandInvocation(candidate, args, { platform, env: providerEnv, resolve: (value) => value });
+      return run(command.command, command.args, {
+        windowsHide: true, shell: false, timeoutMs,
+        windowsVerbatimArguments: command.windowsVerbatimArguments, env: providerEnv,
+      });
+    };
+    const version = await invoke(['--version']);
+    if (version.status !== 0) {
+      attempts.push({
+        source: providerSource(candidate, providerEnv, platform), result: 'unavailable',
+        errorCode: version.error?.code || undefined,
+        exitCode: Number.isInteger(version.status) ? version.status : undefined,
+      });
+      continue;
+    }
+    const auth = await invoke(provider === 'codex' ? ['login', 'status'] : ['auth', 'status']);
+    const help = await invoke(provider === 'codex' ? ['exec', '--help'] : ['--help']);
+    const helpText = String(help.stdout || help.stderr || '');
+    const structuredOutput = help.status === 0 && (provider === 'codex'
+      ? helpText.includes('--output-schema')
+      : helpText.includes('--json-schema'));
+    const item = { command: candidate, version, auth, authenticated: auth.status === 0, structuredOutput };
+    attempts.push({ source: providerSource(candidate, providerEnv, platform), result: item.authenticated ? 'authenticated' : 'signed-out' });
+    if (item.authenticated) { installed = item; break; }
+    if (!installed) installed = item;
+  }
+  if (!installed) return { provider, installed: false, authenticated: false, command: providerCommand(provider, platform), attempts };
+  const rawAuthMessage = String(installed.auth.stdout || installed.auth.stderr || '').trim();
+  const result = {
+    provider, command: providerCommand(provider, platform), installed: true, authenticated: installed.authenticated,
+    version: String(installed.version.stdout || installed.version.stderr || '').trim(),
+    capabilities: { structuredOutput: installed.structuredOutput },
+    source: providerSource(installed.command, providerEnv, platform), attempts,
     authMessage: installed.authenticated ? 'Logged in' : (rawAuthMessage.split(/\r?\n/, 1)[0] || 'Not logged in'),
   };
   Object.defineProperties(result, {
@@ -208,6 +287,27 @@ export function providerEnvironment(env = process.env, platform = process.platfo
 export function detectProviders(options) {
   return Object.fromEntries(PROVIDERS.map((name) => [name, providerStatus(name, options)]));
 }
+
+export function createProviderDetector({ status = providerStatusAsync, ttlMs = 5_000, now = Date.now } = {}) {
+  let cached = null;
+  let expiresAt = 0;
+  let inFlight = null;
+  return async function detect(options) {
+    const current = now();
+    if (cached && current < expiresAt) return cached;
+    if (inFlight) return inFlight;
+    inFlight = Promise.all(PROVIDERS.map(async (name) => [name, await status(name, options)]))
+      .then((entries) => {
+        cached = Object.fromEntries(entries);
+        expiresAt = now() + ttlMs;
+        return cached;
+      })
+      .finally(() => { inFlight = null; });
+    return inFlight;
+  };
+}
+
+export const detectProvidersAsync = createProviderDetector();
 
 export function assertSafeModel(value) {
   if (value == null || value === '') return null;
