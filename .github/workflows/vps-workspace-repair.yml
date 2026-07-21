@@ -10,6 +10,7 @@ on:
         options:
           - prepare-key
           - adopt-and-verify
+          - rotate-and-verify
       expected_cv_sources:
         description: Exact number of tailored CV sources expected after adoption
         required: false
@@ -98,3 +99,36 @@ jobs:
             scout-deploy@"$VPS_HOST" "curl --fail --silent --show-error http://127.0.0.1:8459/api/sync/status")
           printf '%s' "$sync" | jq -e 'select(.enabled==true and .state=="synced")' >/dev/null
           printf 'Private workspace adopted: %s CV source(s), %s rendered PDF(s), automatic backup synced.\n' "$source_count" "$pdf_count"
+      - name: Rotate the existing recovery passphrase and verify backup plus CV rendering
+        if: inputs.action == 'rotate-and-verify'
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.SCOUT_VPS_HOST }}
+          PASSPHRASE: ${{ secrets.SCOUT_WORKSPACE_PASSPHRASE }}
+          EXPECTED_CV_SOURCES: ${{ inputs.expected_cv_sources }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test "${#PASSPHRASE}" -ge 12
+          payload=$(jq -cn --arg passphrase "$PASSPHRASE" '{passphrase:$passphrase}')
+          response=$(printf '%s' "$payload" | ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            scout-deploy@"$VPS_HOST" \
+            "curl --fail --silent --show-error -X POST -H 'content-type: application/json' --data-binary @- http://127.0.0.1:8459/api/sync/passphrase")
+          printf '%s' "$response" | jq -e '{ok,status:{state:.status.state,enabled:.status.enabled}} | select(.ok and .status.state=="synced" and .status.enabled==true)'
+
+          cv_index=$(ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            scout-deploy@"$VPS_HOST" "curl --fail --silent --show-error http://127.0.0.1:8459/api/cv")
+          source_count=$(printf '%s' "$cv_index" | jq '[.entries[] | select(.source == true or .source.available == true)] | length')
+          test "$source_count" -eq "$EXPECTED_CV_SOURCES"
+          printf '%s' "$cv_index" | jq -r '.entries[].slug' | while IFS= read -r slug; do
+            render_payload=$(jq -cn --arg slug "$slug" '{slug:$slug}')
+            render=$(printf '%s' "$render_payload" | ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              scout-deploy@"$VPS_HOST" \
+              "curl --fail --silent --show-error -X POST -H 'content-type: application/json' --data-binary @- http://127.0.0.1:8459/api/cv/render")
+            printf '%s' "$render" | jq -e 'select(.ok==true)' >/dev/null
+          done
+          rendered_index=$(ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            scout-deploy@"$VPS_HOST" "curl --fail --silent --show-error http://127.0.0.1:8459/api/cv")
+          pdf_count=$(printf '%s' "$rendered_index" | jq '[.entries[] | select((.source == true or .source.available == true) and (.pdf == true or .pdf.available == true))] | length')
+          test "$pdf_count" -eq "$EXPECTED_CV_SOURCES"
+          printf 'Recovery passphrase rotated: %s CV source(s), %s rendered PDF(s), automatic backup synced.\n' "$source_count" "$pdf_count"

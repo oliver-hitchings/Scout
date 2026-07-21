@@ -215,6 +215,26 @@ export function initializeRecoveryBackup(workspaceRoot, passphrase, options = {}
   return { ...written, dataKey: created.dataKey, recoveryKey: created.recoveryKey };
 }
 
+export function rotateRecoveryPassphrase(workspaceRoot, dataKey, passphrase) {
+  if (!Buffer.isBuffer(dataKey) || dataKey.length !== 32) throw new Error('Invalid recovery data key');
+  const header = readHeader(workspaceRoot);
+  if (header?.formatVersion !== RECOVERY_FORMAT || header?.cipher !== 'aes-256-gcm') {
+    throw new Error('Unsupported Scout recovery format');
+  }
+  const salt = crypto.randomBytes(16);
+  const passKey = passphraseKey(passphrase, salt);
+  const next = {
+    ...header,
+    kdf: { name: 'scrypt', salt: b64(salt), N: 16384, r: 8, p: 1 },
+    wrappedKeys: {
+      ...header.wrappedKeys,
+      passphrase: aesEncrypt(passKey, dataKey, Buffer.from(PASSPHRASE_PREFIX)),
+    },
+  };
+  atomicWrite(path.join(workspaceRoot, RECOVERY_DIR, HEADER), `${JSON.stringify(next, null, 2)}\n`);
+  return { header: next };
+}
+
 export function restoreRecoveryBackup(workspaceRoot, destinationRoot, secret) {
   const header = readHeader(workspaceRoot);
   const dataKey = unlockRecoveryKey(header, secret);

@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   initializeRecoveryBackup, loadRecoveryHeader, recoveryFileList, restoreRecoveryBackup,
-  restoreRecoveryBackupWithKey, unlockRecoveryKey, writeRecoveryBackup,
+  restoreRecoveryBackupWithKey, rotateRecoveryPassphrase, unlockRecoveryKey, writeRecoveryBackup,
 } from './recoveryBackup.mjs';
 import crypto from 'node:crypto';
 
@@ -68,6 +68,24 @@ test('unchanged encrypted files retain their blob and changed files rotate only 
   const blobsAfter = new Map(fs.readdirSync(path.join(root, '.scout-backup/v1/files')).map((name) => [name, fs.readFileSync(path.join(root, '.scout-backup/v1/files', name), 'utf8')]));
   assert.notEqual(JSON.stringify(loadRecoveryHeader(root).index), firstIndex);
   assert.equal([...blobsAfter].filter(([name, value]) => blobsBefore.get(name) === value).length, 3);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('recovery passphrase rotation preserves encrypted data and the emergency key', () => {
+  const root = fixture();
+  const oldPassphrase = 'old sufficiently long passphrase';
+  const newPassphrase = 'new sufficiently long passphrase';
+  const created = initializeRecoveryBackup(root, oldPassphrase);
+  const blobsBefore = fs.readdirSync(path.join(root, '.scout-backup/v1/files')).map((name) => [
+    name, fs.readFileSync(path.join(root, '.scout-backup/v1/files', name), 'utf8'),
+  ]);
+  rotateRecoveryPassphrase(root, created.dataKey, newPassphrase);
+  assert.throws(() => restoreRecoveryBackup(root, fs.mkdtempSync(path.join(os.tmpdir(), 'scout-old-pass-')), oldPassphrase), /incorrect/);
+  assert.deepEqual(unlockRecoveryKey(loadRecoveryHeader(root), newPassphrase), created.dataKey);
+  assert.deepEqual(unlockRecoveryKey(loadRecoveryHeader(root), created.recoveryKey), created.dataKey);
+  assert.deepEqual(fs.readdirSync(path.join(root, '.scout-backup/v1/files')).map((name) => [
+    name, fs.readFileSync(path.join(root, '.scout-backup/v1/files', name), 'utf8'),
+  ]), blobsBefore);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

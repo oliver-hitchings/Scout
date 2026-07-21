@@ -26,7 +26,7 @@ import { disableRemoteAccess, enableRemoteAccess, remoteAccessStatus } from './l
 import { checkForUpdate, downloadVerifiedUpdate } from './lib/updates.mjs';
 import {
   adoptExistingWorkspaceFromGithub, confirmRecoveryKey, connectWorkspaceSync, detectGit, disableWorkspaceSync, loadSyncSettings, pendingRecoveryKey,
-  prepareGithubDeployKey, queueWorkspaceSync, restoreWorkspaceFromGithub, syncStatus,
+  prepareGithubDeployKey, queueWorkspaceSync, restoreWorkspaceFromGithub, rotateWorkspaceRecoveryPassphrase, syncStatus,
 } from './lib/workspaceSync.mjs';
 import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
 import { loadEnv, saveEnv } from './lib/env.mjs';
@@ -187,6 +187,7 @@ const LOCAL_ONLY_ROUTES = new Set([
   'POST /api/sync/disable',
   'POST /api/sync/recovery-key',
   'POST /api/sync/recovery-key/confirm',
+  'POST /api/sync/passphrase',
 ]);
 
 const REMOTE_MUTATION_WITHOUT_BACKUP = new Set([
@@ -658,6 +659,15 @@ routes['POST /api/sync/recovery-key/confirm'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create or restore the workspace first' });
   return replyJson(res, 200, confirmRecoveryKey(WORKSPACE_ROOT));
+};
+
+routes['POST /api/sync/passphrase'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create or restore the workspace first' });
+  try {
+    const result = await rotateWorkspaceRecoveryPassphrase(WORKSPACE_ROOT, b.passphrase);
+    return replyJson(res, result.ok ? 200 : 503, result);
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 
 function applyTrackerMutation(res, mutate, commitMessage) {

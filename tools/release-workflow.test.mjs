@@ -95,6 +95,8 @@ test('workspace repair is protected, local-only and verifies backup plus rendere
   assert.match(workspaceRepair, /StrictHostKeyChecking=yes/);
   assert.match(workspaceRepair, /127\.0\.0\.1:8459\/api\/sync\/deploy-key/);
   assert.match(workspaceRepair, /127\.0\.0\.1:8459\/api\/workspace\/adopt-private/);
+  assert.match(workspaceRepair, /rotate-and-verify/);
+  assert.match(workspaceRepair, /127\.0\.0\.1:8459\/api\/sync\/passphrase/);
   assert.match(workspaceRepair, /SCOUT_WORKSPACE_PASSPHRASE/);
   assert.match(workspaceRepair, /expected_cv_sources/);
   assert.match(workspaceRepair, /api\/cv\/render/);

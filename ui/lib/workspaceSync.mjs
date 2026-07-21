@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-  initializeRecoveryBackup, loadRecoveryHeader, RECOVERY_DIR, restoreRecoveryBackup, restoreRecoveryBackupWithKey, writeRecoveryBackup,
+  initializeRecoveryBackup, loadRecoveryHeader, RECOVERY_DIR, restoreRecoveryBackup, restoreRecoveryBackupWithKey,
+  rotateRecoveryPassphrase, writeRecoveryBackup,
 } from './recoveryBackup.mjs';
 
 const SETTINGS = '.scout/sync.json';
@@ -438,6 +439,16 @@ export async function restoreWorkspaceFromGithub({ remoteUrl: value, targetRoot,
     fs.rmSync(temp, { recursive: true, force: true });
     throw error;
   }
+}
+
+export async function rotateWorkspaceRecoveryPassphrase(root, passphrase, options = {}) {
+  const settings = loadSyncSettings(root);
+  if (!settings.enabled) throw new Error('Encrypted private backup is not enabled');
+  const dataKey = Buffer.from(String(settings.dataKey || ''), 'base64url');
+  if (dataKey.length !== 32) throw new Error('Recovery key cache is missing');
+  rotateRecoveryPassphrase(root, dataKey, passphrase);
+  const status = await runWorkspaceSync(root, 'rotate recovery passphrase', options);
+  return { ok: status.state === 'synced', status };
 }
 
 export async function adoptExistingWorkspaceFromGithub({
