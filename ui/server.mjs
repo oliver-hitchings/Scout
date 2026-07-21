@@ -14,7 +14,7 @@ import { scheduleStatus, scheduleSummary } from './lib/scheduler.mjs';
 import { loadPortals, portalSummary } from './lib/ats.mjs';
 import { JOB_CATEGORIES } from './lib/filters.mjs';
 import { buildSourcePayload, sourceUrlOf, SourceCache } from './lib/source.mjs';
-import { assertSafeModel, detectProviders } from './lib/providers.mjs';
+import { assertSafeModel, detectProvidersAsync } from './lib/providers.mjs';
 import { doctor } from './lib/doctor.mjs';
 import { extractCvText } from './lib/cvImport.mjs';
 import { setupReadiness } from './lib/setupReadiness.mjs';
@@ -311,7 +311,9 @@ function currentDeviceSettings() {
   return { ...settings, startupStatus: process.platform === 'win32' ? windowsStartupStatus() : { supported: false, enabled: false, mechanism: null } };
 }
 
-function handleRead(req, res, url) {
+export const providerDetection = { detect: detectProvidersAsync };
+
+async function handleRead(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/') {
     return serveUiTemplate(res, 'index.html', 'text/html; charset=utf-8');
   }
@@ -387,7 +389,7 @@ function handleRead(req, res, url) {
       });
     }
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
-    const providers = detectProviders();
+    const providers = await providerDetection.detect();
     const env = loadEnv(WORKSPACE_ROOT);
     const readiness = setupReadiness(WORKSPACE_ROOT, config, providers, readTracker());
     return sendJson(res, 200, {
@@ -405,7 +407,7 @@ function handleRead(req, res, url) {
       readiness: readiness.checks,
       scanHealth: readScanHealth(),
       schedule: readScheduleSummary(config),
-      doctor: doctor(WORKSPACE_ROOT, { appRoot: APP_ROOT }),
+      doctor: doctor(WORKSPACE_ROOT, { appRoot: APP_ROOT, providers }),
       git: detectGit(),
       sync: syncStatus(WORKSPACE_ROOT),
       device: currentDeviceSettings(),
@@ -434,351 +436,7 @@ function handleRead(req, res, url) {
       updated: today(), opportunities: [], triage: { action: [], unlock: [], hold: [] },
       pipeline: {}, scanHealth: { healthy: false, lastRunAt: null },
       schedule: { enabled: false, configured: false }, categories: JOB_CATEGORIES,
-      workspaceConfig: null, bootstrap: true,
-    });
-    const data = readTracker();
-    const todayValue = today();
-    const config = loadWorkspaceConfig(WORKSPACE_ROOT);
-    return sendJson(res, 200, {
-      ...data,
-      triage: triage(data, todayValue, config.triage),
-      pipeline: pipeline(data, todayValue, config.triage),
-      scanHealth: readScanHealth(),
-      schedule: readScheduleSummary(config),
-      categories: readCategories(),
-      workspaceConfig: config,
-    });
-  }
-  if (req.method === 'GET' && url.pathname === '/api/pipeline') {
-    const data = readTracker();
-    return sendJson(res, 200, pipeline(data, today(), loadWorkspaceConfig(WORKSPACE_ROOT).triage));
-  }
-  if (req.method === 'GET' && url.pathname === '/api/scan-health') {
-    return sendJson(res, 200, readScanHealth());
-  }
-  if (req.method === 'GET' && url.pathname === '/api/sync/status') {
-    return sendJson(res, 200, syncStatus(WORKSPACE_ROOT));
-  }
-  if (req.method === 'GET' && url.pathname === '/api/ats-portals') {
-    return sendJson(res, 200, { portals: portalSummary(loadPortals(WORKSPACE_ROOT)) });
-  }
-  if (req.method === 'GET' && url.pathname === '/api/reports') {
-    return sendJson(res, 200, { reports: reportDates() });
-  }
-  if (req.method === 'GET' && url.pathname.startsWith('/api/reports/')) {
-    const date = url.pathname.slice('/api/reports/'.length);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendJson(res, 400, { error: 'bad date' });
-    const file = path.join(REPORTS_DIR, `${date}.md`);
-    if (!fs.existsSync(file)) return sendJson(res, 404, { error: 'no report' });
-    return sendText(res, 200, 'text/markdown; charset=utf-8', fs.readFileSync(file, 'utf8'));
-  }
-  if (req.method === 'GET' && url.pathname === '/api/cv') {
-    return sendJson(res, 200, listCvFiles(WORKSPACE_ROOT));
-  }
-  if (req.method === 'GET' && url.pathname === '/api/cv/file') {
-    try {
-      const abs = safeCvPath(WORKSPACE_ROOT, url.searchParams.get('path'));
-      if (!fs.existsSync(abs)) return sendJson(res, 404, { error: 'no such file' });
-      return sendText(res, 200, 'text/plain; charset=utf-8', fs.readFileSync(abs, 'utf8'));
-    } catch (e) { return sendJson(res, 400, { error: e.message }); }
-  }
-  if (req.method === 'GET' && url.pathname === '/api/cv/quality') {
-    try { return sendJson(res, 200, readCvQuality(WORKSPACE_ROOT, url.searchParams.get('slug') || '')); }
-    catch (e) { return sendJson(res, 400, { error: e.message }); }
-  }
-  if (req.method === 'GET' && url.pathname === '/api/cv/pdf') {
-    const slug = url.searchParams.get('slug') || '';
-    if (!/^[a-z0-9-]+$/.test(slug)) return sendJson(res, 400, { error: 'bad slug' });
-    const pdf = path.join(WORKSPACE_ROOT, 'applications', slug, 'cv.pdf');
-    if (!fs.existsSync(pdf)) return sendJson(res, 404, { error: 'no pdf - render first' });
-    if (url.searchParams.get('download') === '1') {
-      let decision;
-      try { decision = cvDownloadDecision(WORKSPACE_ROOT, slug); }
-      catch (e) { return sendJson(res, 400, { error: e.message }); }
-      if (!decision.allowed) return sendJson(res, 409, decision);
-    }
-    const buf = fs.readFileSync(pdf);
-    const headers = { 'Content-Type': 'application/pdf', 'Content-Length': buf.length };
-    if (url.searchParams.get('download') === '1') headers['Content-Disposition'] = `attachment; filename="${slug}-cv.pdf"`;
-    res.writeHead(200, headers);
-    return res.end(buf);
-  }
-  if (req.method === 'GET' && url.pathname === '/api/source') {
-    handleSource(res, url.searchParams.get('id') || '');
-    return true; // async handler owns the response
-  }
-  return null; // not a read route
-}
-
-const sourceCache = new SourceCache();
-
-async function handleSource(res, id) {
-  let entry;
-  try {
-    entry = (readTracker().opportunities || []).find((o) => o.id === id);
-  } catch (e) {
-    return sendJson(res, 500, { error: `tracker unreadable: ${e.message}` });
-  }
-  if (!entry) return sendJson(res, 404, { error: 'no such opportunity' });
-  const target = sourceUrlOf(entry);
-  if (!target) return sendJson(res, 404, { error: 'no usable source url' });
-  const cached = sourceCache.get(id);
-  if (cached) return sendJson(res, 200, cached);
-  let html;
-  try {
-    const r = await fetch(target, {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(10000),
-      headers: {
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-    });
-    if (!r.ok) return sendJson(res, 502, { ok: false, error: `source returned ${r.status}` });
-    html = await r.text();
-  } catch (e) {
-    const msg = e.name === 'TimeoutError' ? 'source timed out' : `fetch failed: ${e.message}`;
-    return sendJson(res, 502, { ok: false, error: msg });
-  }
-  const payload = buildSourcePayload(html, target, new Date().toISOString());
-  sourceCache.set(id, payload);
-  return sendJson(res, 200, payload);
-}
-
-export function createServer() {
-  return http.createServer((req, res) => {
-    const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
-    if (!guardRequest(req, res, url)) return;
-    const routeKey = `${req.method} ${url.pathname}`;
-    if (routes[routeKey]) {
-      let body = '';
-      let tooLarge = false;
-      const limit = url.pathname === '/api/setup/import-cv' ? 14 * 1024 * 1024 : 1e6;
-      req.on('data', (c) => {
-        if (tooLarge) return;
-        body += c;
-        if (body.length > limit) {
-          tooLarge = true;
-          replyJson(res, 413, { error: 'request body too large' });
-        }
-      });
-      req.on('end', () => { if (!tooLarge) routes[routeKey](req, res, body, url); });
-      return;
-    }
-    const handled = handleRead(req, res, url);
-    if (handled === null) sendJson(res, 404, { error: 'not found' });
-  });
-}
-
-// --- Mutation wiring (Task 5) ---
-import {
-  setStatus, addNote, logEvent, addContact, editContact, serializeTracker, findEntry,
-  markApplied, markRejected, addApplicationStage, completeApplicationStage,
-  setCategory, setCommute,
-} from './lib/tracker.mjs';
-import { renderCv } from './lib/cv.mjs';
-
-const TRACKER_FILE = TRACKER;
-
-function replyJson(res, status, obj) {
-  const b = JSON.stringify(obj);
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(b) });
-  res.end(b);
-}
-
-function parseBody(body) {
-  try { return JSON.parse(body || '{}'); } catch { return null; }
-}
-
-routes['POST /api/workspace/create'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  if (workspaceInitialised()) return replyJson(res, 409, { error: 'This Scout workspace already exists' });
-  try {
-    seedWorkspace(APP_ROOT, WORKSPACE_ROOT);
-    return replyJson(res, 200, { ok: true, workspaceRoot: WORKSPACE_ROOT });
-  } catch (e) { return replyJson(res, 400, { error: e.message }); }
-};
-
-routes['POST /api/workspace/restore'] = async (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  if (workspaceInitialised()) return replyJson(res, 409, { error: 'Restore is available only before a workspace is created' });
-  try {
-    const result = await restoreWorkspaceFromGithub({
-      remoteUrl: b.remoteUrl, targetRoot: WORKSPACE_ROOT, secret: b.secret,
-    }, { validateWorkspace: (root) => doctor(root, { requireProvider: false, appRoot: APP_ROOT }) });
-    syncManagedInstructions(APP_ROOT, WORKSPACE_ROOT);
-    const health = doctor(WORKSPACE_ROOT, { requireProvider: false, appRoot: APP_ROOT });
-    if (!health.ok) return replyJson(res, 409, { error: 'The restored workspace did not pass Scout doctor', doctor: health });
-    return replyJson(res, 200, { ...result, doctor: health });
-  } catch (e) { return replyJson(res, 400, { error: e.message }); }
-};
-
-routes['POST /api/workspace/adopt-private'] = async (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Adoption requires the existing workspace to be initialised' });
-  try {
-    const result = await adoptExistingWorkspaceFromGithub({
-      remoteUrl: b.remoteUrl, targetRoot: WORKSPACE_ROOT, passphrase: b.passphrase, confirmation: b.confirmation,
-    }, {
-      prepareWorkspace: (root) => syncManagedInstructions(APP_ROOT, root),
-      validateWorkspace: (root) => doctor(root, { requireProvider: false, appRoot: APP_ROOT }),
-    });
-    res.setHeader('Cache-Control', 'no-store');
-    return replyJson(res, 200, result);
-  } catch (e) { return replyJson(res, 400, { error: e.message }); }
-};
-
-routes['POST /api/sync/connect'] = async (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create the local workspace before setting up backup' });
-  try {
-    const result = await connectWorkspaceSync(WORKSPACE_ROOT, {
-      remoteUrl: b.remoteUrl, passphrase: b.passphrase,
-    }, { deviceSettings: process.platform === 'win32' ? loadDeviceSettings() : null });
-    return replyJson(res, 200, result);
-  } catch (e) { return replyJson(res, 400, { error: e.message }); }
-};
-
-routes['POST /api/sync/deploy-key'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create the workspace before preparing a deploy key' });
-  try {
-    const result = prepareGithubDeployKey(WORKSPACE_ROOT);
-    res.setHeader('Cache-Control', 'no-store');
-    return replyJson(res, 200, { ok: true, publicKey: result.publicKey });
-  } catch (e) { return replyJson(res, 400, { error: e.message }); }
-};
-
-routes['POST /api/sync/backup'] = async (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  try { return replyJson(res, 200, await queueCheckpoint(b.reason || 'manual backup')); }
-  catch (e) { return replyJson(res, 500, { error: e.message }); }
-};
-
-routes['POST /api/sync/retry'] = async (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  try { return replyJson(res, 200, await queueCheckpoint('retry backup')); }
-  catch (e) { return replyJson(res, 500, { error: e.message }); }
-};
-
-routes['POST /api/sync/disable'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create or restore the workspace first' });
-  return replyJson(res, 200, disableWorkspaceSync(WORKSPACE_ROOT));
-};
-
-routes['POST /api/sync/recovery-key'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  res.setHeader('Cache-Control', 'no-store');
-  return replyJson(res, 200, { recoveryKey: pendingRecoveryKey(WORKSPACE_ROOT) });
-};
-
-routes['POST /api/sync/recovery-key/confirm'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create or restore the workspace first' });
-  return replyJson(res, 200, confirmRecoveryKey(WORKSPACE_ROOT));
-};
-
-routes['POST /api/sync/passphrase'] = async (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create or restore the workspace first' });
-  try {
-    const result = await rotateWorkspaceRecoveryPassphrase(WORKSPACE_ROOT, b.passphrase);
-    return replyJson(res, result.ok ? 200 : 503, result);
-  } catch (e) { return replyJson(res, 400, { error: e.message }); }
-};
-
-function applyTrackerMutation(res, mutate, commitMessage) {
-  let data;
-  try { data = readTracker(); } catch (e) { return replyJson(res, 500, { error: `tracker unreadable: ${e.message}` }); }
-  let next;
-  try { next = mutate(data); } catch (e) { return replyJson(res, 400, { error: e.message }); }
-  try { fs.writeFileSync(TRACKER_FILE, serializeTracker(next)); }
-  catch (e) { return replyJson(res, 500, { error: `write failed: ${e.message}` }); }
-  void queueCheckpoint(commitMessage);
-  return replyJson(res, 200, { ok: true, savedLocally: true, syncQueued: true });
-}
-
-function company(data, id) { try { return findEntry(data, id).company; } catch { return id; } }
-
-routes['POST /api/status'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => setStatus(d, b.id, b.status),
-    `ui: status ${b.status} - ${company(readTracker(), b.id)}`);
-};
-
-routes['POST /api/note'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  if (!b.text || !b.text.trim()) return replyJson(res, 400, { error: 'note text required' });
-  applyTrackerMutation(res, (d) => addNote(d, b.id, b.text.trim(), today()),
-    `ui: note - ${company(readTracker(), b.id)}`);
-};
-
-routes['POST /api/log'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => logEvent(d, b.id, b.event, b.note || '', today()),
-    `ui: log ${b.event} - ${company(readTracker(), b.id)}`);
-};
-
-routes['POST /api/contact'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  const mutate = typeof b.index === 'number'
-    ? (d) => editContact(d, b.id, b.index, b.contact || {})
-    : (d) => addContact(d, b.id, b.contact || {});
-  applyTrackerMutation(res, mutate, `ui: contact - ${company(readTracker(), b.id)}`);
-};
-
-routes['POST /api/category'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => setCategory(d, b.id, b.category),
-    `ui: category ${b.category} - ${company(readTracker(), b.id)}`);
-};
-
-routes['POST /api/commute'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => setCommute(d, b.id, b.commute || {}, today()),
-    `ui: commute - ${company(readTracker(), b.id)}`);
-};
-
-routes['POST /api/applied'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => markApplied(d, b.id, today(), b.note || ''),
-    `ui: applied - ${company(readTracker(), b.id)}`);
-};
-
-routes['POST /api/rejected'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => markRejected(d, b.id, today(), b.note || ''),
-    `ui: rejected - ${company(readTracker(), b.id)}`);
-};
-
-routes['POST /api/stage'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => addApplicationStage(d, b.id, b.stage || {}, today()),
-    `ui: stage - ${company(readTracker(), b.id)}`);
-};
-
-routes['POST /api/stage/complete'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => completeApplicationStage(d, b.id, b.index, today()),
-    `ui: complete stage - ${company(readTracker(), b.id)}`);
-};
-
-routes['POST /api/cv/save'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  let abs;
-  try { abs = safeCvPath(WORKSPACE_ROOT, b.path); } catch (e) { return replyJson(res, 400, { error: e.message }); }
-  if (typeof b.content !== 'string') return replyJson(res, 400, { error: 'content required' });
-  if (path.resolve(abs) === path.resolve(WORKSPACE.cv, 'master-cv.md') && Buffer.byteLength(b.content.trim(), 'utf8') < 500) {
-    return replyJson(res, 409, { error: 'The master CV is empty or incomplete. Scout kept the existing file; restore the reviewed proposal or enter at least 500 bytes before saving.' });
-  }
-  try { fs.writeFileSync(abs, b.content); } catch (e) { return replyJson(res, 500, { error: e.message }); }
-  void queueCheckpoint(`edit cv - ${b.path}`);
-  replyJson(res, 200, { ok: true, savedLocally: true, syncQueued: true });
-};
-
-routes['POST /api/cv/render'] = (req, res, body) => {
-  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+      workspaceConfig: null, bootstra…4183 tokens truncated…bad json' });
   const r = renderCv(WORKSPACE_ROOT, b.slug || '', { appRoot: APP_ROOT });
   if (r.ok) void queueCheckpoint(`render cv - ${b.slug || 'application'}`);
   replyJson(res, 200, r);
@@ -877,12 +535,12 @@ routes['POST /api/setup/config'] = (req, res, body) => {
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 
-routes['POST /api/setup/complete'] = (req, res, body) => {
+routes['POST /api/setup/complete'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try {
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
     if (!config.setup?.completedAt) {
-      const readiness = setupReadiness(WORKSPACE_ROOT, config, detectProviders(), readTracker());
+      const readiness = setupReadiness(WORKSPACE_ROOT, config, await providerDetection.detect(), readTracker());
       if (!readiness.ready) return replyJson(res, 409, { error: 'review and activate a complete onboarding proposal before finishing setup' });
     }
     config.setup = { ...config.setup, completedAt: new Date().toISOString(), completedSections: completedWorkspaceSections({ completedAt: new Date().toISOString() }) };
