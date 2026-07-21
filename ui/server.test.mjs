@@ -115,6 +115,9 @@ test('remote owner mutations require HTTPS Origin and administration remains loc
   const disableBackup = await request({ method: 'POST', path: '/api/sync/disable', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
   assert.equal(disableBackup.status, 403);
   assert.match(JSON.parse(disableBackup.text).error, /only be changed on the Scout host/);
+  const rotatePassphrase = await request({ method: 'POST', path: '/api/sync/passphrase', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
+  assert.equal(rotatePassphrase.status, 403);
+  assert.match(JSON.parse(rotatePassphrase.text).error, /only be changed on the Scout host/);
   const remoteUpdate = await request({ method: 'POST', path: '/api/update/download', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
   assert.equal(remoteUpdate.status, 403);
 });

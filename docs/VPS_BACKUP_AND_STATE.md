@@ -36,6 +36,8 @@ Provider authentication stores and resumable provider session identifiers are ne
 
 If adopting an older non-empty private repository, checkpoint the surviving local workspace into Scout's encrypted recovery format first. Then use the protected adoption procedure described in the release/incident documentation; Scout clones and validates into a temporary sibling, restores the existing encrypted data, completes a backup push, and atomically retains the old VPS workspace as `.before-adopt-<timestamp>`.
 
+If the canonical VPS is already synced but the original passphrase is unavailable, do not initialize another recovery header or force-push a stale checkout. From the host-local maintenance path, rotate the recovery passphrase while the VPS still has its unlocked data key. Rotation changes only the passphrase-wrapped copy of that key; it preserves the encrypted file blobs and emergency-key wrapper, then must reach `synced` before the new passphrase is accepted.
+
 ## Acceptance test
 
 Complete this test from a phone or other remote client:
