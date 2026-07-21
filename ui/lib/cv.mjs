@@ -1,8 +1,11 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { resolveTypstRuntime } from './typstRuntime.mjs';
 
 const SLUG = /^[a-z0-9-]+$/;
+const DEFAULT_APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 export function safeCvPath(repoRoot, relPath) {
   const rel = String(relPath).replace(/\\/g, '/');
@@ -24,20 +27,37 @@ export function listCvFiles(repoRoot) {
     applications = dirs.filter((s) => fs.existsSync(path.join(appsDir, s, 'cv.typ')));
     outreach = dirs.filter((s) => fs.existsSync(path.join(appsDir, s, 'outreach.md')));
   }
-  return { master: 'cv/master-cv.md', applications, outreach };
+  const entries = applications.map((slug) => {
+    const directory = path.join(appsDir, slug);
+    return {
+      slug,
+      source: true,
+      pdf: fs.existsSync(path.join(directory, 'cv.pdf')),
+      outreach: fs.existsSync(path.join(directory, 'outreach.md')),
+      evidence: fs.existsSync(path.join(directory, 'cv-evidence.json')),
+      quality: fs.existsSync(path.join(directory, 'cv-quality.json')),
+    };
+  });
+  return { master: 'cv/master-cv.md', applications, outreach, entries };
 }
 
-export function renderCv(repoRoot, slug) {
+export function renderCv(repoRoot, slug, {
+  appRoot = DEFAULT_APP_ROOT,
+  runtimeResolver = resolveTypstRuntime,
+  spawn = spawnSync,
+} = {}) {
   const rel = `applications/${slug}/cv.typ`;
   try {
     safeCvPath(repoRoot, rel);
   } catch {
     return { ok: false, stdout: '', stderr: `invalid slug: ${slug}` };
   }
-  const r = spawnSync('typst', ['compile', '--root', '.', rel],
+  const runtime = runtimeResolver({ appRoot });
+  if (!runtime.available) return { ok: false, stdout: '', stderr: runtime.error, runtime };
+  const r = spawn(runtime.command, ['compile', '--root', '.', rel],
     { cwd: repoRoot, encoding: 'utf8' });
   if (r.error && r.error.code === 'ENOENT') {
-    return { ok: false, stdout: '', stderr: 'typst not found on PATH. Install: winget install --id Typst.Typst -e (then reopen the terminal/app so PATH refreshes).' };
+    return { ok: false, stdout: '', stderr: 'Scout\'s Typst runtime disappeared while rendering. Repair or reinstall Scout.', runtime };
   }
-  return { ok: r.status === 0, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim() };
+  return { ok: r.status === 0, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim(), runtime };
 }

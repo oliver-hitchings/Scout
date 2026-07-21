@@ -124,7 +124,9 @@ test('staging copies only manifest content and bundled runtime', () => {
   const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-release-stage-'));
   const nodeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-release-node-'));
   const nodeExecutable = path.join(nodeDir, 'node.exe');
+  const typstExecutable = path.join(nodeDir, 'typst.exe');
   fs.writeFileSync(nodeExecutable, 'runtime');
+  fs.writeFileSync(typstExecutable, 'typst-runtime');
   for (const entry of RELEASE_FILES) {
     const target = path.join(root, entry.source);
     if (entry.tree) {
@@ -144,7 +146,7 @@ test('staging copies only manifest content and bundled runtime', () => {
   fs.mkdirSync(path.join(root, 'profile'), { recursive: true });
   fs.writeFileSync(path.join(root, 'profile', 'context.md'), 'private');
 
-  const staged = stageRelease({ root, stageDir, nodeExecutable, includeDependencies: false, platform: 'win32' });
+  const staged = stageRelease({ root, stageDir, nodeExecutable, typstExecutable, includeDependencies: false, platform: 'win32' });
   assert.equal(fs.existsSync(path.join(staged.appDir, 'ui', 'runtime.mjs')), true);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'ui', 'runtime.test.mjs')), false);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'profile')), false);
@@ -154,6 +156,7 @@ test('staging copies only manifest content and bundled runtime', () => {
   assert.doesNotMatch(fs.readFileSync(path.join(staged.appDir, 'package.json'), 'utf8'), /playwright/i);
   assert.doesNotMatch(fs.readFileSync(path.join(staged.appDir, 'package-lock.json'), 'utf8'), /playwright/i);
   assert.equal(fs.readFileSync(path.join(stageDir, 'runtime', 'ScoutRuntime.exe'), 'utf8'), 'runtime');
+  assert.equal(fs.readFileSync(path.join(stageDir, 'runtime', 'typst.exe'), 'utf8'), 'typst-runtime');
 });
 
 test('checksums use SHA-256 and do not hash the manifest into itself', () => {

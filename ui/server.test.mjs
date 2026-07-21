@@ -351,3 +351,17 @@ test('legacy CV downloads require a hash-bound explicit override', async () => {
   assert.equal(downloaded.status, 200);
   assert.equal(downloaded.text, 'synthetic-pdf');
 });
+
+test('CV index keeps legacy sources visible and describes missing derived files', async () => {
+  const slug = 'legacy-visible';
+  const app = path.join(testWorkspace, 'applications', slug);
+  fs.mkdirSync(app, { recursive: true });
+  fs.writeFileSync(path.join(app, 'cv.typ'), '= Legacy source\n');
+  const response = await request({ path: '/api/cv' });
+  assert.equal(response.status, 200);
+  const index = JSON.parse(response.text);
+  assert.ok(index.applications.includes(slug));
+  assert.deepEqual(index.entries.find((entry) => entry.slug === slug), {
+    slug, source: true, pdf: false, outreach: false, evidence: false, quality: false,
+  });
+});

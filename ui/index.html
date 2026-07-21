@@ -441,6 +441,13 @@
       align-items: start;
     }
     .cv-sidebar .act { display: block; width: 100%; margin: 4px 0; text-align: left; }
+    .cv-library-head { display:flex; gap:12px; align-items:center; justify-content:space-between; margin-bottom:14px; }
+    .cv-library-head h2 { margin:0; }
+    .cv-create-panel { display:flex; gap:8px; align-items:end; padding:12px; margin-bottom:14px; border:1px solid var(--line); border-radius:var(--radius-card); background:var(--panel); }
+    .cv-create-panel label { display:grid; gap:5px; flex:1; color:var(--muted); font-size:12px; }
+    .cv-create-panel select { min-height:40px; color:var(--fg); background:var(--card-bg); border:1px solid var(--line); border-radius:var(--radius-control); padding:8px 10px; }
+    .cv-entry-label { display:block; font-weight:700; }
+    .cv-entry-state { display:flex; gap:5px; flex-wrap:wrap; margin-top:4px; }
     .cv-editor-panel { min-width: 0; }
     .cv-source {
       width: 100%;
@@ -481,6 +488,7 @@
       .cv-layout { grid-template-columns: 1fr; }
       .cv-preview-panel { grid-column: 1; }
       .cv-chat-request-row { flex-direction: column; }
+      .cv-library-head, .cv-create-panel { align-items:stretch; flex-direction:column; }
       #cv-preview-shell { min-height: 540px; height: 72vh; }
     }
 

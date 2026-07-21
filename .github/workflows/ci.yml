@@ -22,6 +22,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: node tools/typst-runtime.mjs install
+      - run: node tools/typst-runtime.mjs verify --compile
       - run: npm test
       - name: Verify release staging
         run: node tools/build-release.mjs --stage-only
@@ -39,5 +41,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: node tools/typst-runtime.mjs install
+      - run: node tools/typst-runtime.mjs verify --compile
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser

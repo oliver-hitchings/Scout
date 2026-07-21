@@ -41,6 +41,8 @@ Every visible Typst bullet must have an exact record and at least one evidence s
 
 Run `scout cv quality <slug>` to compile the PDF and write `cv-quality.json`. The report contains the CV source hash, enabled options, issues and any explicit draft override. Editing the source invalidates both the report and override.
 
+Scout packages and supported VPS deployments include a pinned, checksum-verified Typst runtime. `scout doctor` reports whether rendering uses that managed runtime, a packaged runtime or an explicit developer override. If the managed runtime is missing or damaged, repair or reinstall Scout; no separate `winget`, Homebrew or system package is required.
+
 Compilation failures, visible placeholders and unsupported bullets block download. Natural-voice and XYZ findings keep the CV labelled Draft but can be explicitly accepted. Existing CVs without these records are treated as legacy drafts and are not modified automatically.
 
 Natural-voice review improves authenticity and readability. It is not designed to evade AI-detection systems.
