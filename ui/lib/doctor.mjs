@@ -19,6 +19,7 @@ function binary(name) {
 export function doctor(workspaceRoot, {
   requireProvider = true,
   providerDetector = detectProviders,
+  providers = null,
   appRoot,
   typstResolver = resolveTypstRuntime,
 } = {}) {
@@ -34,7 +35,7 @@ export function doctor(workspaceRoot, {
   const typst = typstResolver({ appRoot });
   checks.git = { ok: git.available, ...git, optional: true };
   checks.typst = { ok: typst.available, ...typst, optional: false };
-  checks.providers = providerDetector();
+  checks.providers = providers || providerDetector();
   const env = { ...loadEnv(workspaceRoot), ...process.env };
   checks.adzuna = { ok: !!(env.ADZUNA_APP_ID && env.ADZUNA_API_KEY), optional: true };
   const providerReady = Object.values(checks.providers).some((p) => p.installed && p.authenticated);
