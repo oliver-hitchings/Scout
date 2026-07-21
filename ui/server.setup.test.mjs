@@ -215,6 +215,15 @@ test('saving setup config seeds a fresh generic workspace', async () => {
   assert.doesNotMatch(fs.readFileSync(path.join(workspace, 'profile', 'context.md'), 'utf8'), /Oliver|hardware|electronics/i);
 });
 
+test('master CV saves reject an empty replacement without changing the active file', async () => {
+  const file = path.join(workspace, 'cv', 'master-cv.md');
+  const before = fs.readFileSync(file, 'utf8');
+  const response = await request({ method: 'POST', route: '/api/cv/save', body: { path: 'cv/master-cv.md', content: '' } });
+  assert.equal(response.status, 409);
+  assert.match(response.json.error, /empty or incomplete/);
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+});
+
 test('fresh setup cannot be marked complete before trusted proposal activation', async () => {
   const completed = await request({ method: 'POST', route: '/api/setup/complete', body: {} });
   assert.equal(completed.status, 409);

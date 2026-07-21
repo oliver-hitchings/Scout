@@ -56,3 +56,16 @@ test('a generated CV appears after the chat file refresh without reloading', asy
   await page.evaluate(() => window.Scout.refreshCvFilesIfTouched(['applications/new-systems/cv.typ']));
   await expect(page.locator('[data-cv-path="applications/new-systems/cv.typ"]')).toContainText('New Systems — Product Engineer');
 });
+
+test('an open master CV buffer survives an opportunities refresh', async ({ page }) => {
+  await page.getByRole('button', { name: 'CV' }).click();
+  await page.locator('[data-cv-path="cv/master-cv.md"]').click();
+  const editor = page.locator('#cv-text');
+  await expect(editor).toHaveValue(/Master CV/);
+  const original = await editor.inputValue();
+  const edited = `${original}\nUnsaved synthetic edit stays in the editor.\n`;
+  await editor.fill(edited);
+  await page.evaluate(() => window.Scout.loadOpportunities());
+  await expect(editor).toHaveValue(edited);
+  await expect(page.locator('#cv-dirty')).toHaveText('unsaved');
+});

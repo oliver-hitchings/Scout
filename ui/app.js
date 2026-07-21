@@ -68,7 +68,7 @@ const Scout = {
     tab: 'startup',
     commute: { mode: 'either', maxMinutes: '180', includeUnknown: true },
   },
-  cvState: { path: null, slug: null, opportunityId: null, dirty: false },
+  cvState: { path: null, slug: null, opportunityId: null, content: null, dirty: false },
   cvOptionsOpportunityId: null,
   cvPreviewZoom: 'page-width',
   chat: null,
@@ -77,6 +77,7 @@ const Scout = {
   discoveries: [],
   discoveryTimer: null,
   scanRunning: false,
+  scanOperationTimer: null,
   lastSyncPullAt: null,
   companyHistory: null,
   uiBuildId: SCOUT_UI_BUILD,
@@ -218,13 +219,70 @@ const Scout = {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || `Scan failed (${response.status})`);
-      await this.loadOpportunities();
+      this.showOperation(result.operation);
+      this.watchScanOperation(result.operation.id);
     } catch (error) {
       document.getElementById('scan-status').textContent = error.message;
-    } finally {
       this.scanRunning = false;
       if (button) { button.disabled = false; button.textContent = 'Scan now'; }
     }
+  },
+
+  showOperation(operation) {
+    if (!operation || operation.type !== 'scan') return;
+    const status = document.getElementById('scan-status');
+    if (!status) return;
+    const started = Date.parse(operation.startedAt || '');
+    const finished = Date.parse(operation.finishedAt || '');
+    const end = Number.isFinite(finished) ? finished : Date.now();
+    const seconds = Number.isFinite(started) ? Math.max(0, Math.floor((end - started) / 1000)) : 0;
+    const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+    const step = operation.progress ? `step ${operation.progress.current}/${operation.progress.total}` : '';
+    status.textContent = operation.status === 'failed'
+      ? `Scan needs attention: ${operation.error || 'unknown error'}`
+      : operation.status === 'succeeded' ? 'Scan completed — refreshing results…'
+        : `${operation.phase || 'Scout is searching'} · ${step} · ${elapsed}`;
+  },
+
+  async watchScanOperation(id) {
+    if (!id) return;
+    if (this.scanOperationTimer) clearTimeout(this.scanOperationTimer);
+    this.scanRunning = true;
+    const button = document.getElementById('scan-now');
+    if (button) { button.disabled = true; button.textContent = 'Scanning…'; }
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/operations/${encodeURIComponent(id)}`);
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || 'Scan status unavailable');
+        this.showOperation(body.operation);
+        if (['queued', 'running'].includes(body.operation.status)) {
+          this.scanOperationTimer = setTimeout(poll, 1000);
+          return;
+        }
+        this.scanOperationTimer = null;
+        this.scanRunning = false;
+        if (button) { button.disabled = false; button.textContent = 'Scan now'; }
+        if (body.operation.status === 'succeeded') await this.loadOpportunities();
+      } catch (error) {
+        this.scanOperationTimer = null;
+        this.scanRunning = false;
+        if (button) { button.disabled = false; button.textContent = 'Scan now'; }
+        document.getElementById('scan-status').textContent = error.message;
+      }
+    };
+    this.scanOperationTimer = setTimeout(poll, 250);
+  },
+
+  async reattachScanOperation() {
+    try {
+      const response = await fetch('/api/operations?type=scan');
+      const body = await response.json();
+      if (response.ok && body.operation && ['queued', 'running'].includes(body.operation.status)) {
+        this.showOperation(body.operation);
+        this.watchScanOperation(body.operation.id);
+      }
+    } catch { /* the normal last-scan label remains available */ }
   },
 
   discoveryKey() {
@@ -519,6 +577,12 @@ const Scout = {
     const sourceHealth = (h?.sourceHealth || []).length
       ? `<div class="source-health">${h.sourceHealth.map((source) => `<span class="chip source-${this.esc(source.status)}" title="${this.esc(source.reason || '')}">${this.esc(source.name)}: ${this.esc(source.status)}${source.count === null ? '' : ` (${this.esc(source.count)})`}</span>`).join('')}</div>`
       : '<div class="meta">No per-source health was recorded for this run.</div>';
+    const reviewed = Number(h?.candidatesFound || 0);
+    const kept = Number(h?.keepersAdded || 0);
+    const discardLabels = { hard_exclusion: 'hard exclusions', mandatory_unmet: 'mandatory gates', below_threshold: 'below threshold', provider_discarded: 'assessment discards' };
+    const discardBreakdown = Object.entries(h?.discarded || {}).filter(([, count]) => Number(count) > 0)
+      .map(([key, count]) => `${count} ${discardLabels[key] || key.replaceAll('_', ' ')}`).join(', ');
+    const reportDate = String(h?.lastRunAt || '').slice(0, 10);
     const flags = p.flags.length
       ? '<div class="label">Flags</div>' + p.flags.map((f) =>
           `<div class="card flag" data-id="${this.esc(f.id)}" role="button" tabindex="0">
@@ -541,8 +605,10 @@ const Scout = {
       </div>
       <div class="card">
         <div class="top"><b>Scan health</b><span class="chip">${this.esc(healthText)}</span></div>
-        <div class="meta">last run: ${this.esc(h && h.lastRunAt ? h.lastRunAt : 'never')} - keepers: ${this.esc(h && h.keepersAdded !== null ? h.keepersAdded : 'n/a')} - candidates: ${this.esc(h && h.candidatesFound !== null ? h.candidatesFound : 'n/a')}</div>
+        <p><strong>${this.esc(reviewed)} reviewed, ${this.esc(kept)} kept</strong>${discardBreakdown ? ` — ${this.esc(discardBreakdown)}` : ''}. Zero keepers can be a valid result when strict gates exclude every candidate.</p>
+        <div class="meta">last run: ${this.esc(h && h.lastRunAt ? h.lastRunAt : 'never')}</div>
         ${sourceHealth}
+        ${/^\d{4}-\d{2}-\d{2}$/.test(reportDate) ? `<p><button class="act" data-action="open-scan-report" data-date="${this.esc(reportDate)}">Review dated report</button></p>` : ''}
       </div>
       ${flags}
       <div class="split">
@@ -634,6 +700,12 @@ const Scout = {
       b.classList.toggle('active', b.dataset.date === date);
       b.setAttribute('aria-current', b.dataset.date === date ? 'date' : 'false');
     });
+  },
+
+  async openScanReport(date) {
+    this.showTab('reports');
+    await this.renderReports();
+    return this.openReport(date);
   },
 
   openEntry(tab, id) {
@@ -1072,6 +1144,14 @@ const Scout = {
           </div>
         </section>
       </div>`;
+    if (this.cvState.path && typeof this.cvState.content === 'string') {
+      document.getElementById('cv-text').value = this.cvState.content;
+      document.getElementById('cv-editing').textContent = `editing: ${this.cvState.path}`;
+      document.getElementById('cv-dirty').textContent = this.cvState.dirty ? 'unsaved' : '';
+      document.querySelectorAll('[data-cv-path]').forEach((button) => button.classList.toggle('active', button.dataset.cvPath === this.cvState.path));
+      if (this.cvState.slug) await this.renderCvPreview(this.cvState.slug);
+      else document.getElementById('cv-preview').textContent = 'The master CV is source material only and has no PDF preview. Open or create a tailored CV to render a PDF.';
+    }
   },
 
   opportunityIdForSlug(slug) {
@@ -1107,9 +1187,10 @@ const Scout = {
 
   async openCv(pathRel, slug, opportunityId = null) {
     if (this.cvState.dirty && !confirm('Discard unsaved changes?')) return;
-    this.cvState = { path: pathRel, slug, opportunityId, dirty: false };
     const text = await this.api(`/api/cv/file?path=${encodeURIComponent(pathRel)}`);
-    document.getElementById('cv-text').value = typeof text === 'string' ? text : (text.error || '');
+    const content = typeof text === 'string' ? text : (text.error || '');
+    this.cvState = { path: pathRel, slug, opportunityId, content, dirty: false };
+    document.getElementById('cv-text').value = content;
     document.getElementById('cv-editing').textContent = `editing: ${pathRel}`;
     document.getElementById('cv-dirty').textContent = '';
     document.querySelectorAll('[data-cv-path]').forEach((b) =>
@@ -1124,6 +1205,7 @@ const Scout = {
     const save = await this.post('/api/cv/save', { path: this.cvState.path, content });
     if (!(save && save.ok)) return;
     this.cvState.dirty = false;
+    this.cvState.content = content;
     document.getElementById('cv-dirty').textContent = '';
     if (!this.cvState.slug) return;
     await this.renderCvPreview(this.cvState.slug);
@@ -1794,6 +1876,7 @@ const Scout = {
       case 'sort': return this.setSort(key);
       case 'open-entry': return this.openEntry(tab, id);
       case 'open-report': return this.openReport(date);
+      case 'open-scan-report': return this.openScanReport(date);
       case 'complete-stage': return this.completeStage(id, Number(index));
       case 'toggle-source': return this.toggleSourcePanel(id, element);
       case 'mark-applied': return this.markApplied(id);
@@ -1870,6 +1953,7 @@ const Scout = {
     document.addEventListener?.('input', (event) => {
       if (event.target.dataset.inputAction !== 'cv-dirty') return;
       this.cvState.dirty = true;
+      this.cvState.content = event.target.value;
       const dirty = document.getElementById('cv-dirty');
       if (dirty) dirty.textContent = 'unsaved';
     });
@@ -1950,6 +2034,7 @@ const Scout = {
       }
     });
     this.loadOpportunities();
+    this.reattachScanOperation();
     this.refreshSyncStatus();
     this.checkUiBuild();
     window.setTimeout?.(() => this.checkForAppUpdate(false), 2500);

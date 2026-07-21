@@ -57,7 +57,7 @@ export function providerStatus(provider, {
     });
     if (version.status !== 0) {
       attempts.push({
-        source: providerSource(candidate, providerEnv), result: 'unavailable',
+        source: providerSource(candidate, providerEnv, platform), result: 'unavailable',
         errorCode: version.error?.code || undefined,
         exitCode: Number.isInteger(version.status) ? version.status : undefined,
       });
@@ -80,7 +80,7 @@ export function providerStatus(provider, {
       ? helpText.includes('--output-schema')
       : helpText.includes('--json-schema'));
     const item = { command: candidate, version, auth, authenticated: auth.status === 0, structuredOutput };
-    attempts.push({ source: providerSource(candidate, providerEnv), result: item.authenticated ? 'authenticated' : 'signed-out' });
+    attempts.push({ source: providerSource(candidate, providerEnv, platform), result: item.authenticated ? 'authenticated' : 'signed-out' });
     if (item.authenticated) { installed = item; break; }
     if (!installed) installed = item;
   }
@@ -90,7 +90,7 @@ export function providerStatus(provider, {
     provider, command: providerCommand(provider, platform), installed: true, authenticated: installed.authenticated,
     version: String(installed.version.stdout || installed.version.stderr || '').trim(),
     capabilities: { structuredOutput: installed.structuredOutput },
-    source: providerSource(installed.command, providerEnv), attempts,
+    source: providerSource(installed.command, providerEnv, platform), attempts,
     // Some provider CLIs return account email/org identifiers as JSON. The UI
     // needs readiness, not account metadata, so never expose that raw output.
     authMessage: installed.authenticated ? 'Logged in' : (rawAuthMessage.split(/\r?\n/, 1)[0] || 'Not logged in'),
@@ -130,6 +130,18 @@ export function providerCandidates(provider, {
       addIfPresent(path.win32.join(home, '.local', 'bin', `${provider}.exe`));
       addIfPresent(path.win32.join(home, `.${provider}`, 'bin', `${provider}.exe`));
     }
+  } else {
+    const home = envValue(env, 'HOME') || os.homedir();
+    const candidates = [
+      path.posix.join(home, '.local', 'bin', provider),
+      path.posix.join(home, '.npm-global', 'bin', provider),
+      path.posix.join(home, `.${provider}`, 'bin', provider),
+      path.posix.join(home, 'bin', provider),
+      '/opt/homebrew/bin/' + provider,
+      '/usr/local/bin/' + provider,
+      '/usr/bin/' + provider,
+    ];
+    for (const candidate of candidates) addIfPresent(candidate);
   }
   const resolved = resolve(providerCommand(provider, platform), { platform, env });
   if (resolved) list.push(resolved);
@@ -142,9 +154,9 @@ export function providerCandidates(provider, {
   });
 }
 
-function providerSource(command, env) {
+function providerSource(command, env, platform = process.platform) {
   const home = envValue(env, 'USERPROFILE') || envValue(env, 'HOME') || os.homedir();
-  return String(command).replace(home, '%USERPROFILE%');
+  return String(command).replace(home, platform === 'win32' ? '%USERPROFILE%' : '~');
 }
 
 export function providerEnvironment(env = process.env, platform = process.platform, runtimePath = process.execPath) {

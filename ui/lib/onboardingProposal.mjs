@@ -83,6 +83,24 @@ function sha256(file) {
   return fs.existsSync(file) ? crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') : null;
 }
 
+const MINIMUM_FILE_BYTES = Object.freeze({
+  'workspace.json': 100,
+  'profile/context.md': 150,
+  'profile/calibration.md': 100,
+  'cv/master-cv.md': 500,
+  'data/search-categories.json': 50,
+});
+
+function meaningfulContent(relative, content) {
+  return typeof content === 'string' && Buffer.byteLength(content.trim(), 'utf8') >= MINIMUM_FILE_BYTES[relative];
+}
+
+function validateMeaningfulFiles(files, label) {
+  for (const relative of ONBOARDING_FILES) {
+    if (!meaningfulContent(relative, files[relative])) throw new Error(`${label} ${relative} is empty or incomplete`);
+  }
+}
+
 function targetPath(root, relative) { return path.join(root, ...relative.split('/')); }
 function stagePath(root, relative) { return path.join(root, '.scout', 'onboarding', ...relative.split('/')); }
 
@@ -229,7 +247,9 @@ function writeStaged(root, files) {
 
 export async function createOnboardingProposal(root, provider, {
   providerStatusFn = providerStatus, runStructuredTurnFn = runStructuredTurn, now = () => new Date().toISOString(),
+  onProgress = () => {},
 } = {}) {
+  onProgress({ phase: 'Preparing approved evidence', current: 1, total: 4 });
   const config = loadWorkspaceConfig(root);
   const status = providerStatusFn(provider);
   const input = buildOnboardingEvidence(root, config);
@@ -240,13 +260,16 @@ export async function createOnboardingProposal(root, provider, {
     'Return only the required schema. Do not access files, run commands, browse, activate changes, apply for jobs, or send outreach.',
     JSON.stringify({ config, evidence: input.evidence }),
   ].join('\n\n');
+  onProgress({ phase: `Generating proposal with ${provider}`, current: 2, total: 4 });
   const turn = await runStructuredTurnFn({
     provider, status, schema: ONBOARDING_SCHEMA, prompt,
     model: config.ai?.provider === provider ? config.ai?.model : null,
     validate: (value) => validateOnboardingProposal(value, input.evidence), maxInputTokens: 60_000,
   });
+  onProgress({ phase: 'Validating and staging proposal', current: 3, total: 4 });
   const proposalId = crypto.randomUUID();
   const files = renderOnboardingFiles(config, turn.value);
+  validateMeaningfulFiles(files, 'generated');
   writeStaged(root, files);
   const manifest = {
     schemaVersion: 1, proposalId, createdAt: now(), provider, summary: turn.value.summary, valid: true,
@@ -255,6 +278,7 @@ export async function createOnboardingProposal(root, provider, {
     stagedHashes: Object.fromEntries(ONBOARDING_FILES.map((relative) => [relative, sha256(stagePath(root, relative))])),
   };
   fs.writeFileSync(path.join(root, '.scout', 'onboarding', 'proposal.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  onProgress({ phase: 'Proposal ready to review', current: 4, total: 4 });
   return { ...manifest, files: ONBOARDING_FILES, valid: true };
 }
 
@@ -278,6 +302,22 @@ function atomicWrite(file, content) {
   fs.renameSync(temporary, file);
 }
 
+function activeMatchesReviewedStage(root, relative) {
+  const active = targetPath(root, relative);
+  const staged = stagePath(root, relative);
+  if (!fs.existsSync(active) || !fs.existsSync(staged)) return false;
+  if (relative !== 'workspace.json') return sha256(active) === sha256(staged);
+  try {
+    const activeConfig = JSON.parse(fs.readFileSync(active, 'utf8'));
+    const stagedConfig = JSON.parse(fs.readFileSync(staged, 'utf8'));
+    activeConfig.setup = { ...activeConfig.setup, completedAt: null };
+    stagedConfig.setup = { ...stagedConfig.setup, completedAt: null };
+    return JSON.stringify(activeConfig) === JSON.stringify(stagedConfig);
+  } catch {
+    return false;
+  }
+}
+
 export function activateOnboardingProposal(root, proposalId, confirmed, {
   doctorFn = doctor, now = () => new Date().toISOString(),
 } = {}) {
@@ -292,6 +332,7 @@ export function activateOnboardingProposal(root, proposalId, confirmed, {
   const activatedAt = now();
   const stagedConfig = JSON.parse(fs.readFileSync(stagePath(root, 'workspace.json'), 'utf8'));
   const stagedFiles = Object.fromEntries(ONBOARDING_FILES.map((relative) => [relative, fs.readFileSync(stagePath(root, relative), 'utf8')]));
+  validateMeaningfulFiles(stagedFiles, 'staged');
   stagedConfig.setup = { ...stagedConfig.setup, completedAt: activatedAt };
   validateWorkspaceConfig(stagedConfig);
   stagedFiles['workspace.json'] = `${JSON.stringify(stagedConfig, null, 2)}\n`;
@@ -310,13 +351,24 @@ export function activateOnboardingProposal(root, proposalId, confirmed, {
   }
   try {
     for (const relative of ONBOARDING_FILES) atomicWrite(targetPath(root, relative), stagedFiles[relative]);
+    for (const relative of ONBOARDING_FILES) {
+      const active = fs.readFileSync(targetPath(root, relative), 'utf8');
+      if (!meaningfulContent(relative, active)) throw new Error(`activated ${relative} is empty or incomplete`);
+      if (!activeMatchesReviewedStage(root, relative)) {
+        throw new Error(`activated ${relative} does not match the reviewed proposal`);
+      }
+    }
     const result = doctorFn(root);
     const activationProvider = result?.checks?.providers?.[proposal.provider];
     const requiredOk = result?.checks?.config?.ok && result?.checks?.tracker?.ok
       && activationProvider?.installed && activationProvider?.authenticated
       && activationProvider?.capabilities?.structuredOutput !== false;
     if (!requiredOk) throw new Error('Scout doctor rejected the activated workspace');
-    const marker = { activatedAt, provider: proposal.provider, proposalId };
+    const marker = {
+      activatedAt, provider: proposal.provider, proposalId,
+      stagedHashes: proposal.stagedHashes,
+      activatedHashes: Object.fromEntries(ONBOARDING_FILES.map((relative) => [relative, sha256(targetPath(root, relative))])),
+    };
     fs.writeFileSync(path.join(root, '.scout', 'onboarding', 'activated.json'), `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
     fs.rmSync(path.join(root, '.scout', 'onboarding', 'proposal.json'), { force: true });
     return { ok: true, activatedAt, backupDir, files: ONBOARDING_FILES };
@@ -326,6 +378,63 @@ export function activateOnboardingProposal(root, proposalId, confirmed, {
       if (content == null) fs.rmSync(target, { force: true });
       else atomicWrite(target, content);
     }
+    throw error;
+  }
+}
+
+export function activatedProposalRecovery(root) {
+  const markerFile = path.join(root, '.scout', 'onboarding', 'activated.json');
+  const relative = 'cv/master-cv.md';
+  const unavailable = (reason) => ({ available: false, file: relative, reason });
+  if (!fs.existsSync(markerFile)) return unavailable('no activated onboarding proposal was found');
+  let marker;
+  try { marker = JSON.parse(fs.readFileSync(markerFile, 'utf8')); }
+  catch { return unavailable('the activation marker is unreadable'); }
+  const stagedCv = stagePath(root, relative);
+  if (!fs.existsSync(stagedCv) || !meaningfulContent(relative, fs.readFileSync(stagedCv, 'utf8'))) {
+    return unavailable('the reviewed staged master CV is missing or incomplete');
+  }
+  const activeCv = targetPath(root, relative);
+  if (fs.existsSync(activeCv) && meaningfulContent(relative, fs.readFileSync(activeCv, 'utf8'))) {
+    return unavailable('the active master CV is already complete');
+  }
+  for (const other of ONBOARDING_FILES.filter((file) => file !== relative)) {
+    if (!activeMatchesReviewedStage(root, other)) {
+      return unavailable(`${other} no longer matches the activated proposal`);
+    }
+  }
+  const expected = marker.stagedHashes?.[relative];
+  if (expected && sha256(stagedCv) !== expected) return unavailable('the reviewed staged master CV changed after activation');
+  return {
+    available: true, file: relative, reason: 'the active master CV is incomplete but the reviewed staged copy is intact',
+    proposalId: marker.proposalId || null, stagedBytes: fs.statSync(stagedCv).size,
+  };
+}
+
+export function recoverActivatedProposal(root, confirmed, { now = () => new Date().toISOString(), doctorFn = doctor } = {}) {
+  if (confirmed !== true) throw new Error('explicit recovery confirmation is required');
+  const recovery = activatedProposalRecovery(root);
+  if (!recovery.available) throw new Error(recovery.reason);
+  const relative = recovery.file;
+  const active = targetPath(root, relative);
+  const staged = stagePath(root, relative);
+  const previous = fs.existsSync(active) ? fs.readFileSync(active) : null;
+  const recoveredAt = now();
+  const backupDir = path.join(root, '.scout', 'backups', `${recoveredAt.replace(/[:.]/g, '-')}-recovery`);
+  const backup = path.join(backupDir, ...relative.split('/'));
+  fs.mkdirSync(path.dirname(backup), { recursive: true });
+  fs.writeFileSync(backup, previous || Buffer.alloc(0));
+  try {
+    atomicWrite(active, fs.readFileSync(staged, 'utf8'));
+    if (!meaningfulContent(relative, fs.readFileSync(active, 'utf8')) || sha256(active) !== sha256(staged)) {
+      throw new Error('recovered master CV failed integrity validation');
+    }
+    const health = doctorFn(root);
+    if (!health?.checks?.config?.ok || !health?.checks?.tracker?.ok) throw new Error('Scout doctor rejected the recovered workspace');
+    return { ok: true, recoveredAt, file: relative, backupDir, restoredBytes: fs.statSync(active).size };
+  } catch (error) {
+    if (previous == null) fs.rmSync(active, { force: true });
+    else atomicWrite(active, previous.toString('utf8'));
     throw error;
   }
 }

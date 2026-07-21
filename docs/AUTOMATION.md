@@ -1,8 +1,10 @@
 # Scheduled scans
 
-Scout can register multiple named, per-user scheduler jobs. Scheduling is optional and may be enabled only after a successful supervised scan.
+Scout can register multiple named, per-user scheduler jobs. Scheduling is optional and may be enabled only after a successful supervised scan. Each job is enabled, changed and disabled independently.
 
-Beta 13's recommended VPS schedule is:
+First-run setup offers only the provider selected for the workspace, for example a Codex primary scan. A second compatible provider appears only after choosing **Add verification pass** in **Settings → Scans & schedule**. It is never enabled implicitly.
+
+An optional two-provider VPS schedule is:
 
 - `claude-primary` at 07:30 in `primary` mode;
 - `codex-second-pass` at 08:30 in `second-pass` mode.

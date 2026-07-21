@@ -69,11 +69,107 @@ test('backup status opens dedicated details and advanced backup settings', async
 
   await dialog.getByRole('button', { name: 'Advanced backup settings' }).click();
   await expect(dialog.getByRole('heading', { name: 'Backup' })).toBeVisible();
+  await expect(dialog.getByText('Private backup: Not set up (optional)')).toBeVisible();
+  await expect(dialog.getByText(/Viewing this guide does not enable backup/)).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Back to settings' })).toBeVisible();
 
   await dialog.getByRole('button', { name: 'Close settings' }).click();
   await expect(dialog).toBeHidden();
   await expect(sync).toBeFocused();
+});
+
+test('scan settings offer only the selected provider until verification is requested', async ({ page }) => {
+  await page.getByRole('button', { name: 'Settings' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Scans & schedule' }).click();
+  await expect(dialog.getByText('Codex daily scan time')).toBeVisible();
+  await expect(dialog.getByText('Claude verification pass time')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Add verification pass' }).click();
+  await expect(dialog.getByText('Claude verification pass time')).toBeVisible();
+});
+
+test('proposal and scan operations show reviewable progress and strict zero-keeper results', async ({ page }) => {
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await page.evaluate((status) => {
+    const setup = window.ScoutSetup;
+    setup.status = { ...status, established: false, ready: false, setupComplete: false, recovery: { available: false } };
+    setup.proposal = null;
+    setup.view = 'onboarding';
+    setup.step = 5;
+    setup.operations.proposal = {
+      id: 'proposal-synthetic', type: 'proposal', status: 'running', phase: 'Generating proposal with codex',
+      progress: { current: 2, total: 4 }, startedAt: new Date(Date.now() - 65000).toISOString(),
+    };
+    document.getElementById('setup-overlay').classList.remove('hidden');
+    setup.render();
+  }, establishedStatus);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('Generating proposal with codex')).toBeVisible();
+  await expect(dialog.getByText(/Step 2 of 4/)).toBeVisible();
+  await expect(dialog.getByText(/Quitting Scout interrupts local work/)).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Continue in background' })).toBeVisible();
+
+  await page.evaluate(() => {
+    const setup = window.ScoutSetup;
+    setup.operations.proposal = {
+      ...setup.operations.proposal, status: 'succeeded', phase: 'Proposal ready to review',
+      progress: { current: 4, total: 4 }, finishedAt: new Date().toISOString(),
+    };
+    setup.proposal = {
+      proposalId: 'proposal-synthetic', summary: 'Synthetic reviewed proposal', unresolvedQuestions: [],
+      files: ['workspace.json', 'profile/context.md', 'profile/calibration.md', 'cv/master-cv.md', 'data/search-categories.json']
+        .map((path) => ({ path, staged: `Synthetic staged content for ${path}` })),
+    };
+    setup.render();
+  });
+  const activate = dialog.getByRole('button', { name: 'Approve and activate' });
+  await expect(dialog.getByRole('heading', { name: 'cv/master-cv.md' })).toBeVisible();
+  await expect(activate).toBeDisabled();
+  await dialog.getByLabel('I reviewed all five staged files').check();
+  await expect(activate).toBeEnabled();
+
+  await page.evaluate((status) => {
+    const setup = window.ScoutSetup;
+    setup.status = {
+      ...status, established: false, ready: true, setupComplete: false,
+      scanHealth: {
+        healthy: true, lastRunAt: '2026-07-21T20:00:00.000Z', candidatesFound: 40, keepersAdded: 0,
+        discarded: { mandatory_unmet: 19, provider_discarded: 21 },
+      },
+    };
+    setup.step = 6;
+    setup.operations.scan = {
+      id: 'scan-synthetic', type: 'scan', status: 'running', phase: 'Scoring 40 candidates',
+      progress: { current: 3, total: 5 }, startedAt: new Date(Date.now() - 125000).toISOString(),
+    };
+    setup.render();
+  }, establishedStatus);
+  await expect(dialog.getByText('40 reviewed, 0 kept')).toBeVisible();
+  await expect(dialog.getByText(/19 mandatory gates/)).toBeVisible();
+  await expect(dialog.getByText(/21 assessment discards/)).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Finish setup — scan continues' })).toBeVisible();
+  await expect(dialog.getByText('Codex daily scan time')).toBeVisible();
+  await expect(dialog.getByText('Claude verification pass time')).toHaveCount(0);
+});
+
+test('refresh reattaches setup to a running proposal operation', async ({ page }) => {
+  await page.unroute('**/api/setup/status');
+  await page.route('**/api/setup/status', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ ...establishedStatus, established: false, ready: false, setupComplete: false }),
+  }));
+  await page.route('**/api/operations?type=proposal', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ operation: {
+      id: 'proposal-reattach', type: 'proposal', status: 'running', phase: 'Validating and staging proposal',
+      progress: { current: 3, total: 4 }, startedAt: '2026-07-21T20:00:00.000Z',
+    } }),
+  }));
+  await page.reload();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: 'Generate your evidence-led CV and search proposal' })).toBeVisible();
+  await expect(dialog.getByText('Validating and staging proposal')).toBeVisible();
+  await expect(dialog.getByText(/Step 3 of 4/)).toBeVisible();
 });
 
 test('settings opens a hub and retuning is explicit and dismissible', async ({ page }) => {
