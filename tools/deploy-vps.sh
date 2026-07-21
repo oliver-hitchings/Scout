@@ -51,7 +51,7 @@ fi
 case "$workspace/" in
   "$app_root/"*) printf 'Scout workspace must remain outside the application checkout.\n' >&2; exit 2 ;;
 esac
-if [[ -n $(git -C "$app_root" status --porcelain --untracked-files=normal) ]]; then
+if [[ -n $(git -C "$app_root" status --porcelain --untracked-files=normal -- . ':(exclude).scout-runtime/**') ]]; then
   printf 'Refusing to deploy over a dirty Scout application checkout.\n' >&2
   exit 2
 fi
