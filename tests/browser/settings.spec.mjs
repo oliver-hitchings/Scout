@@ -17,7 +17,7 @@ const establishedStatus = {
       locations: ['Example City'], exclusions: ['Extensive travel'], salaryMinimum: 70000,
     },
     commute: { origin: 'Example City', mode: 'either', maxMinutes: 60, includeUnknown: true },
-    ai: { provider: 'codex', model: null },
+    ai: { provider: 'codex', model: null, models: { codex: null, claude: null } },
   },
   providers: {
     codex: { installed: true, authenticated: true, capabilities: { structuredOutput: true } },
@@ -86,6 +86,42 @@ test('scan settings offer only the selected provider until verification is reque
   await expect(dialog.getByText('Claude verification pass time')).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Add verification pass' }).click();
   await expect(dialog.getByText('Claude verification pass time')).toBeVisible();
+});
+
+test('AI and scan settings save independent provider model choices', async ({ page }) => {
+  let aiRequest;
+  await page.route('**/api/setup/config', async (route) => {
+    aiRequest = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        config: { ...establishedStatus.config, ai: aiRequest.ai },
+      }),
+    });
+  });
+  await page.getByRole('button', { name: 'Settings' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'AI providers' }).click();
+  await dialog.locator('#setup-chat-model-codex').fill('gpt-job');
+  await dialog.locator('#setup-chat-model-claude').fill('claude-job');
+  await dialog.getByRole('button', { name: 'Save AI settings' }).click();
+  expect(aiRequest).toEqual({
+    ai: { provider: 'codex', model: null, models: { codex: 'gpt-job', claude: 'claude-job' } },
+  });
+
+  let scheduleRequest;
+  await page.route('**/api/schedule', async (route) => {
+    scheduleRequest = route.request().postDataJSON();
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+  await dialog.getByRole('button', { name: 'Back to settings' }).click();
+  await dialog.getByRole('button', { name: 'Scans & schedule' }).click();
+  await dialog.locator('[data-schedule-row="codex-primary"] [data-schedule-model]').fill('gpt-scan');
+  await dialog.getByRole('button', { name: 'Enable codex daily scan' }).click();
+  expect(scheduleRequest).toMatchObject({
+    action: 'install', id: 'codex-primary', provider: 'codex', mode: 'primary', model: 'gpt-scan',
+  });
 });
 
 test('proposal and scan operations show reviewable progress and strict zero-keeper results', async ({ page }) => {

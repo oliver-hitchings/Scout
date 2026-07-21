@@ -46,6 +46,7 @@ export const DEFAULT_WORKSPACE_CONFIG = Object.freeze({
   ai: {
     provider: null,
     model: null,
+    models: { codex: null, claude: null },
   },
   schedule: {
     jobs: [],
@@ -120,6 +121,7 @@ export function normaliseScheduleJobs(schedule = {}, fallbackProvider = null) {
     time: job.time || '07:30',
     provider: job.provider || fallbackProvider || null,
     mode: job.mode || 'primary',
+    model: job.model || null,
   }));
 }
 
@@ -139,7 +141,7 @@ export function mergeWorkspaceDefaults(value = {}) {
     },
     commute: { ...defaults.commute, ...(value.commute || {}) },
     setup: { ...defaults.setup, ...(value.setup || {}), completedSections: { ...defaults.setup.completedSections, ...(value.setup?.completedSections || {}) } },
-    ai: { ...defaults.ai, ...(value.ai || {}) },
+    ai: { ...defaults.ai, ...(value.ai || {}), models: { ...defaults.ai.models, ...(value.ai?.models || {}) } },
     schedule: { jobs: normaliseScheduleJobs(value.schedule, value.ai?.provider) },
   };
 }
@@ -163,6 +165,10 @@ export function validateWorkspaceConfig(value) {
   if (!value.sources || typeof value.sources !== 'object') throw new Error('workspace sources must be an object');
   if (value.commute && typeof value.commute !== 'object') throw new Error('workspace commute must be an object');
   if (value.ai && ![null, 'codex', 'claude'].includes(value.ai.provider ?? null)) throw new Error('workspace ai.provider must be codex, claude, or null');
+  for (const [provider, model] of Object.entries(value.ai?.models || {})) {
+    if (!['codex', 'claude'].includes(provider)) throw new Error('workspace ai.models keys must be codex or claude');
+    if (model !== null && !/^[A-Za-z0-9._:-]+$/.test(String(model))) throw new Error(`workspace ai.models.${provider} is invalid`);
+  }
   if (!value.schedule || !Array.isArray(value.schedule.jobs)) throw new Error('workspace schedule.jobs must be an array');
   const ids = new Set();
   for (const job of value.schedule.jobs) {
@@ -173,8 +179,17 @@ export function validateWorkspaceConfig(value) {
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(job.time || ''))) throw new Error(`workspace schedule job ${job.id} time must be HH:MM`);
     if (!['codex', 'claude'].includes(job.provider)) throw new Error(`workspace schedule job ${job.id} provider must be codex or claude`);
     if (!['primary', 'second-pass'].includes(job.mode)) throw new Error(`workspace schedule job ${job.id} mode must be primary or second-pass`);
+    if (job.model !== null && job.model !== undefined && !/^[A-Za-z0-9._:-]+$/.test(String(job.model))) throw new Error(`workspace schedule job ${job.id} model is invalid`);
   }
   return value;
+}
+
+// `ai.model` remains the compatibility fallback for workspaces created before
+// per-provider choices were introduced.
+export function modelForProvider(config, provider) {
+  const chosen = config?.ai?.models?.[provider];
+  if (chosen) return chosen;
+  return config?.ai?.provider === provider ? config.ai?.model || null : null;
 }
 
 export function loadWorkspaceConfig(root, { allowMissing = true } = {}) {

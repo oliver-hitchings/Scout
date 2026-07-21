@@ -22,6 +22,8 @@ scout schedule status
 scout schedule run-now --id claude-primary
 ```
 
+Add `--model MODEL` to `schedule install` to pin a supported model for that scan job. The model is stored with the named job and passed to both direct and scheduled runs. Omit it to follow the provider default; job-conversation model choices do not leak into scans.
+
 Each job receives a distinct native identity, such as `Scout Daily Scan - claude-primary`, `app.scout.daily-scan.claude-primary`, or `scout-daily-scan-claude-primary.timer`. Jobs run as the current user with least privilege, catch up after a missed trigger, and stop after 45 minutes.
 
 On a headless Linux VPS, enable lingering for the dedicated Scout account so its user timers and D-Bus session remain available:

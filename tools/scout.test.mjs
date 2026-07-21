@@ -85,6 +85,35 @@ test('runtime scan skips AI for a healthy empty source result and needs no Git r
   assert.equal(fs.existsSync(path.join(root, '.git')), false);
 });
 
+test('runtime scan model is independent from the job-work model', async () => {
+  const root = scanRoot();
+  writeWorkspaceConfig(root, {
+    ...structuredClone(DEFAULT_WORKSPACE_CONFIG),
+    ai: { provider: 'codex', model: null, models: { codex: 'gpt-job', claude: null } },
+  });
+  const seen = [];
+  const run = (model) => runScanWith(root, 'codex', 'primary', {
+    model,
+    providerStatusFn: authenticated,
+    collectSourcesFn: async () => ({
+      generatedAt: '2026-07-21T10:00:00Z', queries: ['engineer'],
+      sources: { hiring_cafe: { configured: true, status: 'healthy', count: 1, jobs: [{ company: 'Acme', title: 'Engineer', url: 'https://example.test/job' }] } },
+    }),
+    runStructuredTurnFn: async ({ model: selected }) => {
+      seen.push(selected);
+      return { value: { assessments: [{
+        candidateId: 'candidate-001', categoryId: null, summary: 'Match', hardExclusionMatches: [], mandatoryRequirements: [],
+        dimensions: [{ name: 'fit', score: 80, maximum: 100, evidence: 'Evidence' }], recommendation: 'keep',
+      }] }, usage: {} };
+    },
+    acquireLockFn: () => ({ ok: true, lock: { token: `lock-${seen.length}` } }),
+    releaseLockFn: () => ({ ok: true }),
+  });
+  assert.equal((await run(null)).ok, true);
+  assert.equal((await run('gpt-scan')).ok, true);
+  assert.deepEqual(seen, [null, 'gpt-scan']);
+});
+
 test('runtime scan refuses lock contention before collecting sources', async () => {
   const root = scanRoot();
   let collected = false;
