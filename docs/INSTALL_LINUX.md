@@ -6,7 +6,7 @@ Private Remote Access is optional. After normal setup, install [Tailscale](https
 
 ## Optional user service
 
-Scout does not install a Linux host service automatically in this release. For a source checkout, create `~/.config/systemd/user/scout-host.service`, replacing the executable and checkout paths with absolute paths:
+The packaged Linux app does not install a host service automatically. For a source checkout, create `~/.config/systemd/user/scout-host.service`, replacing the executable and checkout paths with absolute paths:
 
 ```ini
 [Unit]

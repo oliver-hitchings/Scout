@@ -28,7 +28,7 @@ case "$mode" in
     ;;
   rehearsal)
     [[ $source_ref == refs/heads/codex/release-candidate && $force_failure =~ ^(true|false)$ ]] || {
-      printf 'Rehearsals are restricted to the protected release-candidate branch.\n' >&2
+      printf 'Rehearsals are restricted to the protected, stable release-candidate branch.\n' >&2
       exit 2
     }
     fetch_ref="$source_ref:refs/scout-deploy/rehearsal"

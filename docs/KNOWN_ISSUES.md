@@ -3,7 +3,13 @@
 This page tracks confirmed problems in released Scout packages. Check
 [Troubleshooting](TROUBLESHOOTING.md) for general setup and diagnostic guidance.
 
-## CV sources hidden and Typst unavailable in beta.14
+## Current release
+
+No release-specific issue is currently confirmed here. If you find a reproducible problem, first follow [Troubleshooting](TROUBLESHOOTING.md), then report it through the appropriate public issue or private [security](../SECURITY.md) route using synthetic data.
+
+## Resolved history
+
+### CV sources hidden and Typst unavailable in beta.14
 
 - **Affected release:** Scout `0.1.0-beta.14`
 - **First recorded:** 2026-07-21
@@ -11,7 +17,7 @@ This page tracks confirmed problems in released Scout packages. Check
 
 Beta.14 depended on a separately installed `typst` command and offered CV creation only inside expanded opportunity cards. Beta.15 packages a pinned compiler, keeps legacy CV sources visible when derived files are missing, and adds a creation route to the CV library.
 
-## Stale settings dialog in beta.13
+### Stale settings dialog in beta.13
 
 - **Affected release:** Scout `0.1.0-beta.13`
 - **First recorded:** 2026-07-20
@@ -19,7 +25,7 @@ Beta.14 depended on a separately installed `typst` command and offered CV creati
 
 A page kept open across an upgrade could retain the older settings wizard in memory. The backup status also opened that full wizard, and the older page had no close control. Refreshing loaded the corrected assets. Beta.14 separates backup details from Settings, separates established settings from onboarding, derives cache keys from the exact UI build and prompts safely when an open page is stale.
 
-## Windows: Codex can be reported as not installed when it is present
+### Windows provider detection in beta.9
 
 - **Affected release:** Scout `0.1.0-beta.9`
 - **First recorded:** 2026-07-14
@@ -32,30 +38,4 @@ authenticated Codex normally. The beta.10 fix replaces Job Object cleanup with
 Scout's explicit local shutdown endpoint and checks official per-user provider
 locations from the packaged runtime environment.
 
-On some Windows installations, Scout's provider check displays:
-
-```text
-Codex
-Not installed
-```
-
-This can be a false negative when Codex is supplied by the Codex desktop app and
-the executable exists at the official per-user location:
-
-```text
-%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe
-```
-
-Do not reinstall Codex solely on the basis of Scout's status message. First
-verify the CLI directly:
-
-```powershell
-codex --version
-codex login
-codex login status
-```
-
-Then fully quit and reopen Scout and refresh the provider check. If PowerShell
-can run Codex but Scout still reports **Not installed**, treat it as this known
-detection issue. Continue to keep provider login credentials in the provider's
-official login flow; do not copy tokens into Scout or its workspace.
+The fix is included in beta.10 and later. See the [beta.10 release notes](releases/0.1.0-beta.10.md) for the historical detail. Do not use the old workaround on a current release; follow [provider troubleshooting](TROUBLESHOOTING.md) instead.

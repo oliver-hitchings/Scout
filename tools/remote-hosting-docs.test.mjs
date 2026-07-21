@@ -5,13 +5,12 @@ import test from 'node:test';
 function read(relative) { return fs.readFileSync(new URL(`../${relative}`, import.meta.url), 'utf8'); }
 
 const guide = read('docs/PRIVATE_REMOTE_ACCESS.md');
-const todo = read('REMOTE_HOSTING_TODO.md');
 
 test('public guides explain optional owner-only hosting and recovery boundaries', () => {
   for (const file of ['README.md', 'docs/QUICK_START.md', 'docs/INSTALL_WINDOWS.md', 'docs/INSTALL_MACOS.md', 'docs/INSTALL_LINUX.md']) {
     assert.match(read(file), /Private Remote Access|private remote/i, file);
   }
-  for (const phrase of ['non-commercial', '127.0.0.1:8459', 'tagged devices', 'Add to Home Screen', 'Offline editing is not supported', 'next message start']) {
+  for (const phrase of ['current plans and terms', '127.0.0.1:8459', 'tagged devices', 'Add to Home Screen', 'Offline editing is not supported', 'next message start']) {
     assert.match(guide, new RegExp(phrase, 'i'));
   }
   assert.match(guide, /must be awake/);
@@ -41,7 +40,7 @@ test('VPS instructions keep headless hosting private, unprivileged and reboot sa
     'separate `scout-deploy` account', 'must not read the workspace',
   ]) assert.match(vps, new RegExp(phrase, 'i'), phrase);
   assert.doesNotMatch(vps, /0\.0\.0\.0:\d+/);
-  assert.match(read('README.md'), /docs\/INSTALL_VPS\.md/);
+  assert.match(read('docs/README.md'), /INSTALL_VPS\.md/);
   assert.match(read('docs/PRIVATE_REMOTE_ACCESS.md'), /INSTALL_VPS\.md/);
 });
 
@@ -54,14 +53,15 @@ test('canonical VPS guide documents automatic backup and a reproducible restore 
     'Do not run a second writable Scout host', 'interrupt outbound GitHub access',
   ]) assert.match(state, new RegExp(phrase, 'i'), phrase);
   assert.doesNotMatch(state, /oliver-hitchings|scout-workspace/);
-  assert.match(read('README.md'), /VPS_BACKUP_AND_STATE\.md/);
+  assert.match(read('docs/README.md'), /VPS_BACKUP_AND_STATE\.md/);
   assert.match(read('docs/INSTALL_VPS.md'), /VPS_BACKUP_AND_STATE\.md/);
 });
 
-test('maintainer checklist keeps live acceptance and the beta.11 release separate', () => {
-  assert.match(read('README.md'), /REMOTE_HOSTING_TODO\.md/);
-  for (const phrase of ['gh auth login', 'mobile data', 'different Tailscale user', 'within 90 seconds', 'unrelated Tailscale Serve mapping', 'separate beta.11 version']) {
-    assert.match(todo, new RegExp(phrase, 'i'));
+test('release guide keeps live private-hosting acceptance current', () => {
+  const release = read('docs/RELEASE.md');
+  assert.doesNotMatch(read('README.md'), /REMOTE_HOSTING_TODO\.md/);
+  for (const phrase of ['owner access', 'different Tailscale identity', 'crash recovery', 'reboot recovery', 'provider authentication', 'scheduled jobs', 'encrypted backup', 'isolated restore']) {
+    assert.match(release, new RegExp(phrase, 'i'));
   }
-  assert.match(todo, /validation artifact only/);
+  assert.match(release, /pull request or release record/i);
 });

@@ -278,7 +278,7 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
 export function registerDailySchedule({ id = 'primary', scriptFile, command, argumentsText, workingDirectory, time, spawn = spawnSync }) {
   validateTime(time);
   const names = nativeScheduleNames(id);
-  if (process.platform !== 'win32') return { ok: false, supported: false, error: 'scheduled scans are currently supported on Windows only' };
+  if (process.platform !== 'win32') return { ok: false, supported: false, error: 'Windows Task Scheduler registration is available only on Windows' };
   const r = spawn('powershell.exe', [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile,
     '-TaskName', names.task, '-Command', command, '-Arguments', argumentsText,

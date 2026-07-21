@@ -85,7 +85,7 @@ Run `scout remote preflight --require-enabled`, then complete these live checks:
 
 Keep automatic security updates, VPS snapshots and Scout's encrypted private-workspace recovery configured. A provider session may still require periodic interactive reauthentication.
 
-## Enable Beta 13 scheduling and encrypted backup
+## Enable scheduled scans and encrypted backup
 
 The complete reusable architecture, backup triggers, security boundary, restore drill, and phone acceptance test are documented in [Canonical VPS state and automatic backup](VPS_BACKUP_AND_STATE.md). Complete that checklist before treating the VPS as the canonical host.
 
@@ -95,7 +95,7 @@ For unattended backup, choose **Prepare VPS deploy key**. Add the displayed publ
 
 Save the emergency recovery key outside the VPS. Run **Back up now**, confirm a successful timestamp, and restore into an isolated empty directory from another owner device before relying on the backup.
 
-## Source-checkout service and Beta updates
+## Source-checkout service and beta updates
 
 The private Beta host may instead use a system-level `scout-host.service` when the unit explicitly sets `User=ubuntu` (or another dedicated unprivileged owner), points at the source checkout and exports the separate `SCOUT_WORKSPACE` path. Scout itself must never run as root. This layout avoids user lingering and supports the gated tag deployment in [Release Process](RELEASE.md).
 

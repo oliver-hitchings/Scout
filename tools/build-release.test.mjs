@@ -16,7 +16,13 @@ test('release manifest is allowlisted and excludes private workspace roots', () 
   }
   assert.ok(sources.includes('LICENSE'));
   assert.ok(sources.includes('README.md'));
+  assert.ok(sources.includes('tools/deploy-vps.sh'));
   assert.ok(sources.includes('docs/QUICK_START.md'));
+  assert.ok(sources.includes('docs/README.md'));
+  assert.ok(sources.includes('docs/DOCUMENTATION.md'));
+  assert.ok(sources.includes('docs/OPERATIONS.md'));
+  assert.ok(sources.includes('docs/KNOWN_ISSUES.md'));
+  assert.ok(sources.includes('docs/REPOSITORY_LAYOUT.md'));
   assert.ok(sources.includes('docs/INSTALL_WINDOWS.md'));
   assert.ok(sources.includes('docs/INSTALL_MACOS.md'));
   assert.ok(sources.includes('docs/INSTALL_LINUX.md'));
@@ -24,6 +30,7 @@ test('release manifest is allowlisted and excludes private workspace roots', () 
   assert.ok(sources.includes('docs/VPS_BACKUP_AND_STATE.md'));
   assert.ok(sources.includes('docs/CV_QUALITY.md'));
   assert.ok(sources.includes('docs/releases'));
+  assert.ok(sources.includes('docs/diagnostics'));
   assert.ok(sources.includes('docs/RELEASE.md'));
   assert.ok(sources.includes('tools/remote-hosting-preflight.mjs'));
   assert.ok(!sources.includes('docs/CODEX_HANDOFF.md'));
@@ -82,7 +89,8 @@ test('public source manifest includes tests and workflows but excludes private r
   assert.ok(sources.includes('.github'));
   assert.ok(sources.includes('tools/build-release.test.mjs'));
   assert.ok(sources.includes('tools/remote-hosting-preflight.test.mjs'));
-  assert.ok(sources.includes('REMOTE_HOSTING_TODO.md'));
+  assert.ok(sources.includes('tools/documentation.test.mjs'));
+  assert.ok(!sources.includes('REMOTE_HOSTING_TODO.md'));
   assert.ok(!sources.includes('docs/CODEX_HANDOFF.md'));
   assert.ok(!sources.includes('tools/commute-data.test.mjs'));
   assert.equal(includePublicSourcePath('output/Scout.exe'), false);
@@ -154,6 +162,8 @@ test('staging copies only manifest content and bundled runtime', () => {
   assert.equal(fs.existsSync(path.join(staged.appDir, 'README.md')), true);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'docs', 'QUICK_START.md')), true);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'docs', 'INSTALL_VPS.md')), true);
+  assert.equal(fs.existsSync(path.join(staged.appDir, 'docs', 'KNOWN_ISSUES.md')), true);
+  assert.equal(fs.existsSync(path.join(staged.appDir, 'docs', 'REPOSITORY_LAYOUT.md')), true);
   assert.doesNotMatch(fs.readFileSync(path.join(staged.appDir, 'package.json'), 'utf8'), /playwright/i);
   assert.doesNotMatch(fs.readFileSync(path.join(staged.appDir, 'package-lock.json'), 'utf8'), /playwright/i);
   assert.equal(fs.readFileSync(path.join(stageDir, 'runtime', 'ScoutRuntime.exe'), 'utf8'), 'runtime');

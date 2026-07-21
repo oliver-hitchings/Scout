@@ -4,15 +4,13 @@ Scout is a local-first, AI-assisted opportunity finder. It searches configured j
 
 Scout never submits an application or sends outreach. Your CV, profile, tracker, reports, applications, chat history, and source credentials live in a separate private workspace.
 
-**New user?** Choose [Windows](docs/INSTALL_WINDOWS.md), [macOS](docs/INSTALL_MACOS.md), or [Linux](docs/INSTALL_LINUX.md) and run Scout locally. Advanced users who want an optional always-on single-owner Linux host can use the separate [private VPS guide](docs/INSTALL_VPS.md). Scout beta packages are unsigned and require your own authenticated Codex or Claude provider account.
+**New user?** Start with the [five-minute quick start](docs/QUICK_START.md), then choose [Windows](docs/INSTALL_WINDOWS.md), [macOS](docs/INSTALL_MACOS.md), or [Linux](docs/INSTALL_LINUX.md). Advanced users can run the same private workspace on an always-on Linux host by following the [VPS guide](docs/INSTALL_VPS.md). Scout beta packages are unsigned and require your own authenticated Codex or Claude provider account.
 
-> **Repository note:** this is the canonical public Scout application repository. Personal CV, profile, tracker, report and application data belongs only in the separate private workspace repository. See [Repository layout](docs/REPOSITORY_LAYOUT.md).
+> **Repository note:** this repository contains the public Scout application. Personal CV, profile, tracker, report, application, chat, and credential data belongs only in a separate private workspace. See [Repository layout](docs/REPOSITORY_LAYOUT.md).
 
 ## Status
 
-Scout `0.1.x` is a cross-platform public beta. Windows SmartScreen and macOS Gatekeeper may warn because packages are unsigned. Verify the SHA-256 checksum published with every release.
-
-> **Private-hosting release work:** outstanding live acceptance and publishing tasks are tracked in [REMOTE_HOSTING_TODO.md](REMOTE_HOSTING_TODO.md).
+Scout `0.1.x` is a cross-platform public beta. Windows SmartScreen and macOS Gatekeeper may warn because packages are unsigned. Verify the SHA-256 checksum published with every release. See [Known issues](docs/KNOWN_ISSUES.md) for confirmed current limitations.
 
 ## What Scout does
 
@@ -26,7 +24,7 @@ Scout `0.1.x` is a cross-platform public beta. Windows SmartScreen and macOS Gat
 - Keeps real recruiter correspondence, calls, contacts and related vacancies together in a company relationship history while leaving each AI job chat role-specific.
 - Optionally backs that workspace up to a private GitHub repository and restores it on another computer; local-only use remains the default.
 - Optionally hosts that same running workspace and its Scout chats privately to the owner's phone or laptop through Tailscale Serve.
-- Runs supervised or scheduled daily scans on Windows.
+- Runs supervised or scheduled scans on Windows, macOS, or Linux, including paired primary and second-pass jobs.
 - Keeps model choice optional, using the provider's supported default unless you select an override.
 
 Scout is not an auto-apply tool. It does not invent qualifications, infer positive facts from missing evidence, or send anything on your behalf.
@@ -34,7 +32,7 @@ Scout is not an auto-apply tool. It does not invent qualifications, infer positi
 ## Five-minute start
 
 1. Install Scout from the release page and launch it. For a source checkout, see [Development setup](#development-setup).
-2. Create a new local workspace or restore an existing Scout workspace from private GitHub backup. The default local path is `%USERPROFILE%\Documents\Scout Workspace`.
+2. Create a new local workspace or restore an existing Scout workspace from a private GitHub backup. Scout proposes a platform-appropriate local path during setup.
 3. Install and sign in to either Codex or Claude, then let Scout verify it.
 4. Import a CV, answer the setup questions, and generate one bounded proposal. Review every staged file before explicitly activating it.
 5. Optionally add Adzuna credentials, run `scout doctor`, then perform one supervised scan.
@@ -42,7 +40,7 @@ Scout is not an auto-apply tool. It does not invent qualifications, infer positi
 7. Only after reviewing that scan, enable the daily schedule.
 8. Optionally open **Settings -> Private Remote Access** to use this same host from your phone or laptop. See [Private Remote Access](docs/PRIVATE_REMOTE_ACCESS.md).
 
-The full walkthrough is in [Quick Start](docs/QUICK_START.md). If you want an AI assistant to guide setup, use [AI Setup](docs/AI_SETUP.md).
+The full walkthrough is in [Quick Start](docs/QUICK_START.md). If you want an AI assistant to guide setup, use [AI Setup](docs/AI_SETUP.md). The [documentation index](docs/README.md) groups every guide by task.
 
 ## Application and workspace are separate
 
@@ -91,7 +89,7 @@ Run `scout` without arguments for command help.
 
 ## Development setup
 
-Requirements: Windows 10/11, Node.js 24 LTS, Git for source development, and at least one authenticated compatible provider CLI.
+Requirements: a supported Windows, macOS, or Linux host; Node.js 24 LTS; Git; and at least one authenticated compatible provider CLI.
 
 ```powershell
 git clone https://github.com/oliver-hitchings/Scout.git
@@ -107,30 +105,11 @@ Open `http://127.0.0.1:8459`. Use a synthetic workspace for development and neve
 
 ## Documentation
 
-- [Quick Start](docs/QUICK_START.md)
-- [Install Scout on Windows](docs/INSTALL_WINDOWS.md)
-- [Install Scout on macOS](docs/INSTALL_MACOS.md)
-- [Install Scout on Linux](docs/INSTALL_LINUX.md)
-- [Host Scout on a private VPS](docs/INSTALL_VPS.md)
-- [Canonical VPS state and automatic backup](docs/VPS_BACKUP_AND_STATE.md)
-- [AI-assisted setup and retuning](docs/AI_SETUP.md)
-- [Configuration reference](docs/CONFIGURATION.md)
-- [Privacy and data handling](docs/PRIVACY.md)
-- [Private remote access](docs/PRIVATE_REMOTE_ACCESS.md)
-- [Private remote-hosting outstanding tasks](REMOTE_HOSTING_TODO.md)
-- [CV evidence and quality](docs/CV_QUALITY.md)
-- [Codex and Claude providers](docs/PROVIDERS.md)
-- [Adzuna and other sources](docs/ADZUNA_AND_SOURCES.md)
-- [Scheduled scans](docs/AUTOMATION.md)
-- [Upgrades and migrations](docs/UPGRADES.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Known issues](docs/KNOWN_ISSUES.md)
-- [Release process](docs/RELEASE.md)
-- [Repository layout and development boundaries](docs/REPOSITORY_LAYOUT.md)
+Use the [documentation index](docs/README.md) to find the right installation, setup, VPS, configuration, privacy, troubleshooting, or contributor guide. Historical release notes are kept separately and are not current setup instructions.
 
 ## Contributing and security
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change. Use synthetic fixtures only; never contribute a real CV, profile, tracker, report, credential, or application.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change. Use synthetic fixtures only; never contribute a real CV, profile, tracker, report, credential, or application. User-facing changes must follow the [documentation maintenance guide](docs/DOCUMENTATION.md).
 
 Report vulnerabilities through the private route described in [SECURITY.md](SECURITY.md), not in a public issue.
 

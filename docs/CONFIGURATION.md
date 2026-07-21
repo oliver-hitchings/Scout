@@ -51,4 +51,4 @@ The profile narrative and scoring precedents live in `profile/context.md` and `p
 
 Run `scout doctor` after edits. Do not store secrets in `workspace.json`; see [Privacy](PRIVACY.md).
 
-Beta 13 migrates the legacy singular schedule into one named primary job and saves the original configuration under `.scout/backups/`. Older Scout releases refuse schema 2 rather than silently applying the wrong timer.
+When upgrading a schema 1 workspace, Scout migrates the legacy singular schedule into one named primary job and saves the original configuration under `.scout/backups/`. Versions that understand only schema 1 refuse schema 2 rather than silently applying the wrong timer.
