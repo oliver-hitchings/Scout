@@ -40,8 +40,21 @@ test('VPS instructions keep headless hosting private, unprivileged and reboot sa
     'separate `scout-deploy` account', 'must not read the workspace',
   ]) assert.match(vps, new RegExp(phrase, 'i'), phrase);
   assert.doesNotMatch(vps, /0\.0\.0\.0:\d+/);
-  assert.match(read('README.md'), /docs\/INSTALL_VPS\.md/);
+  assert.match(read('docs/README.md'), /INSTALL_VPS\.md/);
   assert.match(read('docs/PRIVATE_REMOTE_ACCESS.md'), /INSTALL_VPS\.md/);
+});
+
+test('canonical VPS guide documents automatic backup and a reproducible restore drill', () => {
+  const state = read('docs/VPS_BACKUP_AND_STATE.md');
+  for (const phrase of [
+    'VPS is the canonical Scout computer', 'queues a serialized Git checkpoint',
+    'five-minute periodic checkpoints', 'rejects remote state-changing requests',
+    'Prepare VPS deploy key', 'Back up now', 'Restore into an isolated empty directory',
+    'Do not run a second writable Scout host', 'interrupt outbound GitHub access',
+  ]) assert.match(state, new RegExp(phrase, 'i'), phrase);
+  assert.doesNotMatch(state, /oliver-hitchings|scout-workspace/);
+  assert.match(read('docs/README.md'), /VPS_BACKUP_AND_STATE\.md/);
+  assert.match(read('docs/INSTALL_VPS.md'), /VPS_BACKUP_AND_STATE\.md/);
 });
 
 test('release guide keeps live private-hosting acceptance current', () => {

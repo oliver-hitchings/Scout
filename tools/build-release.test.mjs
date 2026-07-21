@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  includePublicSourcePath, includeReleasePath, PUBLIC_SOURCE_FILES, RELEASE_FILES,
+  includePublicSourcePath, includeReleasePath, productionDependencyFilter, productionLockfile,
+  productionPackageManifest, PUBLIC_SOURCE_FILES, RELEASE_FILES,
   sha256, stagePublicSource, stageRelease, writeChecksums,
 } from './build-release.mjs';
 
@@ -26,8 +27,10 @@ test('release manifest is allowlisted and excludes private workspace roots', () 
   assert.ok(sources.includes('docs/INSTALL_MACOS.md'));
   assert.ok(sources.includes('docs/INSTALL_LINUX.md'));
   assert.ok(sources.includes('docs/INSTALL_VPS.md'));
+  assert.ok(sources.includes('docs/VPS_BACKUP_AND_STATE.md'));
   assert.ok(sources.includes('docs/CV_QUALITY.md'));
   assert.ok(sources.includes('docs/releases'));
+  assert.ok(sources.includes('docs/diagnostics'));
   assert.ok(sources.includes('docs/RELEASE.md'));
   assert.ok(sources.includes('tools/remote-hosting-preflight.mjs'));
   assert.ok(!sources.includes('docs/CODEX_HANDOFF.md'));
@@ -41,6 +44,43 @@ test('release tree filter omits tests and snapshots', () => {
   assert.equal(includeReleasePath('ui/__snapshots__/screen.txt'), false);
   assert.equal(includeReleasePath('node_modules/.bin/mammoth'), false);
   assert.equal(includeReleasePath('node_modules/mammoth/test/test-data/sample.docx'), false);
+});
+
+test('production dependency filter excludes development-only browser tooling', () => {
+  const include = productionDependencyFilter({
+    packages: {
+      'node_modules/runtime': { version: '1.0.0' },
+      'node_modules/runtime/node_modules/transitive': { version: '1.0.0' },
+      'node_modules/@playwright/test': { version: '1.0.0', dev: true },
+      'node_modules/playwright': { version: '1.0.0', dev: true },
+    },
+  });
+  assert.equal(include('runtime/index.js'), true);
+  assert.equal(include('runtime/node_modules/transitive/index.js'), true);
+  assert.equal(include('@playwright'), false);
+  assert.equal(include('playwright/index.js'), false);
+});
+
+test('production manifests remove development-only browser tooling', () => {
+  const manifest = productionPackageManifest({
+    dependencies: { runtime: '1.0.0' },
+    devDependencies: { '@playwright/test': '1.0.0' },
+    scripts: { start: 'node app.js', 'test:browser': 'playwright test' },
+  });
+  assert.deepEqual(manifest.dependencies, { runtime: '1.0.0' });
+  assert.equal(manifest.devDependencies, undefined);
+  assert.deepEqual(manifest.scripts, { start: 'node app.js' });
+
+  const lock = productionLockfile({
+    packages: {
+      '': { dependencies: { runtime: '1.0.0' }, devDependencies: { '@playwright/test': '1.0.0' } },
+      'node_modules/runtime': { version: '1.0.0' },
+      'node_modules/@playwright/test': { version: '1.0.0', dev: true },
+    },
+  });
+  assert.equal(lock.packages[''].devDependencies, undefined);
+  assert.ok(lock.packages['node_modules/runtime']);
+  assert.equal(lock.packages['node_modules/@playwright/test'], undefined);
 });
 
 test('public source manifest includes tests and workflows but excludes private roots and installer output', () => {
@@ -71,7 +111,12 @@ test('public source staging contains contributor inputs without private workspac
       }
     } else {
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, entry.source === 'package.json' ? '{"version":"1.0.0"}' : 'ok');
+      const content = entry.source === 'package.json'
+        ? '{"version":"1.0.0","devDependencies":{"@playwright/test":"1.0.0"}}'
+        : entry.source === 'package-lock.json'
+        ? '{"lockfileVersion":3,"packages":{"":{"devDependencies":{"@playwright/test":"1.0.0"}},"node_modules/@playwright/test":{"version":"1.0.0","dev":true}}}'
+        : 'ok';
+      fs.writeFileSync(target, content);
     }
   }
   fs.mkdirSync(path.join(root, 'profile'), { recursive: true });
@@ -88,7 +133,9 @@ test('staging copies only manifest content and bundled runtime', () => {
   const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-release-stage-'));
   const nodeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-release-node-'));
   const nodeExecutable = path.join(nodeDir, 'node.exe');
+  const typstExecutable = path.join(nodeDir, 'typst.exe');
   fs.writeFileSync(nodeExecutable, 'runtime');
+  fs.writeFileSync(typstExecutable, 'typst-runtime');
   for (const entry of RELEASE_FILES) {
     const target = path.join(root, entry.source);
     if (entry.tree) {
@@ -97,13 +144,18 @@ test('staging copies only manifest content and bundled runtime', () => {
       fs.writeFileSync(path.join(target, 'runtime.test.mjs'), 'private fixture');
     } else {
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, entry.source === 'package.json' ? '{"version":"1.0.0"}' : 'ok');
+      const content = entry.source === 'package.json'
+        ? '{"version":"1.0.0","devDependencies":{"@playwright/test":"1.0.0"}}'
+        : entry.source === 'package-lock.json'
+        ? '{"lockfileVersion":3,"packages":{"":{"devDependencies":{"@playwright/test":"1.0.0"}},"node_modules/@playwright/test":{"version":"1.0.0","dev":true}}}'
+        : 'ok';
+      fs.writeFileSync(target, content);
     }
   }
   fs.mkdirSync(path.join(root, 'profile'), { recursive: true });
   fs.writeFileSync(path.join(root, 'profile', 'context.md'), 'private');
 
-  const staged = stageRelease({ root, stageDir, nodeExecutable, includeDependencies: false, platform: 'win32' });
+  const staged = stageRelease({ root, stageDir, nodeExecutable, typstExecutable, includeDependencies: false, platform: 'win32' });
   assert.equal(fs.existsSync(path.join(staged.appDir, 'ui', 'runtime.mjs')), true);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'ui', 'runtime.test.mjs')), false);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'profile')), false);
@@ -112,7 +164,10 @@ test('staging copies only manifest content and bundled runtime', () => {
   assert.equal(fs.existsSync(path.join(staged.appDir, 'docs', 'INSTALL_VPS.md')), true);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'docs', 'KNOWN_ISSUES.md')), true);
   assert.equal(fs.existsSync(path.join(staged.appDir, 'docs', 'REPOSITORY_LAYOUT.md')), true);
+  assert.doesNotMatch(fs.readFileSync(path.join(staged.appDir, 'package.json'), 'utf8'), /playwright/i);
+  assert.doesNotMatch(fs.readFileSync(path.join(staged.appDir, 'package-lock.json'), 'utf8'), /playwright/i);
   assert.equal(fs.readFileSync(path.join(stageDir, 'runtime', 'ScoutRuntime.exe'), 'utf8'), 'runtime');
+  assert.equal(fs.readFileSync(path.join(stageDir, 'runtime', 'typst.exe'), 'utf8'), 'typst-runtime');
 });
 
 test('checksums use SHA-256 and do not hash the manifest into itself', () => {

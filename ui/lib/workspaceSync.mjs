@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-  initializeRecoveryBackup, loadRecoveryHeader, restoreRecoveryBackup, restoreRecoveryBackupWithKey, writeRecoveryBackup,
+  initializeRecoveryBackup, loadRecoveryHeader, RECOVERY_DIR, restoreRecoveryBackup, restoreRecoveryBackupWithKey,
+  rotateRecoveryPassphrase, writeRecoveryBackup,
 } from './recoveryBackup.mjs';
 
 const SETTINGS = '.scout/sync.json';
@@ -55,7 +56,7 @@ export function prepareGithubDeployKey(root, options = {}) {
   ensureRepo(root, options);
   const configured = runGit(root, ['config', 'core.sshCommand', sshCommand], options);
   if (!configured.ok) throw new Error(configured.error);
-  return { ok: true, keyPath, knownHosts, publicKey };
+  return { ok: true, keyPath, knownHosts, publicKey, sshCommand };
 }
 
 export function loadSyncSettings(root) {
@@ -172,6 +173,14 @@ function untrackLegacyChats(root, options = {}) {
   if (!removed.ok) throw new Error(`Private backup could not make chats device-local: ${removed.error}`);
 }
 
+function untrackLegacyManagedInstructions(root, options = {}) {
+  const tracked = runGit(root, ['ls-files', '-z', '--', 'AGENTS.md', 'CLAUDE.md'], options);
+  if (!tracked.ok) throw new Error(tracked.error);
+  if (!tracked.stdout.split('\0').filter(Boolean).length) return;
+  const removed = runGit(root, ['rm', '--cached', '--ignore-unmatch', '--', 'AGENTS.md', 'CLAUDE.md'], options);
+  if (!removed.ok) throw new Error(`Private backup could not make managed instructions device-local: ${removed.error}`);
+}
+
 function assertNoTrackedSecrets(root, options = {}) {
   const tracked = runGit(root, ['ls-files', '-z'], options);
   if (!tracked.ok) throw new Error(tracked.error);
@@ -222,6 +231,7 @@ function sameGithubRepository(left, right) {
 
 function commitAll(root, message, options = {}) {
   untrackLegacyChats(root, options);
+  untrackLegacyManagedInstructions(root, options);
   assertNoTrackedSecrets(root, options);
   const update = runGit(root, ['add', '-u'], options);
   if (!update.ok) throw new Error(update.error);
@@ -266,6 +276,7 @@ export async function runWorkspaceSync(root, reason = 'workspace update', option
   if (!repoReady(root, options)) return setState(root, 'disabled', { enabled: false });
   ensureRepo(root, options);
   untrackLegacyChats(root, options);
+  untrackLegacyManagedInstructions(root, options);
   assertNoTrackedSecrets(root, options);
   if (!settings.enabled) {
     commitAll(root, `scout: ${reason}`, options);
@@ -344,6 +355,7 @@ export async function connectWorkspaceSync(root, { remoteUrl: value, passphrase 
   if (transport === 'https' && !git.credentialManager) throw new Error('Install Git Credential Manager before setting up an HTTPS private backup');
   ensureRepo(root, options);
   untrackLegacyChats(root, options);
+  untrackLegacyManagedInstructions(root, options);
   assertNoTrackedSecrets(root, options);
   const current = remoteUrl(root, options);
   if (current && !sameGithubRepository(current, verified.url)) throw new Error('This workspace is already connected to a different origin');
@@ -426,5 +438,89 @@ export async function restoreWorkspaceFromGithub({ remoteUrl: value, targetRoot,
   } catch (error) {
     fs.rmSync(temp, { recursive: true, force: true });
     throw error;
+  }
+}
+
+export async function rotateWorkspaceRecoveryPassphrase(root, passphrase, options = {}) {
+  const settings = loadSyncSettings(root);
+  if (!settings.enabled) throw new Error('Encrypted private backup is not enabled');
+  const dataKey = Buffer.from(String(settings.dataKey || ''), 'base64url');
+  if (dataKey.length !== 32) throw new Error('Recovery key cache is missing');
+  rotateRecoveryPassphrase(root, dataKey, passphrase);
+  const status = await runWorkspaceSync(root, 'rotate recovery passphrase', options);
+  return { ok: status.state === 'synced', status };
+}
+
+export async function adoptExistingWorkspaceFromGithub({
+  remoteUrl: value, targetRoot, passphrase, confirmation,
+}, options = {}) {
+  if (confirmation !== 'replace-with-existing-private-workspace') {
+    throw new Error('Explicit private-workspace replacement confirmation is required');
+  }
+  const target = path.resolve(targetRoot);
+  if (!fs.existsSync(target) || fs.lstatSync(target).isSymbolicLink() || !fs.statSync(target).isDirectory()) {
+    throw new Error('The current Scout workspace must be a real directory');
+  }
+  for (const relative of ['workspace.json', 'data/opportunities.json']) {
+    if (!fs.existsSync(path.join(target, ...relative.split('/')))) throw new Error('The current Scout workspace is not initialised');
+  }
+  const prepared = prepareGithubDeployKey(target, options);
+  const verified = options.verifyRemote
+    ? await options.verifyRemote(value)
+    : await verifyPrivateGithubRemote(value, { ...options, cwd: target });
+  if (verified.empty) throw new Error('The private repository is empty; there is no existing workspace to adopt');
+  if ((verified.transport || validateGithubUrl(value).transport) !== 'ssh') {
+    throw new Error('Unattended VPS workspace adoption requires a repository-scoped SSH deploy key');
+  }
+
+  const parent = path.dirname(target);
+  const temporary = path.join(parent, `.scout-adopt-${crypto.randomUUID()}`);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupRoot = `${target}.before-adopt-${stamp}`;
+  let originalMoved = false;
+  try {
+    const clone = runGit(parent, ['clone', verified.url, temporary], {
+      ...options, env: { ...(options.env || {}), GIT_SSH_COMMAND: prepared.sshCommand },
+    });
+    if (!clone.ok) throw new Error(`Private workspace clone failed: ${clone.error}`);
+    assertNoSymlinks(temporary);
+    for (const relative of ['workspace.json', 'data/opportunities.json']) {
+      if (!fs.existsSync(path.join(temporary, ...relative.split('/')))) throw new Error('The private repository is not a Scout workspace');
+    }
+    const configured = runGit(temporary, ['config', 'core.sshCommand', prepared.sshCommand], options);
+    if (!configured.ok) throw new Error(configured.error);
+    untrackLegacyChats(temporary, options);
+    untrackLegacyManagedInstructions(temporary, options);
+    assertNoTrackedSecrets(temporary, options);
+    const hasRecoveryBackup = fs.existsSync(path.join(temporary, ...RECOVERY_DIR.split('/'), 'header.json'));
+    const recovery = hasRecoveryBackup
+      ? restoreRecoveryBackup(temporary, temporary, passphrase)
+      : initializeRecoveryBackup(temporary, passphrase, { devicePreferences: deviceBackupPreferences(options.deviceSettings) });
+    if (options.prepareWorkspace) await options.prepareWorkspace(temporary);
+    if (options.validateWorkspace) {
+      const validation = await options.validateWorkspace(temporary);
+      if (!validation?.ok) throw new Error('The private workspace did not pass Scout doctor');
+    }
+    saveSyncSettings(temporary, {
+      enabled: true, remoteUrl: verified.url, dataKey: recovery.dataKey.toString('base64url'),
+      ...(recovery.recoveryKey ? { pendingRecoveryKey: recovery.recoveryKey } : {}),
+    });
+    const status = await runWorkspaceSync(temporary, 'adopt existing private workspace', options);
+    if (status.state !== 'synced') throw new Error(`Initial private backup did not complete: ${status.error || status.state}`);
+
+    fs.renameSync(target, backupRoot);
+    originalMoved = true;
+    fs.renameSync(temporary, target);
+    originalMoved = false;
+    setState(target, 'synced', { enabled: true, pending: false, lastSuccessfulAt: status.lastSuccessfulAt });
+    return {
+      ok: true, workspaceRoot: target, backupRoot, recoveryKey: recovery.recoveryKey || null,
+      restoredExistingRecovery: hasRecoveryBackup, status: syncStatus(target, options),
+    };
+  } catch (error) {
+    if (originalMoved && !fs.existsSync(target) && fs.existsSync(backupRoot)) fs.renameSync(backupRoot, target);
+    throw error;
+  } finally {
+    if (fs.existsSync(temporary)) fs.rmSync(temporary, { recursive: true, force: true });
   }
 }

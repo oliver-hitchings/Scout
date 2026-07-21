@@ -1,16 +1,26 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 const workflow = fs.readFileSync(new URL('../.github/workflows/windows-release.yml', import.meta.url), 'utf8');
+const ci = fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+const workspaceRepair = fs.readFileSync(new URL('../.github/workflows/vps-workspace-repair.yml', import.meta.url), 'utf8');
 const deploy = fs.readFileSync(new URL('./deploy-vps.sh', import.meta.url), 'utf8');
 
 test('tagged release workflow validates version and requires private markers', () => {
   assert.match(workflow, /Tag does not match package version/);
   assert.match(workflow, /--require-markers/);
   assert.match(workflow, /SCOUT_RELEASE_MARKERS/);
+});
+
+test('CI audits fork pull requests without exposing private release markers', () => {
+  assert.doesNotMatch(ci, /pull_request_target/);
+  assert.match(ci, /Audit staged public tree for fork pull requests[\s\S]*if: github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.repo\.full_name != github\.repository[\s\S]*--root dist\/release\/stage --stage\s/);
+  assert.match(ci, /Audit staged public tree with required private markers[\s\S]*if: github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.head\.repo\.full_name == github\.repository[\s\S]*--require-markers[\s\S]*SCOUT_RELEASE_MARKERS: \$\{\{ secrets\.SCOUT_RELEASE_MARKERS \}\}/);
 });
 
 test('release publication has scoped write permission and publishes checksum', () => {
@@ -40,13 +50,17 @@ test('tagged release deploys the private VPS before publication', () => {
   assert.match(workflow, /scout-deploy@"\$VPS_HOST"/);
   assert.doesNotMatch(workflow, /ubuntu@"\$VPS_HOST"/);
   assert.match(workflow, /publish:[\s\S]*needs: \[windows, macos, linux, deploy-vps\]/);
-  assert.match(deploy, /status --porcelain --untracked-files=normal/);
+  assert.match(deploy, /status --porcelain --untracked-files=normal -- \. ':\(exclude\)\.scout-runtime\/\*\*'/);
   assert.match(deploy, /refs\/tags\/v\$version:refs\/tags\/v\$version/);
   assert.match(deploy, /refs\/heads\/codex\/release-candidate/);
+  assert.match(deploy, /npm ci --omit=dev[\s\S]*npm test/);
   assert.match(deploy, /npm ci[\s\S]*npm test[\s\S]*systemctl restart/);
   assert.match(deploy, /127\.0\.0\.1:8459\/api\/app-info/);
   assert.match(deploy, /cmp --silent "\$serve_before" "\$serve_after"/);
   assert.match(deploy, /remote preflight --require-serve-mapping/);
+  assert.match(deploy, /127\.0\.0\.1:8459\/api\/cv/);
+  assert.match(deploy, /Array\.isArray\(index\.entries\)/);
+  assert.match(deploy, /entry\?\.source === true/);
   assert.match(deploy, /SCOUT_VPS_DEPLOY_USER:-scout-deploy/);
   assert.match(deploy, /SCOUT_VPS_SERVICE_USER:-ubuntu/);
   assert.match(deploy, /property=ExecStart/);
@@ -60,6 +74,41 @@ test('tagged release deploys the private VPS before publication', () => {
 test('VPS deployment script has valid Bash syntax', { skip: process.platform === 'win32' && 'Bash is checked on Linux and macOS release runners' }, () => {
   const result = spawnSync('bash', ['-n', fileURLToPath(new URL('./deploy-vps.sh', import.meta.url))], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr || result.error?.message);
+});
+
+test('VPS dirty check permits only Scout managed Typst files', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-deploy-status-'));
+  const git = (...args) => spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+  try {
+    assert.equal(git('init').status, 0);
+    fs.writeFileSync(path.join(root, 'package.json'), '{}\n');
+    assert.equal(git('add', 'package.json').status, 0);
+    assert.equal(git('-c', 'user.name=Scout Test', '-c', 'user.email=scout@example.invalid', 'commit', '-m', 'seed').status, 0);
+    fs.mkdirSync(path.join(root, '.scout-runtime'));
+    fs.writeFileSync(path.join(root, '.scout-runtime', 'typst'), 'managed');
+    const status = () => git('status', '--porcelain', '--untracked-files=normal', '--', '.', ':(exclude).scout-runtime/**').stdout;
+    assert.equal(status(), '');
+    fs.writeFileSync(path.join(root, 'unexpected.txt'), 'private');
+    assert.match(status(), /unexpected\.txt/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('workspace repair is protected, local-only and verifies backup plus rendered CVs', () => {
+  assert.match(workspaceRepair, /environment: beta-vps/);
+  assert.match(workspaceRepair, /concurrency:[\s\S]*group: scout-beta-vps/);
+  assert.match(workspaceRepair, /tailscale\/github-action@v4/);
+  assert.match(workspaceRepair, /StrictHostKeyChecking=yes/);
+  assert.match(workspaceRepair, /127\.0\.0\.1:8459\/api\/sync\/deploy-key/);
+  assert.match(workspaceRepair, /127\.0\.0\.1:8459\/api\/workspace\/adopt-private/);
+  assert.match(workspaceRepair, /rotate-and-verify/);
+  assert.match(workspaceRepair, /127\.0\.0\.1:8459\/api\/sync\/passphrase/);
+  assert.match(workspaceRepair, /SCOUT_WORKSPACE_PASSPHRASE/);
+  assert.match(workspaceRepair, /expected_cv_sources/);
+  assert.match(workspaceRepair, /api\/cv\/render/);
+  assert.match(workspaceRepair, /api\/sync\/status/);
+  assert.doesNotMatch(workspaceRepair, /echo .*PASSPHRASE/);
 });
 
 test('package, installer and release notes use one beta version', () => {

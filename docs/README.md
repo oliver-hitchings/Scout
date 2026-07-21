@@ -17,11 +17,11 @@ Start with the [VPS installation guide](INSTALL_VPS.md). It covers:
 
 - private access through Tailscale;
 - the web service and reboot persistence;
-- the Claude primary and Codex second-pass schedules;
+- the selected primary provider and an optional independent verification pass;
 - encrypted private-repository backups; and
 - health checks and recovery.
 
-The [private remote access guide](PRIVATE_REMOTE_ACCESS.md) explains the network and security model in more detail.
+The [canonical VPS state and automatic backup guide](VPS_BACKUP_AND_STATE.md) covers the source-of-truth model, backup triggers, recovery drill, and multi-client safety boundary. The [private remote access guide](PRIVATE_REMOTE_ACCESS.md) explains the network and security model in more detail.
 
 ## I already use Scout
 

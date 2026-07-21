@@ -7,6 +7,8 @@ import {
   bytesToBase64,
   formatLocalDateTime,
   handoffAction,
+  operationElapsed,
+  scanOutcomeSummary,
   shouldAutoRunFirstScan,
   splitList,
   validateCvName,
@@ -80,6 +82,17 @@ test('a first scan starts automatically only when the workspace has never scanne
   assert.equal(shouldAutoRunFirstScan({}), true);
   assert.equal(shouldAutoRunFirstScan({}, false), false);
   assert.equal(shouldAutoRunFirstScan({ lastRunAt: '2026-07-12T10:00:00.000Z' }), false);
+});
+
+test('scan outcome explains strict zero-keeper results', () => {
+  assert.deepEqual(scanOutcomeSummary({
+    candidatesFound: 40, keepersAdded: 0,
+    discarded: { mandatory_unmet: 19, provider_discarded: 21 },
+  }), {
+    reviewed: 40, kept: 0, headline: '40 reviewed, 0 kept',
+    breakdown: ['19 mandatory gates', '21 assessment discards'],
+  });
+  assert.equal(operationElapsed({ startedAt: '2026-07-21T20:00:00.000Z' }, Date.parse('2026-07-21T20:02:05.000Z')), '2m 5s elapsed');
 });
 
 test('first-run setup offers optional local create, private backup guidance, and restore', () => {

@@ -28,6 +28,11 @@ function currentGuide(file) {
   return !name.startsWith('docs/releases/');
 }
 
+function versionNeutralGuide(file) {
+  const name = relative(file);
+  return currentGuide(file) && name !== 'docs/KNOWN_ISSUES.md' && !name.startsWith('docs/diagnostics/');
+}
+
 function markdownTargets(content) {
   const targets = [];
   const pattern = /!?\[[^\]]*]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
@@ -75,7 +80,7 @@ test('relative links in packaged Markdown stay inside the release bundle', () =>
 test('current documentation has no completed hosting handoff or stale release labels', () => {
   assert.equal(fs.existsSync(path.join(root, 'REMOTE_HOSTING_TODO.md')), false);
   const findings = [];
-  for (const file of markdownFiles().filter(currentGuide)) {
+  for (const file of markdownFiles().filter(versionNeutralGuide)) {
     const content = fs.readFileSync(file, 'utf8');
     if (/REMOTE_HOSTING_TODO\.md|codex\/beta13-release-candidate|Beta\.5\b|Beta 13(?:'s)?\b|0\.1\.0-beta\.13/i.test(content)) {
       findings.push(relative(file));

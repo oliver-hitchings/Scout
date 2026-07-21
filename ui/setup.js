@@ -4,6 +4,16 @@ const STEPS = ['Welcome', 'AI provider', 'Your search', 'Adzuna', 'Import CV', '
 // decision to finish the optional AI enrichment later.
 const SETUP_DEFERRED_KEY = 'scout.setup.legacySkipped.v1';
 const SUPPORTED_CV = /\.(pdf|docx|md|markdown|txt)$/i;
+const DISMISSIBLE_VIEWS = new Set(['hub', 'section', 'retune', 'backup-details']);
+const SETTINGS_SECTIONS = [
+  ['search', 'Search & profile', 'Roles, locations, compensation, commute and exclusions'],
+  ['providers', 'AI providers', 'Choose the signed-in provider Scout uses'],
+  ['sources', 'Sources', 'Public sources and optional Adzuna credentials'],
+  ['scans', 'Scans & schedule', 'Run a supervised scan and manage daily jobs'],
+  ['backup', 'Backup', 'Private repository status, recovery and manual backup'],
+  ['remote', 'Remote access', 'Owner-only access through Tailscale'],
+  ['app', 'App & device', 'Application updates and device startup'],
+];
 
 export function splitList(value) {
   return String(value || '')
@@ -72,6 +82,28 @@ export function shouldAutoRunFirstScan(scanHealth = {}, ready = true) {
   return Boolean(ready && !scanHealth.lastRunAt);
 }
 
+export function scanOutcomeSummary(scanHealth = {}) {
+  const reviewed = Number(scanHealth.candidatesFound || 0);
+  const kept = Number(scanHealth.keepersAdded || 0);
+  const discarded = scanHealth.discarded || {};
+  const labels = {
+    hard_exclusion: 'hard exclusions', mandatory_unmet: 'mandatory gates',
+    below_threshold: 'below threshold', provider_discarded: 'assessment discards',
+  };
+  const breakdown = Object.entries(discarded).filter(([, count]) => Number(count) > 0)
+    .map(([key, count]) => `${count} ${labels[key] || key.replaceAll('_', ' ')}`);
+  return { reviewed, kept, headline: `${reviewed} reviewed, ${kept} kept`, breakdown };
+}
+
+export function operationElapsed(operation, now = Date.now()) {
+  const started = Date.parse(operation?.startedAt || '');
+  if (!Number.isFinite(started)) return 'starting';
+  const finished = Date.parse(operation?.finishedAt || '');
+  const end = Number.isFinite(finished) ? finished : now;
+  const seconds = Math.max(0, Math.floor((end - started) / 1000));
+  return seconds < 60 ? `${seconds}s elapsed` : `${Math.floor(seconds / 60)}m ${seconds % 60}s elapsed`;
+}
+
 async function requestJson(pathname, options) {
   const response = await fetch(pathname, options);
   const body = await response.json().catch(() => ({}));
@@ -96,12 +128,22 @@ const Setup = {
   pendingRecoveryKey: null,
   settingsOpen: false,
   settingsReturnFocus: null,
+  view: 'closed',
+  settingsSection: null,
+  refreshSequence: 0,
+  operations: { proposal: null, scan: null },
+  operationTimers: {},
+  backgroundOperations: new Set(),
+  showVerificationPass: false,
 
   el(id) { return document.getElementById(id); },
 
   async init() {
     if (!this.el('setup-overlay')) return;
-    this.el('setup-back').addEventListener('click', () => this.move(-1));
+    this.el('setup-back').addEventListener('click', () => {
+      if (this.view === 'section') this.showSettingsHub();
+      else this.move(-1);
+    });
     this.el('setup-next').addEventListener('click', () => this.next());
     this.el('setup-skip').addEventListener('click', () => this.deferSetup());
     this.el('setup-close').addEventListener('click', () => this.closeSettings());
@@ -115,46 +157,89 @@ const Setup = {
   },
 
   async refreshStatus({ keepOpen = false } = {}) {
+    const sequence = ++this.refreshSequence;
     try {
-      this.status = await requestJson('/api/setup/status');
-      if (this.status.bootstrap) {
+      const status = await requestJson('/api/setup/status');
+      if (sequence !== this.refreshSequence) return;
+      this.status = status;
+      if (status.bootstrap) {
+        this.view = 'onboarding';
         this.proposal = null;
         this.el('setup-overlay').classList.remove('hidden');
         this.renderBootstrap();
         return;
       }
-      if (this.status.sync?.enabled && !this.pendingRecoveryKey) {
+      if (status.sync?.enabled && !this.pendingRecoveryKey) {
         const pending = await requestJson('/api/sync/recovery-key', {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
         });
+        if (sequence !== this.refreshSequence) return;
         this.pendingRecoveryKey = pending.recoveryKey || null;
       }
-      this.proposal = (await requestJson('/api/setup/proposal')).proposal;
-      window.Scout?.applyWorkspaceConfig?.(this.status.config);
-      this.el('setup-title').textContent = this.status.established ? 'Scout settings' : 'Set up Scout';
-      this.el('setup-subtitle').textContent = this.status.established
+      const proposal = await requestJson('/api/setup/proposal');
+      if (sequence !== this.refreshSequence) return;
+      this.proposal = proposal.proposal;
+      await this.reattachOperations();
+      if (sequence !== this.refreshSequence) return;
+      window.Scout?.applyWorkspaceConfig?.(status.config);
+      this.el('setup-title').textContent = status.established ? 'Scout settings' : 'Set up Scout';
+      this.el('setup-subtitle').textContent = status.established
         ? 'Review or retune your existing private workspace.'
         : 'A private workspace, tuned to your search.';
+      const proposalRunning = ['queued', 'running'].includes(this.operations.proposal?.status);
+      const scanRunning = ['queued', 'running'].includes(this.operations.scan?.status);
+      if (!keepOpen && (proposalRunning || (this.proposal && !this.status.ready))) {
+        this.view = 'onboarding';
+        this.step = 5;
+        this.el('setup-overlay').classList.remove('hidden');
+        this.render();
+        return;
+      }
+      if (!keepOpen && scanRunning && !this.status.setupComplete) {
+        this.view = 'onboarding';
+        this.step = 6;
+        this.el('setup-overlay').classList.remove('hidden');
+        this.render();
+        return;
+      }
+      if (keepOpen && DISMISSIBLE_VIEWS.has(this.view)) {
+        this.el('setup-overlay').classList.remove('hidden');
+        this.render();
+        return;
+      }
       const skipped = this.status.trackerExists && localStorage.getItem(SETUP_DEFERRED_KEY) === 'true';
       const pending = this.status.pendingSetupSections || [];
       if (!keepOpen && this.pendingRecoveryKey) {
+        this.view = 'incremental';
         this.el('setup-overlay').classList.remove('hidden');
         this.render();
         return;
       }
       if (!keepOpen && pending.length && (this.status.setupComplete || this.status.established || this.status.ready || skipped)) {
+        this.view = 'incremental';
         this.incrementalSection = pending[0];
         this.el('setup-overlay').classList.remove('hidden');
         this.render();
         return;
       }
+      if (!keepOpen && this.status.setupComplete && !this.status.ready) {
+        this.view = 'onboarding';
+        this.step = 5;
+        this.el('setup-overlay').classList.remove('hidden');
+        this.render();
+        this.setMessage('Scout setup needs attention before another scan can run.', 'error');
+        return;
+      }
       if (!keepOpen && (this.status.setupComplete || this.status.established || this.status.ready || skipped)) {
+        this.view = 'closed';
         this.el('setup-overlay').classList.add('hidden');
         return;
       }
+      this.view = 'onboarding';
       this.el('setup-overlay').classList.remove('hidden');
       this.render();
     } catch (error) {
+      if (sequence !== this.refreshSequence) return;
       this.el('setup-overlay').classList.remove('hidden');
       this.el('setup-body').innerHTML = '<h2>Scout setup could not be loaded</h2><p>Check that the local Scout server is running, then retry.</p>';
       this.setMessage(error.message, 'error');
@@ -164,11 +249,12 @@ const Setup = {
     }
   },
 
-  async openSettings() {
+  async openSettings(section = null) {
     this.settingsOpen = true;
-    this.settingsReturnFocus = document.activeElement;
+    if (!this.settingsReturnFocus) this.settingsReturnFocus = document.activeElement;
+    this.view = section ? 'section' : 'hub';
+    this.settingsSection = section;
     this.incrementalSection = null;
-    this.step = 0;
     this.preferenceStep = 0;
     this.preferenceDraft = null;
     // Provider checks can take several seconds. Open the dialog immediately so
@@ -181,9 +267,28 @@ const Setup = {
     await this.refreshStatus({ keepOpen: true });
   },
 
+  async openBackupDetails() {
+    this.settingsOpen = true;
+    this.settingsReturnFocus = document.activeElement;
+    this.view = 'backup-details';
+    this.settingsSection = null;
+    this.incrementalSection = null;
+    this.el('setup-overlay').classList.remove('hidden');
+    this.el('setup-close').classList.remove('hidden');
+    this.el('setup-title').textContent = 'Backup details';
+    this.el('setup-subtitle').textContent = 'Checking the private backup status…';
+    this.el('setup-body').innerHTML = '<div class="setup-callout"><strong>Scout is checking your backup…</strong></div>';
+    await this.refreshStatus({ keepOpen: true });
+  },
+
   closeSettings() {
-    if (!this.settingsOpen || this.busy) return;
+    if (!DISMISSIBLE_VIEWS.has(this.view) || this.busy) return;
+    // Invalidate any status request started for the view being closed. A slow
+    // response must not reopen or replace a dialog after the user's intent.
+    this.refreshSequence += 1;
     this.settingsOpen = false;
+    this.view = 'closed';
+    this.settingsSection = null;
     this.el('setup-close').classList.add('hidden');
     this.el('setup-overlay').classList.add('hidden');
     const target = this.settingsReturnFocus;
@@ -232,6 +337,72 @@ const Setup = {
     }
   },
 
+  async reattachOperations() {
+    for (const type of ['proposal', 'scan']) {
+      try {
+        const body = await requestJson(`/api/operations?type=${type}`);
+        this.operations[type] = body.operation || null;
+        if (body.operation && ['queued', 'running'].includes(body.operation.status)) this.watchOperation(type, body.operation.id);
+      } catch { /* older servers simply have no background-operation endpoint */ }
+    }
+  },
+
+  operationPanelHtml(type) {
+    const operation = this.operations[type];
+    if (!operation) return '';
+    const progress = operation.progress || { current: 0, total: 1 };
+    const running = ['queued', 'running'].includes(operation.status);
+    const terminal = operation.status === 'succeeded' ? 'Completed' : operation.status === 'failed' ? 'Needs attention' : 'In progress';
+    return `<div class="setup-callout setup-operation" data-operation-id="${this.escape(operation.id)}" role="status">
+      <strong>${this.escape(terminal)}: ${this.escape(operation.phase || type)}</strong>
+      <progress max="${this.escape(progress.total || 1)}" value="${this.escape(progress.current || 0)}"></progress>
+      <p class="meta">Step ${this.escape(progress.current || 0)} of ${this.escape(progress.total || 1)} · ${this.escape(operationElapsed(operation))}</p>
+      ${operation.error ? `<p class="bad">${this.escape(operation.error)}</p>` : ''}
+      ${running ? '<p class="meta">You can close setup or this browser safely. Quitting Scout interrupts local work.</p>' : ''}
+      ${type === 'proposal' && running ? '<p><button id="setup-continue-background" class="act" type="button">Continue in background</button></p>' : ''}
+    </div>`;
+  },
+
+  watchOperation(type, id) {
+    if (this.operationTimers[type]) clearTimeout(this.operationTimers[type]);
+    const poll = async () => {
+      try {
+        const body = await requestJson(`/api/operations/${encodeURIComponent(id)}`);
+        this.operations[type] = body.operation;
+        const activeView = !this.el('setup-overlay').classList.contains('hidden');
+        if (activeView && ((type === 'proposal' && this.step === 5) || (type === 'scan' && this.step === 6))) this.render();
+        window.Scout?.showOperation?.(body.operation);
+        if (['queued', 'running'].includes(body.operation.status)) {
+          this.operationTimers[type] = setTimeout(poll, 1000);
+          return;
+        }
+        delete this.operationTimers[type];
+        const backgrounded = this.backgroundOperations.has(type);
+        this.backgroundOperations.delete(type);
+        await this.refreshStatus({ keepOpen: activeView && !backgrounded });
+        if (backgrounded) {
+          this.view = 'closed';
+          this.el('setup-overlay').classList.add('hidden');
+        }
+        if (activeView && !backgrounded) this.render();
+        if (body.operation.status === 'failed') this.setMessage(body.operation.error || `${type} failed`, 'error');
+        else this.setMessage(type === 'proposal' ? 'Proposal ready. Review every staged file before activation.' : 'Scan completed. Review the keeper and discard summary.', 'good');
+        if (type === 'scan') window.Scout?.loadOpportunities?.();
+      } catch (error) {
+        delete this.operationTimers[type];
+        this.setMessage(error.message, 'error');
+      }
+    };
+    this.operationTimers[type] = setTimeout(poll, 250);
+  },
+
+  continueOperationInBackground(type) {
+    this.backgroundOperations.add(type);
+    this.view = 'closed';
+    this.el('setup-overlay').classList.add('hidden');
+    window.Scout?.showOperation?.(this.operations[type]);
+  },
+
   renderProgress() {
     this.el('setup-progress').innerHTML = STEPS.map((label, index) =>
       `<span class="${index <= this.step ? 'done' : ''}" title="${label}"></span>`).join('');
@@ -239,10 +410,25 @@ const Setup = {
 
   render() {
     this.setMessage();
+    if (this.view === 'hub') return this.renderSettingsHub();
+    if (this.view === 'section') return this.renderSettingsSection();
+    if (this.view === 'backup-details') return this.renderBackupDetails();
+    if (this.view === 'retune') {
+      this.settingsOpen = true;
+      this.el('setup-close').classList.remove('hidden');
+      this.el('setup-title').textContent = 'Retune Scout';
+      this.el('setup-subtitle').textContent = 'Review staged changes before they affect your active search.';
+    } else {
+      this.settingsOpen = false;
+      this.el('setup-close').classList.add('hidden');
+    }
     this.el('setup-next').classList.remove('hidden');
     if (this.incrementalSection) return this.renderIncrementalSection();
     this.renderProgress();
     this.el('setup-back').classList.toggle('hidden', this.step === 0);
+    this.el('setup-back').textContent = this.view === 'retune' && this.step === 1
+      ? 'Back to settings'
+      : 'Back';
     // The optional hand-off uses the primary Finish for now action. Keep the
     // legacy footer control hidden so users are not offered duplicate exits.
     this.el('setup-skip').classList.add('hidden');
@@ -256,6 +442,160 @@ const Setup = {
       this.renderFirstScan,
     ];
     renderers[this.step].call(this);
+  },
+
+  prepareDismissibleView({ title, subtitle, back = false }) {
+    this.settingsOpen = true;
+    this.el('setup-overlay').classList.remove('hidden');
+    this.el('setup-close').classList.remove('hidden');
+    this.el('setup-title').textContent = title;
+    this.el('setup-subtitle').textContent = subtitle;
+    this.el('setup-progress').innerHTML = '';
+    this.el('setup-skip').classList.add('hidden');
+    this.el('setup-next').classList.add('hidden');
+    this.el('setup-back').classList.toggle('hidden', !back);
+    this.el('setup-back').textContent = back ? 'Back to settings' : 'Back';
+  },
+
+  showSettingsHub() {
+    this.view = 'hub';
+    this.settingsSection = null;
+    this.preferenceDraft = null;
+    this.preferenceStep = 0;
+    this.render();
+  },
+
+  renderSettingsHub() {
+    this.prepareDismissibleView({
+      title: 'Scout settings',
+      subtitle: 'Choose one area. Your existing workspace and history stay in place.',
+    });
+    this.el('setup-body').innerHTML = `
+      <div class="settings-hub">
+        ${SETTINGS_SECTIONS.map(([id, label, detail]) => `<button class="settings-card" type="button" data-settings-section="${id}"><strong>${label}</strong><span>${detail}</span></button>`).join('')}
+      </div>`;
+    this.el('setup-body').querySelectorAll('[data-settings-section]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this.view = 'section';
+        this.settingsSection = button.dataset.settingsSection;
+        this.render();
+      });
+    });
+  },
+
+  renderSettingsSection() {
+    const section = this.settingsSection;
+    const definition = SETTINGS_SECTIONS.find(([id]) => id === section) || SETTINGS_SECTIONS[0];
+    this.prepareDismissibleView({ title: definition[1], subtitle: definition[2], back: true });
+    if (section === 'search') return this.renderSearchSettings();
+    if (section === 'providers') return this.renderProviderSettings();
+    if (section === 'sources') return this.renderSourceSettings();
+    if (section === 'scans') return this.renderScanSettings();
+    if (section === 'backup') return this.renderBackupSettings();
+    if (section === 'remote') return this.renderRemoteSettings();
+    return this.renderAppSettings();
+  },
+
+  renderSearchSettings() {
+    const config = this.status?.config || {};
+    const search = config.search || {};
+    this.el('setup-body').innerHTML = `
+      <div class="setup-callout"><strong>${this.escape(config.profile?.displayName || 'Scout profile')}</strong>
+      <p>Roles: ${this.escape((search.roleFamilies || []).join(', ') || 'Not configured')}</p>
+      <p>Locations: ${this.escape((search.locations || []).join(', ') || 'Not configured')}</p>
+      <p>Minimum salary: ${search.salaryMinimum == null ? 'Not set' : `${this.escape(config.currency || '')} ${this.escape(search.salaryMinimum)}`}</p>
+      <p>Hard exclusions: ${this.escape((search.exclusions || []).join(', ') || 'None')}</p></div>
+      <p><button id="settings-retune-search" class="act primary" type="button">Retune my search</button></p>
+      <p class="meta">Retuning stages evidence-led changes for review. It does not reset tracker, application, report or chat history.</p>`;
+    this.el('settings-retune-search').addEventListener('click', () => {
+      this.view = 'retune';
+      this.step = 1;
+      this.preferenceStep = 0;
+      this.preferenceDraft = null;
+      this.render();
+    });
+  },
+
+  renderProviderSettings() {
+    this.el('setup-body').innerHTML = `
+      <div class="setup-provider-list">${this.providerCard('codex')}${this.providerCard('claude')}</div>
+      <p><button id="settings-save-provider" class="act primary" type="button">Save provider</button>
+      <button id="settings-refresh-providers" class="act" type="button">Refresh status</button></p>`;
+    this.el('settings-save-provider').addEventListener('click', () => this.saveProviderSetting());
+    this.el('settings-refresh-providers').addEventListener('click', () => this.refreshStatus({ keepOpen: true }));
+  },
+
+  async saveProviderSetting() {
+    const provider = this.selectedProvider();
+    if (!provider) return this.setMessage('Choose an installed, signed-in and compatible provider.', 'error');
+    try {
+      const result = await requestJson('/api/setup/config', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ai: { provider, model: null } }),
+      });
+      this.status.config = result.config;
+      window.Scout?.applyWorkspaceConfig?.(result.config);
+      this.setMessage('AI provider saved.', 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  renderSourceSettings() {
+    this.el('setup-body').innerHTML = `
+      <div class="setup-callout"><strong>Public sources</strong><p>Scout uses its configured public job sources without requiring credentials.</p></div>
+      <div class="setup-callout"><strong>Adzuna: ${this.status?.adzunaConfigured ? 'configured' : 'not configured'}</strong>
+      <p>Saved credentials are never displayed. Use Retune my search to add or replace them.</p></div>
+      <p><button id="settings-retune-sources" class="act" type="button">Retune search and sources</button></p>`;
+    this.el('settings-retune-sources').addEventListener('click', () => {
+      this.view = 'retune';
+      this.step = 2;
+      this.preferenceStep = 0;
+      this.preferenceDraft = null;
+      this.render();
+    });
+  },
+
+  renderScanSettings() {
+    this.renderFirstScan({ includeBackup: false });
+    this.el('setup-next').classList.add('hidden');
+  },
+
+  renderBackupSettings() {
+    this.el('setup-body').innerHTML = this.backupPanelHtml();
+    this.bindBackupPanel();
+  },
+
+  renderRemoteSettings() {
+    this.el('setup-body').innerHTML = this.remoteAccessPanelHtml();
+    this.bindRemoteAccessPanel();
+  },
+
+  renderAppSettings() {
+    const device = this.status?.device;
+    this.el('setup-body').innerHTML = device ? `
+      <div class="setup-callout"><strong>Application updates</strong>
+      <p>Notifications are on. Package downloads remain optional and are verified before installation.</p>
+      <label class="setup-field"><span><input id="setup-auto-download-updates" type="checkbox" ${device.updates?.policy === 'download' ? 'checked' : ''}> Download verified update packages automatically</span></label>
+      ${device.startupStatus?.supported ? `<label class="setup-field"><span><input id="setup-start-with-windows" type="checkbox" ${device.startWithWindows ? 'checked' : ''}> Start Scout when I sign into Windows</span></label>` : ''}
+      <p><button id="setup-save-device" class="act primary" type="button">Save device settings</button></p></div>
+      <p><button id="setup-restart" class="act" type="button">Restart Scout</button></p>` :
+      '<p>Device settings are unavailable on this host.</p>';
+    this.el('setup-save-device')?.addEventListener('click', () => this.saveDeviceSetting());
+    this.el('setup-restart')?.addEventListener('click', () => this.restartServer());
+  },
+
+  renderBackupDetails() {
+    this.prepareDismissibleView({
+      title: 'Backup details',
+      subtitle: 'Your work remains local even when the private backup needs attention.',
+    });
+    this.el('setup-body').innerHTML = `${this.backupPanelHtml()}
+      <p><button id="backup-advanced-settings" class="act" type="button">Advanced backup settings</button></p>`;
+    this.bindBackupPanel();
+    this.el('backup-advanced-settings').addEventListener('click', () => {
+      this.view = 'section';
+      this.settingsSection = 'backup';
+      this.render();
+    });
   },
 
   renderWelcome() {
@@ -387,15 +727,17 @@ const Setup = {
     const state = !provider.installed ? 'Not installed'
       : !provider.authenticated ? 'Installed; sign-in required'
         : compatible ? 'Installed, signed in and compatible' : 'Installed and signed in; CLI update required';
-    const login = name === 'codex' ? 'codex login' : 'claude auth login';
+    const login = name === 'codex' ? 'codex' : 'claude auth login';
     const guide = name === 'codex' ? 'https://developers.openai.com/codex/cli/' : 'https://docs.anthropic.com/en/docs/claude-code/setup';
+    const platform = this.status?.platform === 'win32' ? 'Windows PowerShell'
+      : this.status?.platform === 'darwin' ? 'Terminal on macOS' : 'your Linux terminal';
     return `<label class="setup-provider ${compatible ? 'available' : ''}">
       <input type="radio" name="setup-provider" value="${name}" ${selected ? 'checked' : ''} ${compatible ? '' : 'disabled'}>
       <strong>${name[0].toUpperCase() + name.slice(1)}</strong>
       <span class="meta">${state}</span>
       ${compatible ? '' : provider.authenticated
         ? `<span class="meta">Update this CLI from its <a href="${guide}" target="_blank" rel="noreferrer">official installation guide</a>, then refresh. Scout requires schema-constrained output for bounded workflows.</span>`
-        : `<span class="meta"><a href="${guide}" target="_blank" rel="noreferrer">Official installation guide</a>. Open Windows PowerShell or your normal terminal, run <code>${login}</code>, complete its official CLI login flow, then refresh. A desktop-app login may not authenticate the command-line provider Scout uses. Your provider account may have separate usage limits or costs.</span>`}
+        : `<span class="meta"><a href="${guide}" target="_blank" rel="noreferrer">Official installation guide for macOS, Linux and Windows</a>. Install the standalone or user-local CLI, open ${platform}, run <code>${login}</code>, complete its official CLI login flow, then refresh. Scout needs an authenticated command-line provider; a desktop-app login alone is not enough. Your provider account may have separate usage limits or costs.</span>`}
     </label>`;
   },
 
@@ -474,54 +816,81 @@ const Setup = {
 
   renderHandoff() {
     const action = handoffAction(this.status?.ready);
+    const operation = this.operations.proposal;
+    const generating = operation && ['queued', 'running'].includes(operation.status);
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame" role="img" aria-label="Scout is ready to talk"></span></div><div class="scout-bubble tail-left">
       <h2>Generate your evidence-led CV and search proposal</h2>
       <p>Scout will use the answers and evidence you supplied to propose a CV, profile, scoring calibration and search lanes. Activation is required before the first scan.</p>
-      <p><button id="setup-generate-proposal" class="act primary" type="button">${this.proposal ? 'Regenerate proposal' : 'Generate proposal'}</button></p>
+      <p><button id="setup-generate-proposal" class="act primary" type="button" ${generating ? 'disabled' : ''}>${this.proposal ? 'Regenerate proposal' : 'Generate proposal'}</button></p>
       <p class="meta">Scout sends only your bounded setup answers and imported CV evidence. It stages validated changes for review and never activates them automatically.</p>
-      ${this.proposal ? `<div class="setup-callout"><strong>Proposal ready</strong><p>${this.escape(this.proposal.summary || '')}</p>${(this.proposal.unresolvedQuestions || []).length ? `<p class="bad">Resolve first: ${this.escape(this.proposal.unresolvedQuestions.join('; '))}</p>` : ''}<details><summary>Review staged files</summary>${(this.proposal.files || []).map((file) => `<h3>${this.escape(file.path)}</h3><pre class="setup-preview">${this.escape(file.staged)}</pre>`).join('')}</details><p><button id="setup-activate-proposal" class="act primary" type="button" ${(this.proposal.unresolvedQuestions || []).length ? 'disabled' : ''}>Approve and activate</button> <button id="setup-discard-proposal" class="act" type="button">Discard</button></p></div>` : ''}
+      ${this.operationPanelHtml('proposal')}
+      ${this.proposal ? `<div class="setup-callout"><strong>Proposal ready to review</strong><p>${this.escape(this.proposal.summary || '')}</p>${(this.proposal.unresolvedQuestions || []).length ? `<p class="bad">Resolve first: ${this.escape(this.proposal.unresolvedQuestions.join('; '))}</p>` : ''}<details open><summary>Review staged files</summary>${(this.proposal.files || []).map((file) => `<h3>${this.escape(file.path)}</h3><pre class="setup-preview">${this.escape(file.staged)}</pre>`).join('')}</details><label class="setup-field"><span><input id="setup-reviewed-proposal" type="checkbox"> I reviewed all five staged files</span></label><p><button id="setup-activate-proposal" class="act primary" type="button" disabled>Approve and activate</button> <button id="setup-discard-proposal" class="act" type="button">Discard</button></p></div>` : ''}
       </div></div>
-      <div class="setup-callout"><strong>${this.status?.ready ? 'Proposal activated' : 'Review and activation required'}</strong><p>${this.status?.ready ? 'Your approved evidence and settings are ready for a supervised first scan.' : 'Generate a complete proposal, review all five files and activate them before continuing.'}</p></div>`;
+      <div class="setup-callout"><strong>${this.status?.ready ? 'Proposal activated' : 'Review and activation required'}</strong><p>${this.status?.ready ? 'Your approved evidence and settings are ready for a supervised first scan.' : 'Generate a complete proposal, review all five files and activate them before continuing.'}</p>${this.status?.recovery?.available ? '<p><button id="setup-recover-master-cv" class="act primary" type="button">Restore reviewed master CV</button></p>' : ''}</div>`;
     this.el('setup-generate-proposal').addEventListener('click', () => this.generateProposal());
+    this.el('setup-continue-background')?.addEventListener('click', () => this.continueOperationInBackground('proposal'));
+    this.el('setup-reviewed-proposal')?.addEventListener('change', (event) => {
+      this.el('setup-activate-proposal').disabled = !event.target.checked || Boolean((this.proposal.unresolvedQuestions || []).length);
+    });
     this.el('setup-activate-proposal')?.addEventListener('click', () => this.activateProposal());
     this.el('setup-discard-proposal')?.addEventListener('click', () => this.discardProposal());
+    this.el('setup-recover-master-cv')?.addEventListener('click', () => this.recoverMasterCv());
     this.el('setup-next').textContent = action.label;
   },
 
-  renderFirstScan() {
+  renderFirstScan({ includeBackup = true } = {}) {
     const health = this.status?.scanHealth || {};
     const schedule = this.status?.schedule || {};
     const healthy = Boolean(health.lastRunAt && health.healthy);
+    const provider = this.status?.config?.ai?.provider;
+    const primaryId = `${provider}-primary`;
+    const primaryRun = (schedule.runs || []).find((run) => run.id === primaryId);
+    const operation = this.operations.scan;
+    const scanning = operation && ['queued', 'running'].includes(operation.status);
+    const outcome = health.lastRunAt ? scanOutcomeSummary(health) : null;
+    const other = ['codex', 'claude'].find((name) => name !== provider
+      && this.status?.providers?.[name]?.authenticated
+      && this.status?.providers?.[name]?.capabilities?.structuredOutput !== false);
+    const secondRun = (schedule.runs || []).find((run) => run.mode === 'second-pass');
+    const showSecond = this.view === 'section' && (this.showVerificationPass || secondRun);
+    const scheduleRow = (id, name, mode, run, defaultTime) => `<div class="setup-schedule-row" data-schedule-row="${this.escape(id)}">
+      <label class="setup-field">${this.escape(name[0].toUpperCase() + name.slice(1))} ${mode === 'primary' ? 'daily scan' : 'verification pass'} time<input data-schedule-time type="time" value="${this.escape(run?.time || defaultTime)}"></label>
+      <p><button class="act" data-schedule-enable="${this.escape(id)}" data-provider="${this.escape(name)}" data-mode="${this.escape(mode)}" type="button" ${healthy ? '' : 'disabled'}>${run?.configured ? 'Save time' : `Enable ${name} ${mode === 'primary' ? 'daily scan' : 'verification pass'}`}</button>${run?.configured ? ` <button class="act" data-schedule-disable="${this.escape(id)}" type="button">Disable</button>` : ''}</p>
+    </div>`;
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame" role="img" aria-label="Scout is ready to search"></span></div><div class="scout-bubble tail-left">
       <h2>${healthy ? 'Your first scan is ready to review' : 'Run your first search with me'}</h2>
       <p>I search using your approved role families and search lanes, then apply your locations, exclusions, compensation preferences and evidence-based scoring. I do not use unrelated AI conversations.</p>
-      <div class="setup-callout"><strong>${healthy ? 'Healthy supervised scan completed' : 'Supervised first'}</strong><p>${healthy ? `Last run: ${this.escape(formatLocalDateTime(health.lastRunAt, this.status?.config?.locale))}. Review the dashboard before enabling automation.` : 'Keep this window open. A full source check can take several minutes and no application will be sent.'}</p></div>
-      <p><button id="setup-run-scan" class="act primary" type="button" ${this.busy ? 'disabled' : ''}>${healthy ? 'Scan now' : 'Run first scan now'}</button></p>
-      <div class="setup-callout"><strong>Daily scan schedule</strong><p>${schedule.enabled ? 'The VPS runs a primary scan followed by an independent verification pass.' : 'Enable both daily jobs after the first healthy supervised scan.'}</p>
-      <label class="setup-field">Claude primary time<input id="setup-schedule-claude-time" type="time" value="${this.escape(schedule.runs?.find((run) => run.id === 'claude-primary')?.time || '07:30')}"></label>
-      <label class="setup-field">Codex second-pass time<input id="setup-schedule-codex-time" type="time" value="${this.escape(schedule.runs?.find((run) => run.id === 'codex-second-pass')?.time || '08:30')}"></label>
-      <p><button id="setup-schedule-save" class="act" type="button" ${healthy ? '' : 'disabled'}>${schedule.enabled ? 'Save both scan times' : 'Enable both daily scans'}</button>${schedule.configured ? ' <button id="setup-schedule-disable" class="act" type="button">Disable both scans</button>' : ''}</p></div></div>
-      ${this.backupPanelHtml()}`;
+      <div class="setup-callout"><strong>${healthy ? 'Supervised scan completed' : 'Supervised first scan'}</strong><p>${healthy ? `Last run: ${this.escape(formatLocalDateTime(health.lastRunAt, this.status?.config?.locale))}.` : 'A full source check can take several minutes and no application will be sent.'}</p>${outcome ? `<p><strong>${this.escape(outcome.headline)}</strong>${outcome.breakdown.length ? ` — ${this.escape(outcome.breakdown.join(', '))}` : ''}. Zero keepers can be a valid strict result.</p><p><a href="#reports" data-report-date="${this.escape(String(health.lastRunAt).slice(0, 10))}">Review the dated scan report</a></p>` : ''}</div>
+      ${this.operationPanelHtml('scan')}
+      <p><button id="setup-run-scan" class="act primary" type="button" ${scanning ? 'disabled' : ''}>${scanning ? 'Scan running…' : healthy ? 'Scan now' : 'Run first scan now'}</button></p>
+      <div class="setup-callout"><strong>Daily scan schedule</strong><p>Each provider job is independent. First-run setup only offers your selected provider.</p>
+      ${scheduleRow(primaryId, provider, 'primary', primaryRun, '07:30')}
+      ${this.view === 'section' && other && !showSecond ? '<p><button id="setup-add-verification" class="act" type="button">Add verification pass</button></p>' : ''}
+      ${showSecond ? scheduleRow(secondRun?.id || `${other}-second-pass`, secondRun?.provider || other, 'second-pass', secondRun, '08:30') : ''}
+      </div></div>
+      ${includeBackup ? this.backupPanelHtml() : ''}`;
     this.el('setup-run-scan').addEventListener('click', () => this.runSupervisedScan());
-    this.el('setup-schedule-save').addEventListener('click', () => this.saveSchedule());
-    this.el('setup-schedule-disable')?.addEventListener('click', () => this.disableSchedule());
-    this.bindBackupPanel();
-    this.el('setup-next').textContent = 'Finish';
+    this.el('setup-add-verification')?.addEventListener('click', () => { this.showVerificationPass = true; this.renderFirstScan({ includeBackup }); });
+    this.el('setup-body').querySelectorAll('[data-schedule-enable]').forEach((button) => button.addEventListener('click', () => {
+      const row = button.closest('[data-schedule-row]');
+      this.saveSchedule({ id: button.dataset.scheduleEnable, provider: button.dataset.provider, mode: button.dataset.mode, time: row.querySelector('[data-schedule-time]').value });
+    }));
+    this.el('setup-body').querySelectorAll('[data-schedule-disable]').forEach((button) => button.addEventListener('click', () => this.disableSchedule(button.dataset.scheduleDisable)));
+    this.el('setup-body').querySelector('[data-report-date]')?.addEventListener('click', (event) => { event.preventDefault(); window.Scout?.openReport?.(event.currentTarget.dataset.reportDate); });
+    if (includeBackup) this.bindBackupPanel();
+    this.el('setup-next').textContent = scanning ? 'Finish setup — scan continues' : 'Finish';
   },
 
   async runSupervisedScan() {
-    this.setBusy(true); this.setMessage('Scout is searching and scoring. This can take several minutes…');
+    this.setMessage('Starting the supervised scan…');
     try {
       const result = await requestJson('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: this.status?.config?.ai?.provider }) });
-      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render();
-      this.setMessage(result.status === 'degraded'
-        ? 'Scan completed with degraded source coverage. Review the source details and retry before enabling automation.'
-        : 'Scan completed. Review the dashboard results before enabling automation.', result.status === 'degraded' ? 'warning' : 'good');
-      window.Scout?.loadOpportunities?.();
+      this.operations.scan = result.operation;
+      this.render();
+      this.watchOperation('scan', result.operation.id);
     } catch (error) { this.setMessage(error.message, 'error'); }
-    finally { this.setBusy(false); }
   },
 
   renderBootstrap() {
@@ -613,8 +982,8 @@ const Setup = {
       pending: 'Backup pending', 'needs-attention': 'Needs attention', disabled: 'Not enabled', 'setup-required': 'Git setup required',
     };
     if (this.pendingRecoveryKey) return `<section class="setup-callout recovery-key-panel" role="status" aria-labelledby="recovery-key-title"><strong id="recovery-key-title">Save your emergency recovery key</strong><p>This key can restore Scout if you forget the passphrase. It will disappear after you confirm it is saved.</p><code id="setup-recovery-key" class="recovery-key" tabindex="0">${this.escape(this.pendingRecoveryKey)}</code><p><button id="setup-copy-recovery" class="act" type="button">Copy key</button> <button id="setup-save-recovery" class="act" type="button">Save key to file</button></p><label class="setup-field"><span><input id="setup-confirm-recovery" type="checkbox"> I saved the recovery key somewhere secure</span></label><p><button id="setup-finish-recovery" class="act primary" type="button">Finish backup setup</button></p></section>`;
-    if (sync.enabled) return `<div class="setup-callout"><strong>Private backup: ${this.escape(labels[sync.state] || sync.state)}</strong><p>Your private GitHub repository is connected. Automatic backup can be turned off without deleting local work or GitHub history.</p><p class="meta">Last successful backup: ${this.escape(sync.lastSuccessfulAt ? formatLocalDateTime(sync.lastSuccessfulAt, this.status?.config?.locale) : 'pending')}</p>${sync.error ? `<details><summary>Technical details</summary><pre class="setup-preview">${this.escape(sync.error)}</pre></details>` : ''}<p><button id="setup-backup-now" class="act" type="button">Back up now</button> ${['offline', 'pending', 'needs-attention'].includes(sync.state) ? '<button id="setup-retry-backup" class="act" type="button">Retry</button> ' : ''}<button id="setup-disable-backup" class="act" type="button">Turn off automatic backup</button></p></div>`;
-    return `<div class="setup-callout"><strong>Optional private backup</strong><p>Scout works fully on this computer without GitHub. A private repository lets you restore on another computer. Tracked career files are readable in that private repository; credentials, generated documents and chat transcripts are encrypted.</p><p><button id="setup-show-backup" class="act" type="button">Set up private backup</button> <button id="setup-skip-backup" class="act" type="button">Not now</button></p><div id="setup-backup-form" class="hidden"><p>${gitReady ? 'Git is ready. Desktop HTTPS uses Git Credential Manager; an unattended VPS can use a repository-scoped SSH deploy key.' : 'Install Git before connecting a private repository.'}</p>${gitReady ? '' : '<p><a href="https://git-scm.com/downloads" target="_blank" rel="noreferrer">Install Git</a> <button id="setup-backup-check-git" class="act" type="button">Check again</button></p>'}<p>Use an empty repository named <code>scout-workspace</code> and select <strong>Private</strong>. For VPS SSH, prepare the key here, add the displayed public key to that repository as a write-enabled deploy key, then connect using its SSH URL.</p><p><button id="setup-prepare-deploy-key" class="act" type="button" ${gitReady ? '' : 'disabled'}>Prepare VPS deploy key</button></p><pre id="setup-deploy-public-key" class="setup-preview hidden"></pre><label class="setup-field">Repository HTTPS or SSH URL<input id="setup-backup-url" type="text" placeholder="git@github.com:your-name/scout-workspace.git"></label><label class="setup-field">Recovery passphrase (at least 12 characters)<input id="setup-backup-passphrase" type="password" autocomplete="new-password"></label><label class="setup-field"><span><input id="setup-backup-confirm" type="checkbox"> I understand tracked career files are readable in my private repository and I will save the emergency recovery key.</span></label><p><button id="setup-connect-backup" class="act primary" type="button" ${gitReady ? '' : 'disabled'}>Connect and create first backup</button></p></div></div>`;
+    if (sync.enabled) return `<div class="setup-callout"><strong>Private backup: Connected</strong><p>Status: ${this.escape(labels[sync.state] || sync.state)}. Your private GitHub repository is connected. Automatic backup can be turned off without deleting local work or GitHub history.</p><p class="meta">Last successful backup: ${this.escape(sync.lastSuccessfulAt ? formatLocalDateTime(sync.lastSuccessfulAt, this.status?.config?.locale) : 'pending')}</p>${sync.error ? `<details><summary>Technical details</summary><pre class="setup-preview">${this.escape(sync.error)}</pre></details>` : ''}<p><button id="setup-backup-now" class="act" type="button">Back up now</button> ${['offline', 'pending', 'needs-attention'].includes(sync.state) ? '<button id="setup-retry-backup" class="act" type="button">Retry</button> ' : ''}<button id="setup-disable-backup" class="act" type="button">Turn off automatic backup</button></p></div>`;
+    return `<div class="setup-callout"><strong>Private backup: Not set up (optional)</strong><p>Scout works fully on this computer without GitHub. Viewing this guide does not enable backup. A private repository lets you restore on another computer. Tracked career files are readable in that private repository; credentials, generated documents and chat transcripts are encrypted.</p><p><button id="setup-show-backup" class="act" type="button">Set up private backup</button> <button id="setup-skip-backup" class="act" type="button">Not now</button></p><div id="setup-backup-form" class="hidden"><p>${gitReady ? 'Git is ready. Desktop HTTPS uses Git Credential Manager; an unattended VPS can use a repository-scoped SSH deploy key.' : 'Install Git before connecting a private repository.'}</p>${gitReady ? '' : '<p><a href="https://git-scm.com/downloads" target="_blank" rel="noreferrer">Install Git</a> <button id="setup-backup-check-git" class="act" type="button">Check again</button></p>'}<p>Use an empty repository named <code>scout-workspace</code> and select <strong>Private</strong>. For VPS SSH, prepare the key here, add the displayed public key to that repository as a write-enabled deploy key, then connect using its SSH URL.</p><p><button id="setup-prepare-deploy-key" class="act" type="button" ${gitReady ? '' : 'disabled'}>Prepare VPS deploy key</button></p><pre id="setup-deploy-public-key" class="setup-preview hidden"></pre><label class="setup-field">Repository HTTPS or SSH URL<input id="setup-backup-url" type="text" placeholder="git@github.com:your-name/scout-workspace.git"></label><label class="setup-field">Recovery passphrase (at least 12 characters)<input id="setup-backup-passphrase" type="password" autocomplete="new-password"></label><label class="setup-field"><span><input id="setup-backup-confirm" type="checkbox"> I understand tracked career files are readable in my private repository and I will save the emergency recovery key.</span></label><p><button id="setup-connect-backup" class="act primary" type="button" ${gitReady ? '' : 'disabled'}>Connect and create first backup</button></p></div></div>`;
   },
 
   bindBackupPanel() {
@@ -717,10 +1086,22 @@ const Setup = {
   },
 
   async generateProposal() {
-    this.setBusy(true); this.setMessage('Scout is generating one bounded, evidence-led proposal…');
+    this.setMessage('Starting one bounded, evidence-led proposal…');
     try {
-      await requestJson('/api/setup/proposal', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: this.status?.config?.ai?.provider }) });
-      await this.refreshStatus({ keepOpen: true }); this.render(); this.setMessage('Proposal ready. Review every staged file before activation.', 'good');
+      const result = await requestJson('/api/setup/proposal', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: this.status?.config?.ai?.provider }) });
+      this.operations.proposal = result.operation;
+      this.render();
+      this.watchOperation('proposal', result.operation.id);
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
+  async recoverMasterCv() {
+    if (!window.confirm('Restore the reviewed staged master CV? Scout will back up the current file first and revalidate the workspace.')) return;
+    this.setBusy(true);
+    try {
+      await requestJson('/api/setup/recovery', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirmed: true }) });
+      await this.refreshStatus({ keepOpen: true }); this.render();
+      this.setMessage('The reviewed master CV was restored and the previous file was backed up.', 'good');
     } catch (error) { this.setMessage(error.message, 'error'); }
     finally { this.setBusy(false); }
   },
@@ -744,27 +1125,22 @@ const Setup = {
     finally { this.setBusy(false); }
   },
 
-  async saveSchedule() {
+  async saveSchedule({ id, provider, mode, time }) {
     this.setBusy(true);
     try {
       await requestJson('/api/schedule', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-        action: 'install', id: 'claude-primary', time: fieldValue('setup-schedule-claude-time') || '07:30', provider: 'claude', mode: 'primary',
+        action: 'install', id, time: time || '07:30', provider, mode,
       }) });
-      await requestJson('/api/schedule', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-        action: 'install', id: 'codex-second-pass', time: fieldValue('setup-schedule-codex-time') || '08:30', provider: 'codex', mode: 'second-pass',
-      }) });
-      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage('Daily scan time saved and verified.', 'good');
+      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage(`${provider} ${mode === 'primary' ? 'daily scan' : 'verification pass'} saved.`, 'good');
     } catch (error) { this.setMessage(error.message, 'error'); }
     finally { this.setBusy(false); }
   },
 
-  async disableSchedule() {
+  async disableSchedule(id) {
     this.setBusy(true);
     try {
-      for (const id of ['claude-primary', 'codex-second-pass']) {
-        await requestJson('/api/schedule', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'remove', id }) });
-      }
-      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage('Daily scan disabled.', 'good');
+      await requestJson('/api/schedule', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'remove', id }) });
+      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage('Scheduled job disabled.', 'good');
     } catch (error) { this.setMessage(error.message, 'error'); }
     finally { this.setBusy(false); }
   },
@@ -781,6 +1157,10 @@ const Setup = {
 
   move(delta) {
     if (this.busy) return;
+    if (this.view === 'retune' && this.step === 1 && delta < 0) {
+      this.showSettingsHub();
+      return;
+    }
     if (this.step === 2 && delta < 0 && this.preferenceStep > 0) {
       this.capturePreferenceQuestion();
       this.preferenceStep -= 1;
@@ -807,6 +1187,7 @@ const Setup = {
         await this.saveDeviceSetting();
         await requestJson('/api/setup/section', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: this.incrementalSection.id, action: 'complete' }) });
         this.incrementalSection = null;
+        this.view = 'closed';
         this.el('setup-overlay').classList.add('hidden');
         return;
       }
@@ -887,6 +1268,11 @@ const Setup = {
         const result = await requestJson('/api/setup/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
         this.status.setupComplete = Boolean(result.completedAt);
         localStorage.removeItem(SETUP_DEFERRED_KEY);
+        if (this.view === 'retune') {
+          this.showSettingsHub();
+          return;
+        }
+        this.view = 'closed';
         this.el('setup-overlay').classList.add('hidden');
         return;
       }
@@ -913,12 +1299,13 @@ const Setup = {
   deferSetup() {
     if (this.incrementalSection) {
       requestJson('/api/setup/section', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: this.incrementalSection.id, action: 'defer' }) })
-        .then(() => { this.incrementalSection = null; this.el('setup-overlay').classList.add('hidden'); })
+        .then(() => { this.incrementalSection = null; this.view = 'closed'; this.el('setup-overlay').classList.add('hidden'); })
         .catch((error) => this.setMessage(error.message, 'error'));
       return;
     }
     if (!this.status?.trackerExists || this.status?.ready) return;
     localStorage.setItem(SETUP_DEFERRED_KEY, 'true');
+    this.view = 'closed';
     this.el('setup-overlay').classList.add('hidden');
   },
 };

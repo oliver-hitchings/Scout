@@ -1,11 +1,15 @@
 // Kept self-contained so a browser connected to a pre-update Scout server can
 // still boot. The matching modules contain the unit-tested canonical helpers.
+const SCOUT_UI_BUILD = typeof document !== 'undefined'
+  ? document.querySelector?.('meta[name="scout-ui-build"]')?.content || null
+  : null;
+const uiAsset = (pathname) => SCOUT_UI_BUILD ? `${pathname}?v=${encodeURIComponent(SCOUT_UI_BUILD)}` : pathname;
 const SCOUT_RUNTIME_STATES = {
-  idle: ['/assets/scout-idle.png', 'Scout is ready'], listening: ['/assets/scout-idle.png', 'Scout is listening'],
-  thinking: ['/assets/scout-thinking.png', 'Scout is thinking'], searching: ['/assets/scout-searching.png', 'Scout is searching'],
-  writing: ['/assets/scout-explaining.png', 'Scout is updating your files'], explaining: ['/assets/scout-explaining.png', 'Scout is explaining'],
-  found: ['/assets/scout-found.png', 'Scout found a strong match'], success: ['/assets/scout-found.png', 'Scout finished successfully'],
-  warning: ['/assets/scout-warning.png', 'Scout needs your attention'],
+  idle: [uiAsset('/assets/scout-idle.png'), 'Scout is ready'], listening: [uiAsset('/assets/scout-idle.png'), 'Scout is listening'],
+  thinking: [uiAsset('/assets/scout-thinking.png'), 'Scout is thinking'], searching: [uiAsset('/assets/scout-searching.png'), 'Scout is searching'],
+  writing: [uiAsset('/assets/scout-explaining.png'), 'Scout is updating your files'], explaining: [uiAsset('/assets/scout-explaining.png'), 'Scout is explaining'],
+  found: [uiAsset('/assets/scout-found.png'), 'Scout found a strong match'], success: [uiAsset('/assets/scout-found.png'), 'Scout finished successfully'],
+  warning: [uiAsset('/assets/scout-warning.png'), 'Scout needs your attention'],
 };
 const SCOUT_RUNTIME_ALIGNMENT = {
   idle: [1.7, 4.8], listening: [1.7, 4.8], thinking: [2.8, 3.2], searching: [0.6, -1.4],
@@ -64,7 +68,7 @@ const Scout = {
     tab: 'startup',
     commute: { mode: 'either', maxMinutes: '180', includeUnknown: true },
   },
-  cvState: { path: null, slug: null, opportunityId: null, dirty: false },
+  cvState: { path: null, slug: null, opportunityId: null, content: null, dirty: false },
   cvOptionsOpportunityId: null,
   cvPreviewZoom: 'page-width',
   chat: null,
@@ -73,8 +77,12 @@ const Scout = {
   discoveries: [],
   discoveryTimer: null,
   scanRunning: false,
+  scanOperationTimer: null,
   lastSyncPullAt: null,
   companyHistory: null,
+  uiBuildId: SCOUT_UI_BUILD,
+  serviceWorkerRegistration: null,
+  uiUpdateAvailable: false,
 
   async api(pathname, opts) {
     try {
@@ -211,13 +219,70 @@ const Scout = {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || `Scan failed (${response.status})`);
-      await this.loadOpportunities();
+      this.showOperation(result.operation);
+      this.watchScanOperation(result.operation.id);
     } catch (error) {
       document.getElementById('scan-status').textContent = error.message;
-    } finally {
       this.scanRunning = false;
       if (button) { button.disabled = false; button.textContent = 'Scan now'; }
     }
+  },
+
+  showOperation(operation) {
+    if (!operation || operation.type !== 'scan') return;
+    const status = document.getElementById('scan-status');
+    if (!status) return;
+    const started = Date.parse(operation.startedAt || '');
+    const finished = Date.parse(operation.finishedAt || '');
+    const end = Number.isFinite(finished) ? finished : Date.now();
+    const seconds = Number.isFinite(started) ? Math.max(0, Math.floor((end - started) / 1000)) : 0;
+    const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+    const step = operation.progress ? `step ${operation.progress.current}/${operation.progress.total}` : '';
+    status.textContent = operation.status === 'failed'
+      ? `Scan needs attention: ${operation.error || 'unknown error'}`
+      : operation.status === 'succeeded' ? 'Scan completed — refreshing results…'
+        : `${operation.phase || 'Scout is searching'} · ${step} · ${elapsed}`;
+  },
+
+  async watchScanOperation(id) {
+    if (!id) return;
+    if (this.scanOperationTimer) clearTimeout(this.scanOperationTimer);
+    this.scanRunning = true;
+    const button = document.getElementById('scan-now');
+    if (button) { button.disabled = true; button.textContent = 'Scanning…'; }
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/operations/${encodeURIComponent(id)}`);
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || 'Scan status unavailable');
+        this.showOperation(body.operation);
+        if (['queued', 'running'].includes(body.operation.status)) {
+          this.scanOperationTimer = setTimeout(poll, 1000);
+          return;
+        }
+        this.scanOperationTimer = null;
+        this.scanRunning = false;
+        if (button) { button.disabled = false; button.textContent = 'Scan now'; }
+        if (body.operation.status === 'succeeded') await this.loadOpportunities();
+      } catch (error) {
+        this.scanOperationTimer = null;
+        this.scanRunning = false;
+        if (button) { button.disabled = false; button.textContent = 'Scan now'; }
+        document.getElementById('scan-status').textContent = error.message;
+      }
+    };
+    this.scanOperationTimer = setTimeout(poll, 250);
+  },
+
+  async reattachScanOperation() {
+    try {
+      const response = await fetch('/api/operations?type=scan');
+      const body = await response.json();
+      if (response.ok && body.operation && ['queued', 'running'].includes(body.operation.status)) {
+        this.showOperation(body.operation);
+        this.watchScanOperation(body.operation.id);
+      }
+    } catch { /* the normal last-scan label remains available */ }
   },
 
   discoveryKey() {
@@ -246,6 +311,78 @@ const Scout = {
     return (setup && !setup.classList.contains('hidden'))
       || !!this.chat?.streaming
       || !!activeInput?.matches?.('input, textarea, select');
+  },
+
+  uiReloadBlocker() {
+    if (this.cvState.dirty) return 'Save or discard the open CV changes first.';
+    if (this.chat?.streaming) return 'Wait for the current Scout response to finish first.';
+    if (this.scanRunning) return 'Wait for the current scan to finish first.';
+    if (window.ScoutSetup?.busy) return 'Wait for the current settings action to finish first.';
+    if (document.getElementById('setup-overlay') && !document.getElementById('setup-overlay').classList.contains('hidden')) {
+      return 'Close or finish the open Scout settings first.';
+    }
+    if (document.querySelector('.chat-drawer:not(.hidden), .cv-options-overlay:not(.hidden)')) {
+      return 'Close the open panel first so typed work is not lost.';
+    }
+    return null;
+  },
+
+  showUiUpdate() {
+    this.uiUpdateAvailable = true;
+    const banner = document.getElementById('ui-update-banner');
+    if (!banner) return;
+    banner.replaceChildren();
+    banner.classList.remove('hidden');
+    const copy = document.createElement('p');
+    copy.textContent = 'Scout has updated. Refresh this page to use the latest interface.';
+    const actions = document.createElement('div');
+    actions.className = 'update-banner-actions';
+    const refresh = document.createElement('button');
+    refresh.type = 'button';
+    refresh.className = 'act primary';
+    refresh.textContent = 'Refresh Scout';
+    refresh.addEventListener('click', () => this.refreshUpdatedUi(copy, refresh));
+    actions.append(refresh);
+    banner.append(copy, actions);
+  },
+
+  async refreshUpdatedUi(copy, button) {
+    const blocker = this.uiReloadBlocker();
+    if (blocker) {
+      copy.textContent = `Scout is ready to update. ${blocker}`;
+      return;
+    }
+    button.disabled = true;
+    button.textContent = 'Refreshing…';
+    try { void this.serviceWorkerRegistration?.update?.(); } catch { /* the build handshake remains authoritative */ }
+    location.reload();
+  },
+
+  async checkUiBuild() {
+    try {
+      const response = await fetch('/api/app-info', { cache: 'no-store' });
+      const info = await response.json();
+      if (response.ok && info.uiBuildId && this.uiBuildId && info.uiBuildId !== this.uiBuildId) this.showUiUpdate();
+    } catch { /* host availability is reported by normal application requests */ }
+  },
+
+  async registerServiceWorker() {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    try {
+      let controlled = Boolean(navigator.serviceWorker.controller);
+      const registration = await navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' });
+      this.serviceWorkerRegistration = registration;
+      const watch = (worker) => worker?.addEventListener?.('statechange', () => {
+        if (worker.state === 'installed' && controlled) this.showUiUpdate();
+      });
+      registration.addEventListener?.('updatefound', () => watch(registration.installing));
+      navigator.serviceWorker.addEventListener?.('controllerchange', () => {
+        // The first controller is normal PWA installation, not an update. Only
+        // a subsequent controller replacement should prompt for a refresh.
+        if (controlled) this.showUiUpdate();
+        controlled = true;
+      });
+    } catch { /* installed-app support never blocks the dashboard */ }
   },
 
   showStrongMatchArrival() {
@@ -440,6 +577,12 @@ const Scout = {
     const sourceHealth = (h?.sourceHealth || []).length
       ? `<div class="source-health">${h.sourceHealth.map((source) => `<span class="chip source-${this.esc(source.status)}" title="${this.esc(source.reason || '')}">${this.esc(source.name)}: ${this.esc(source.status)}${source.count === null ? '' : ` (${this.esc(source.count)})`}</span>`).join('')}</div>`
       : '<div class="meta">No per-source health was recorded for this run.</div>';
+    const reviewed = Number(h?.candidatesFound || 0);
+    const kept = Number(h?.keepersAdded || 0);
+    const discardLabels = { hard_exclusion: 'hard exclusions', mandatory_unmet: 'mandatory gates', below_threshold: 'below threshold', provider_discarded: 'assessment discards' };
+    const discardBreakdown = Object.entries(h?.discarded || {}).filter(([, count]) => Number(count) > 0)
+      .map(([key, count]) => `${count} ${discardLabels[key] || key.replaceAll('_', ' ')}`).join(', ');
+    const reportDate = String(h?.lastRunAt || '').slice(0, 10);
     const flags = p.flags.length
       ? '<div class="label">Flags</div>' + p.flags.map((f) =>
           `<div class="card flag" data-id="${this.esc(f.id)}" role="button" tabindex="0">
@@ -462,8 +605,10 @@ const Scout = {
       </div>
       <div class="card">
         <div class="top"><b>Scan health</b><span class="chip">${this.esc(healthText)}</span></div>
-        <div class="meta">last run: ${this.esc(h && h.lastRunAt ? h.lastRunAt : 'never')} - keepers: ${this.esc(h && h.keepersAdded !== null ? h.keepersAdded : 'n/a')} - candidates: ${this.esc(h && h.candidatesFound !== null ? h.candidatesFound : 'n/a')}</div>
+        <p><strong>${this.esc(reviewed)} reviewed, ${this.esc(kept)} kept</strong>${discardBreakdown ? ` — ${this.esc(discardBreakdown)}` : ''}. Zero keepers can be a valid result when strict gates exclude every candidate.</p>
+        <div class="meta">last run: ${this.esc(h && h.lastRunAt ? h.lastRunAt : 'never')}</div>
         ${sourceHealth}
+        ${/^\d{4}-\d{2}-\d{2}$/.test(reportDate) ? `<p><button class="act" data-action="open-scan-report" data-date="${this.esc(reportDate)}">Review dated report</button></p>` : ''}
       </div>
       ${flags}
       <div class="split">
@@ -555,6 +700,12 @@ const Scout = {
       b.classList.toggle('active', b.dataset.date === date);
       b.setAttribute('aria-current', b.dataset.date === date ? 'date' : 'false');
     });
+  },
+
+  async openScanReport(date) {
+    this.showTab('reports');
+    await this.renderReports();
+    return this.openReport(date);
   },
 
   openEntry(tab, id) {
@@ -926,13 +1077,30 @@ const Scout = {
 
   async renderCv() {
     const list = await this.api('/api/cv');
+    this.state.cvFiles = list;
     const el = document.getElementById('tab-cv');
-    const appBtns = list.applications.map((s) => {
-      const cvPath = `applications/${s}/cv.typ`;
-      const opportunityId = this.opportunityIdForSlug(s);
-      return `<button class="act" data-action="open-cv" data-cv-path="${this.esc(cvPath)}" data-slug="${this.esc(s)}" data-opportunity-id="${this.esc(opportunityId || '')}">${this.esc(s)}</button>`;
-    }).join('') || '<div class="meta">no tailored CVs yet - run /tailor</div>';
+    const entries = list.entries || (list.applications || []).map((slug) => ({ slug, source: true }));
+    const appBtns = entries.map((entry) => {
+      const cvPath = `applications/${entry.slug}/cv.typ`;
+      const matches = this.opportunitiesForSlug(entry.slug);
+      const opportunityId = matches.length === 1 ? matches[0].id : null;
+      const label = matches.length === 1
+        ? `${matches[0].company} — ${matches[0].role}`
+        : matches.length > 1 ? `${matches[0].company} — ${matches.length} tracked roles` : entry.slug;
+      const states = [entry.pdf ? 'PDF ready' : 'PDF missing', entry.quality ? 'quality recorded' : 'legacy', matches.length ? null : 'unmatched']
+        .filter(Boolean).map((value) => `<span class="chip">${this.esc(value)}</span>`).join('');
+      return `<button class="act cv-entry" data-action="open-cv" data-cv-path="${this.esc(cvPath)}" data-slug="${this.esc(entry.slug)}" data-opportunity-id="${this.esc(opportunityId || '')}"><span class="cv-entry-label">${this.esc(label)}</span><span class="cv-entry-state">${states}</span></button>`;
+    }).join('') || '<div class="meta">No tailored CVs yet. Create one from a tracked opportunity.</div>';
+    const opportunities = (this.state.data?.opportunities || [])
+      .filter((entry) => !['rejected', 'accepted'].includes(entry.status))
+      .sort((a, b) => `${a.company} ${a.role}`.localeCompare(`${b.company} ${b.role}`));
+    const opportunityOptions = opportunities.map((entry) =>
+      `<option value="${this.esc(entry.id)}">${this.esc(entry.company)} — ${this.esc(entry.role)}</option>`).join('');
     el.innerHTML = `
+      <div class="cv-library-head"><div><h2>CV library</h2><div class="meta">Existing sources remain available even before a PDF or quality review exists.</div></div><button class="act bridge" data-action="toggle-cv-create">Create tailored CV</button></div>
+      <div id="cv-create-panel" class="cv-create-panel hidden">
+        ${opportunityOptions ? `<label>Tracked opportunity<select id="cv-create-opportunity">${opportunityOptions}</select></label><button class="act primary" data-action="start-cv-create">Continue</button>` : '<div class="meta">Add a tracked opportunity before creating a tailored CV.</div>'}
+      </div>
       <div class="cv-layout">
         <aside class="cv-sidebar">
           <div class="label">master</div>
@@ -976,25 +1144,59 @@ const Scout = {
           </div>
         </section>
       </div>`;
+    if (this.cvState.path && typeof this.cvState.content === 'string') {
+      document.getElementById('cv-text').value = this.cvState.content;
+      document.getElementById('cv-editing').textContent = `editing: ${this.cvState.path}`;
+      document.getElementById('cv-dirty').textContent = this.cvState.dirty ? 'unsaved' : '';
+      document.querySelectorAll('[data-cv-path]').forEach((button) => button.classList.toggle('active', button.dataset.cvPath === this.cvState.path));
+      if (this.cvState.slug) await this.renderCvPreview(this.cvState.slug);
+      else document.getElementById('cv-preview').textContent = 'The master CV is source material only and has no PDF preview. Open or create a tailored CV to render a PDF.';
+    }
   },
 
   opportunityIdForSlug(slug) {
-    const matches = (this.state.data?.opportunities || [])
-      .filter((entry) => this.slugOf(entry.company) === slug);
+    const matches = this.opportunitiesForSlug(slug);
     return matches.length === 1 ? matches[0].id : null;
+  },
+
+  opportunitiesForSlug(slug) {
+    return (this.state.data?.opportunities || []).filter((entry) => this.slugOf(entry.company) === slug);
+  },
+
+  toggleCvCreate() {
+    document.getElementById('cv-create-panel')?.classList.toggle('hidden');
+  },
+
+  startCvCreate() {
+    const id = document.getElementById('cv-create-opportunity')?.value;
+    if (!id) return;
+    const entry = (this.state.data?.opportunities || []).find((item) => item.id === id);
+    const slug = this.slugOf(entry?.company);
+    if ((this.state.cvFiles?.applications || []).includes(slug)) return this.seeCv(slug, id);
+    this.chooseCvOptions(id);
+  },
+
+  async refreshCvFilesIfTouched(filesTouched = []) {
+    if (!(filesTouched || []).some((file) => /^applications\/[^/]+\/(?:cv\.typ|cv\.pdf|cv-quality\.json)$/.test(String(file)))) return;
+    try {
+      this.state.cvFiles = await this.api('/api/cv');
+      this.renderAll();
+      if (this.state.tab === 'cv') await this.renderCv();
+    } catch { /* a refresh failure must not hide a completed chat turn */ }
   },
 
   async openCv(pathRel, slug, opportunityId = null) {
     if (this.cvState.dirty && !confirm('Discard unsaved changes?')) return;
-    this.cvState = { path: pathRel, slug, opportunityId, dirty: false };
     const text = await this.api(`/api/cv/file?path=${encodeURIComponent(pathRel)}`);
-    document.getElementById('cv-text').value = typeof text === 'string' ? text : (text.error || '');
+    const content = typeof text === 'string' ? text : (text.error || '');
+    this.cvState = { path: pathRel, slug, opportunityId, content, dirty: false };
+    document.getElementById('cv-text').value = content;
     document.getElementById('cv-editing').textContent = `editing: ${pathRel}`;
     document.getElementById('cv-dirty').textContent = '';
     document.querySelectorAll('[data-cv-path]').forEach((b) =>
       b.classList.toggle('active', b.dataset.cvPath === pathRel));
     if (slug) await this.renderCvPreview(slug);
-    else document.getElementById('cv-preview').textContent = 'No PDF preview for this file.';
+    else document.getElementById('cv-preview').textContent = 'The master CV is source material only and has no PDF preview. Open or create a tailored CV to render a PDF.';
   },
 
   async saveCv() {
@@ -1003,6 +1205,7 @@ const Scout = {
     const save = await this.post('/api/cv/save', { path: this.cvState.path, content });
     if (!(save && save.ok)) return;
     this.cvState.dirty = false;
+    this.cvState.content = content;
     document.getElementById('cv-dirty').textContent = '';
     if (!this.cvState.slug) return;
     await this.renderCvPreview(this.cvState.slug);
@@ -1296,7 +1499,7 @@ const Scout = {
       };
       el.textContent = labels[status.state] || 'Backup status';
       el.dataset.state = status.state || 'disabled';
-      el.title = status.error || (status.enabled ? 'Open Backup & sync settings' : 'Private backup is optional');
+      el.title = status.error || (status.enabled ? 'Open backup details' : 'Private backup is optional');
       const pulledAt = retryStatus?.pulledAt || status.pulledAt;
       if (pulledAt && pulledAt !== this.lastSyncPullAt) {
         this.lastSyncPullAt = pulledAt;
@@ -1483,6 +1686,7 @@ const Scout = {
     }
     c.streaming = false;
     c.mode = null;
+    await this.refreshCvFilesIfTouched(c.data.filesTouched);
     if (this.chat !== c) return;
     if (terminalError && startedWithoutSession) {
       const message = terminalError;
@@ -1672,6 +1876,7 @@ const Scout = {
       case 'sort': return this.setSort(key);
       case 'open-entry': return this.openEntry(tab, id);
       case 'open-report': return this.openReport(date);
+      case 'open-scan-report': return this.openScanReport(date);
       case 'complete-stage': return this.completeStage(id, Number(index));
       case 'toggle-source': return this.toggleSourcePanel(id, element);
       case 'mark-applied': return this.markApplied(id);
@@ -1687,6 +1892,8 @@ const Scout = {
       case 'open-company-role-chat': return this.openCompanyRoleChat(id);
       case 'close-company-history': return this.closeCompanyHistory();
       case 'open-cv': return this.openCv(element.dataset.cvPath, slug || null, element.dataset.opportunityId || null);
+      case 'toggle-cv-create': return this.toggleCvCreate();
+      case 'start-cv-create': return this.startCvCreate();
       case 'save-cv': return this.saveCv();
       case 'download-cv': return this.downloadCv();
       case 'open-chat-for-cv': return this.openChatForCv();
@@ -1746,6 +1953,7 @@ const Scout = {
     document.addEventListener?.('input', (event) => {
       if (event.target.dataset.inputAction !== 'cv-dirty') return;
       this.cvState.dirty = true;
+      this.cvState.content = event.target.value;
       const dirty = document.getElementById('cv-dirty');
       if (dirty) dirty.textContent = 'unsaved';
     });
@@ -1800,7 +2008,7 @@ const Scout = {
   },
 
   init() {
-    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+    this.registerServiceWorker();
     window.addEventListener?.('offline', () => this.setHostAvailable(false));
     window.addEventListener?.('online', () => this.loadOpportunities().catch(() => this.setHostAvailable(false)));
     document.querySelectorAll('nav button').forEach((b) =>
@@ -1809,16 +2017,32 @@ const Scout = {
         else if (b.dataset.tab) this.showTab(b.dataset.tab);
       }));
     document.getElementById?.('scan-now')?.addEventListener('click', () => this.scanNow());
-    document.getElementById?.('sync-status')?.addEventListener('click', () => window.ScoutSetup?.openSettings?.());
+    document.getElementById?.('sync-status')?.addEventListener('click', () => window.ScoutSetup?.openBackupDetails?.());
     document.getElementById?.('cv-options-cancel')?.addEventListener('click', () => this.closeCvOptions());
     document.getElementById?.('cv-options-continue')?.addEventListener('click', () => this.startCvFromOptions());
     this.bindDelegatedActions();
-    window.addEventListener?.('focus', () => this.refreshSyncStatus({ retry: true }));
-    document.addEventListener?.('visibilitychange', () => { if (!document.hidden) this.refreshSyncStatus({ retry: true }); });
+    window.addEventListener?.('focus', () => {
+      this.refreshSyncStatus({ retry: true });
+      this.serviceWorkerRegistration?.update?.();
+      this.checkUiBuild();
+    });
+    document.addEventListener?.('visibilitychange', () => {
+      if (!document.hidden) {
+        this.refreshSyncStatus({ retry: true });
+        this.serviceWorkerRegistration?.update?.();
+        this.checkUiBuild();
+      }
+    });
     this.loadOpportunities();
+    this.reattachScanOperation();
     this.refreshSyncStatus();
+    this.checkUiBuild();
     window.setTimeout?.(() => this.checkForAppUpdate(false), 2500);
     window.setInterval?.(() => this.refreshSyncStatus(), 5 * 60 * 1000);
+    window.setInterval?.(() => {
+      this.serviceWorkerRegistration?.update?.();
+      this.checkUiBuild();
+    }, 5 * 60 * 1000);
   },
 };
 window.Scout = Scout;

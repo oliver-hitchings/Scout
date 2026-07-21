@@ -17,8 +17,11 @@ data/chats/
 
 # installed dependencies and release output
 node_modules/
+.scout-runtime/
 dist/
 installer/output/
+test-results/
+playwright-report/
 
 # managed private workspace when kept beside a development checkout
 /workspace/

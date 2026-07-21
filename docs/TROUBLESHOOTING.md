@@ -30,6 +30,10 @@ Check `scout schedule status`, confirm the native scheduler entry points to the 
 
 Scout serves the UI on loopback at `http://127.0.0.1:8459`. Close stale Scout processes before retrying. Do not expose the port to the network. From source, run `npm test` before `npm start` and inspect terminal output.
 
+If an already-open page still shows an older layout after Scout itself was upgraded, refresh it once. Current Scout builds compare the loaded interface with the serving process and display **Scout updated — Refresh Scout** when they differ. Scout never performs that refresh silently; save or close active CV edits, chats, scans and settings first.
+
+The header backup status opens **Backup details**. Use **Advanced backup settings** from there for configuration. The main **Settings** button opens the sectioned settings hub; first-run onboarding appears automatically only for an unfinished workspace.
+
 ## Private backup cannot be enabled
 
 Backup is optional. Confirm Git and Git Credential Manager are installed, restart Scout after installation, and use a credential-free `https://github.com/owner/repository` URL. Connecting a local workspace requires an empty Private repository; use **Restore my existing workspace** for a repository that already contains Scout data. Scout refuses public repositories and refuses to push `.env`, generated PDF/DOCX files or other sensitive ignored paths when they are already tracked in Git.
@@ -37,6 +41,12 @@ Backup is optional. Confirm Git and Git Credential Manager are installed, restar
 ## Backup is offline, pending, or needs attention
 
 **Offline — saved locally** means Scout made a local commit and will retry later. **Needs attention** means both the computer and GitHub have new history; Scout deliberately does not reset, rebase, merge or force-push. Preserve both copies and resolve the Git history manually before selecting **Retry**. Never delete `.git`, `.scout/sync.json` or `.scout-backup/` as a conflict workaround.
+
+## A scan reviewed candidates but kept zero
+
+This is not automatically a failed scan. Scout shows the number reviewed, number kept and the discard breakdown (hard exclusions, mandatory gates, below-threshold results and provider assessment discards), with a link to the dated report. Check source health first. If sources were healthy, zero keepers can be the correct result for strict salary, location, commute or evidence gates. Do not weaken a genuine hard gate merely to produce results.
+
+Scout refuses to start a scan when the approved profile, calibration or master CV is incomplete. If Setup reports an empty activated master CV and offers the validated recovery control, use it there; Scout backs up the current file and restores only the hash-checked reviewed staging copy. If the control is unavailable, preserve the workspace and inspect the reported mismatch.
 
 ## Restore fails
 

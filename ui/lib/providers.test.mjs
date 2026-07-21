@@ -45,6 +45,32 @@ test('Codex candidates include the official OpenAI Windows installation', () => 
   assert.equal(candidates[0], 'C:\\Users\\Oli\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe');
 });
 
+test('macOS and Linux candidates include user-local and standalone installs before PATH fallback', () => {
+  for (const platform of ['darwin', 'linux']) {
+    const candidates = providerCandidates('codex', {
+      platform, env: { HOME: '/home/example', PATH: '' },
+      exists: (candidate) => candidate === '/home/example/.local/bin/codex' || candidate === '/home/example/.codex/bin/codex',
+      resolve: () => 'codex',
+    });
+    assert.deepEqual(candidates, ['/home/example/.local/bin/codex', '/home/example/.codex/bin/codex', 'codex']);
+  }
+});
+
+test('Unix provider status redacts the home directory with a native-looking path', () => {
+  const result = providerStatus('codex', {
+    platform: 'darwin',
+    env: { HOME: '/Users/example', PATH: '' },
+    exists: (candidate) => candidate === '/Users/example/.local/bin/codex',
+    resolve: () => null,
+    spawn: (command, args) => ({
+      status: 0,
+      stdout: args.includes('--version') ? 'codex-cli 1.0' : args[0] === 'exec' ? '--output-schema' : 'Logged in',
+      stderr: '',
+    }),
+  });
+  assert.equal(result.source, '~/.local/bin/codex');
+});
+
 test('provider status exposes bounded structured-output compatibility', () => {
   const spawn = (command, args) => {
     if (args.includes('--version')) return { status: 0, stdout: '2.1.205' };

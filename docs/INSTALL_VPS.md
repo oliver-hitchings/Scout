@@ -87,9 +87,11 @@ Keep automatic security updates, VPS snapshots and Scout's encrypted private-wor
 
 ## Enable scheduled scans and encrypted backup
 
+The complete reusable architecture, backup triggers, security boundary, restore drill, and phone acceptance test are documented in [Canonical VPS state and automatic backup](VPS_BACKUP_AND_STATE.md). Complete that checklist before treating the VPS as the canonical host.
+
 After one healthy supervised scan, open **Settings -> First scan** and enable the recommended Claude 07:30 primary and Codex 08:30 second-pass jobs. Scout pins the workspace timezone (normally `Europe/London`) in each systemd timer, so a UTC VPS still follows British daylight-saving time. Even when `scout-host.service` is system-level, these scans are user timers owned by `ubuntu`, so run `sudo loginctl enable-linger ubuntu`.
 
-For unattended backup, choose **Prepare VPS deploy key**. Add the displayed public key to your private `scout-workspace` repository as a write-enabled deploy key, then connect `git@github.com:OWNER/scout-workspace.git` with a new recovery passphrase. Replace `OWNER` with your GitHub account or organisation. Scout pins GitHub's published Ed25519 host key and configures repository-local SSH options; never disable `StrictHostKeyChecking`.
+For unattended backup, choose **Prepare VPS deploy key**. Add the displayed public key to a dedicated private workspace repository as a write-enabled deploy key, then connect its `git@github.com:YOUR-ACCOUNT/YOUR-PRIVATE-WORKSPACE.git` URL with a new recovery passphrase. Scout pins GitHub's published Ed25519 host key and configures repository-local SSH options; never disable `StrictHostKeyChecking`.
 
 Save the emergency recovery key outside the VPS. Run **Back up now**, confirm a successful timestamp, and restore into an isolated empty directory from another owner device before relying on the backup.
 

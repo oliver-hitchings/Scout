@@ -14,6 +14,7 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'tools/scout.mjs', target: 'tools/scout.mjs' },
   { source: 'tools/remote-access.mjs', target: 'tools/remote-access.mjs' },
   { source: 'tools/remote-hosting-preflight.mjs', target: 'tools/remote-hosting-preflight.mjs' },
+  { source: 'tools/typst-runtime.mjs', target: 'tools/typst-runtime.mjs' },
   { source: 'tools/scan-lock.mjs', target: 'tools/scan-lock.mjs' },
   { source: 'tools/fetch-adzuna.mjs', target: 'tools/fetch-adzuna.mjs' },
   { source: 'tools/fetch-ats.mjs', target: 'tools/fetch-ats.mjs' },
@@ -32,6 +33,7 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'docs/INSTALL_MACOS.md', target: 'docs/INSTALL_MACOS.md' },
   { source: 'docs/INSTALL_LINUX.md', target: 'docs/INSTALL_LINUX.md' },
   { source: 'docs/INSTALL_VPS.md', target: 'docs/INSTALL_VPS.md' },
+  { source: 'docs/VPS_BACKUP_AND_STATE.md', target: 'docs/VPS_BACKUP_AND_STATE.md' },
   { source: 'docs/AI_SETUP.md', target: 'docs/AI_SETUP.md' },
   { source: 'docs/CONFIGURATION.md', target: 'docs/CONFIGURATION.md' },
   { source: 'docs/PRIVACY.md', target: 'docs/PRIVACY.md' },
@@ -46,10 +48,12 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'docs/REPOSITORY_LAYOUT.md', target: 'docs/REPOSITORY_LAYOUT.md' },
   { source: 'docs/RELEASE.md', target: 'docs/RELEASE.md' },
   { source: 'docs/releases', target: 'docs/releases', tree: true },
+  { source: 'docs/diagnostics', target: 'docs/diagnostics', tree: true },
   { source: 'docs/SCOUT_SCAN_PROTOCOL.md', target: 'docs/SCOUT_SCAN_PROTOCOL.md' },
   { source: 'package.json', target: 'package.json' },
   { source: 'package-lock.json', target: 'package-lock.json' },
   { source: 'LICENSE', target: 'LICENSE' },
+  { source: 'THIRD_PARTY_NOTICES.md', target: 'THIRD_PARTY_NOTICES.md' },
 ]);
 
 const PUBLIC_DOCS = RELEASE_FILES.filter((entry) => entry.source.startsWith('docs/'));
@@ -69,10 +73,10 @@ export const PUBLIC_SOURCE_FILES = Object.freeze([
     'tools/fetch-adzuna.mjs', 'tools/fetch-ats.mjs', 'tools/fetch-hiring-cafe.mjs',
     'tools/scan-lock.mjs', 'tools/scan-lock.test.mjs', 'tools/scan-skill-parity.test.mjs',
     'tools/scout.mjs', 'tools/scout.test.mjs',
-    'tools/remote-access.mjs', 'tools/remote-hosting-preflight.mjs', 'tools/remote-hosting-preflight.test.mjs', 'tools/remote-hosting-docs.test.mjs', 'tools/documentation.test.mjs', 'tools/deploy-vps.sh', 'tools/windows-host.test.mjs',
+    'tools/remote-access.mjs', 'tools/remote-hosting-preflight.mjs', 'tools/remote-hosting-preflight.test.mjs', 'tools/remote-hosting-docs.test.mjs', 'tools/documentation.test.mjs', 'tools/typst-runtime.mjs', 'tools/typst-runtime.test.mjs', 'tools/deploy-vps.sh', 'tools/windows-host.test.mjs',
   ].map((source) => ({ source, target: source })),
   ...PUBLIC_DOCS,
-  ...['.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'package.json', 'package-lock.json', 'LICENSE']
+  ...['.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md']
     .map((source) => ({ source, target: source })),
 ]);
 
@@ -95,6 +99,52 @@ export function includePublicSourcePath(relative) {
   if (!includeReleasePath(value) && !/\.test\.mjs$/i.test(path.posix.basename(value))) return false;
   if (value === 'output' || value.startsWith('output/')) return false;
   return true;
+}
+
+export function productionDependencyFilter(lock) {
+  const productionPackages = Object.entries(lock.packages || {})
+    .filter(([key, metadata]) => key.startsWith('node_modules/') && metadata.dev !== true)
+    .map(([key]) => normalise(key.slice('node_modules/'.length)));
+  return (relative) => {
+    const value = normalise(relative);
+    return productionPackages.some((packagePath) =>
+      value === packagePath || value.startsWith(`${packagePath}/`) || packagePath.startsWith(`${value}/`));
+  };
+}
+
+export function productionPackageManifest(manifest) {
+  const production = structuredClone(manifest);
+  delete production.devDependencies;
+  if (production.scripts) {
+    for (const [name, command] of Object.entries(production.scripts)) {
+      if (/\bplaywright\b/i.test(command) || name === 'test:browser') delete production.scripts[name];
+    }
+  }
+  return production;
+}
+
+export function productionLockfile(lock) {
+  const production = structuredClone(lock);
+  if (production.packages) {
+    production.packages = Object.fromEntries(
+      Object.entries(production.packages).filter(([, metadata]) => metadata.dev !== true),
+    );
+    if (production.packages['']) delete production.packages[''].devDependencies;
+  }
+  if (production.dependencies) {
+    production.dependencies = Object.fromEntries(
+      Object.entries(production.dependencies).filter(([, metadata]) => metadata.dev !== true),
+    );
+  }
+  return production;
+}
+
+function writeProductionManifests(root, appDir) {
+  const manifest = JSON.parse(fs.readFileSync(required(root, 'package.json'), 'utf8'));
+  const lock = JSON.parse(fs.readFileSync(required(root, 'package-lock.json'), 'utf8'));
+  fs.writeFileSync(path.join(appDir, 'package.json'), `${JSON.stringify(productionPackageManifest(manifest), null, 2)}\n`);
+  fs.writeFileSync(path.join(appDir, 'package-lock.json'), `${JSON.stringify(productionLockfile(lock), null, 2)}\n`);
+  return lock;
 }
 
 function copyTree(source, target, relative = '', include = includeReleasePath) {
@@ -144,6 +194,7 @@ export function stageRelease({
   nodeExecutable = process.execPath,
   includeDependencies = true,
   platform = process.platform,
+  typstExecutable,
 } = {}) {
   const resolvedRoot = path.resolve(root);
   const resolvedStage = path.resolve(stageDir);
@@ -160,12 +211,25 @@ export function stageRelease({
     }
   }
 
-  if (includeDependencies) copyTree(required(resolvedRoot, 'node_modules'), path.join(appDir, 'node_modules'));
+  const lock = writeProductionManifests(resolvedRoot, appDir);
+  if (includeDependencies) {
+    const includeProductionDependency = productionDependencyFilter(lock);
+    copyTree(
+      required(resolvedRoot, 'node_modules'),
+      path.join(appDir, 'node_modules'),
+      '',
+      (relative) => includeReleasePath(relative) && includeProductionDependency(relative),
+    );
+  }
   const runtimeDir = path.join(resolvedStage, 'runtime');
   fs.mkdirSync(runtimeDir, { recursive: true });
   const runtimeName = platform === 'win32' ? 'ScoutRuntime.exe' : 'node';
   fs.copyFileSync(required(path.dirname(nodeExecutable), path.basename(nodeExecutable)), path.join(runtimeDir, runtimeName));
   if (platform !== 'win32') fs.chmodSync(path.join(runtimeDir, runtimeName), 0o755);
+  const typstName = platform === 'win32' ? 'typst.exe' : 'typst';
+  const typstSource = typstExecutable || path.join(resolvedRoot, '.scout-runtime', typstName);
+  fs.copyFileSync(required(path.dirname(typstSource), path.basename(typstSource)), path.join(runtimeDir, typstName));
+  if (platform !== 'win32') fs.chmodSync(path.join(runtimeDir, typstName), 0o755);
 
   return { root: resolvedRoot, stageDir: resolvedStage, appDir };
 }

@@ -28,7 +28,7 @@ case "$mode" in
     ;;
   rehearsal)
     [[ $source_ref == refs/heads/codex/release-candidate && $force_failure =~ ^(true|false)$ ]] || {
-      printf 'Rehearsals are restricted to the stable release-candidate branch.\n' >&2
+      printf 'Rehearsals are restricted to the protected, stable release-candidate branch.\n' >&2
       exit 2
     }
     fetch_ref="$source_ref:refs/scout-deploy/rehearsal"
@@ -51,7 +51,7 @@ fi
 case "$workspace/" in
   "$app_root/"*) printf 'Scout workspace must remain outside the application checkout.\n' >&2; exit 2 ;;
 esac
-if [[ -n $(git -C "$app_root" status --porcelain --untracked-files=normal) ]]; then
+if [[ -n $(git -C "$app_root" status --porcelain --untracked-files=normal -- . ':(exclude).scout-runtime/**') ]]; then
   printf 'Refusing to deploy over a dirty Scout application checkout.\n' >&2
   exit 2
 fi
@@ -100,7 +100,7 @@ rollback() {
     printf 'Deployment failed; restoring Scout commit %s.\n' "$previous_commit" >&2
     rollback_failed=0
     git -C "$app_root" checkout --detach "$previous_commit" || rollback_failed=1
-    (cd "$app_root" && npm ci) || rollback_failed=1
+    (cd "$app_root" && npm ci --omit=dev) || rollback_failed=1
     previous_version=$(cd "$app_root" && node -p "require('./package.json').version") || rollback_failed=1
     sudo -n systemctl restart "$service" || rollback_failed=1
     rollback_healthy=false
@@ -145,7 +145,9 @@ fi
 
 (
   cd "$app_root"
-  npm ci
+  npm ci --omit=dev
+  node tools/typst-runtime.mjs install
+  node tools/typst-runtime.mjs verify --compile
   npm test
 )
 
@@ -174,6 +176,9 @@ if ! cmp --silent "$serve_before" "$serve_after"; then
   false
 fi
 node "$app_root/tools/scout.mjs" remote preflight --require-serve-mapping
+node "$app_root/tools/typst-runtime.mjs" verify --compile
+cv_index=$(curl --fail --silent --show-error http://127.0.0.1:8459/api/cv)
+node -e 'const index=JSON.parse(process.argv[1]); if(!Array.isArray(index.entries)) process.exit(1); const sources=index.entries.filter(entry => entry?.source === true || entry?.source?.available === true).length; console.log(`Scout CV index exposes ${sources} source CV(s).`)' "$cv_index"
 
 trap - ERR
 printf 'Scout %s is healthy; workspace, provider homes and Tailscale Serve mapping were preserved.\n' "$version"

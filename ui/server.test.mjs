@@ -10,7 +10,7 @@ const previousDeviceSettings = process.env.SCOUT_DEVICE_SETTINGS;
 const testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-server-test-'));
 process.env.SCOUT_WORKSPACE = testWorkspace;
 process.env.SCOUT_DEVICE_SETTINGS = path.join(testWorkspace, 'device-settings.json');
-const { APP_ROOT, APP_VERSION, WORKSPACE_ROOT, createServer, restartControl, shutdownControl } = await import('./server.mjs');
+const { APP_ROOT, APP_VERSION, UI_BUILD_ID, WORKSPACE_ROOT, createServer, restartControl, shutdownControl } = await import('./server.mjs');
 
 let server;
 let port;
@@ -99,11 +99,25 @@ test('remote owner mutations require HTTPS Origin and administration remains loc
   assert.equal(noOrigin.status, 403);
   const badOrigin = await request({ method: 'POST', path: '/api/chat/stop', headers: { ...remote, origin: 'https://changed.example.ts.net' }, body: '{}' });
   assert.equal(badOrigin.status, 403);
+  const backupRequired = await request({ method: 'POST', path: '/api/chat/stop', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: JSON.stringify({ id: 'none' }) });
+  assert.equal(backupRequired.status, 409);
+  assert.match(JSON.parse(backupRequired.text).error, /backup must be enabled/);
+  fs.mkdirSync(path.join(testWorkspace, '.scout'), { recursive: true });
+  fs.writeFileSync(path.join(testWorkspace, '.scout', 'sync.json'), JSON.stringify({ version: 1, enabled: true, remoteUrl: 'git@github.com:example/private.git' }));
   const ownerChat = await request({ method: 'POST', path: '/api/chat/stop', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: JSON.stringify({ id: 'none' }) });
   assert.equal(ownerChat.status, 200);
   const localOnly = await request({ method: 'POST', path: '/api/remote-access/disable', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
   assert.equal(localOnly.status, 403);
   assert.match(JSON.parse(localOnly.text).error, /only be changed on the Scout host/);
+  const adoption = await request({ method: 'POST', path: '/api/workspace/adopt-private', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
+  assert.equal(adoption.status, 403);
+  assert.match(JSON.parse(adoption.text).error, /only be changed on the Scout host/);
+  const disableBackup = await request({ method: 'POST', path: '/api/sync/disable', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
+  assert.equal(disableBackup.status, 403);
+  assert.match(JSON.parse(disableBackup.text).error, /only be changed on the Scout host/);
+  const rotatePassphrase = await request({ method: 'POST', path: '/api/sync/passphrase', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
+  assert.equal(rotatePassphrase.status, 403);
+  assert.match(JSON.parse(rotatePassphrase.text).error, /only be changed on the Scout host/);
   const remoteUpdate = await request({ method: 'POST', path: '/api/update/download', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
   assert.equal(remoteUpdate.status, 403);
 });
@@ -199,8 +213,27 @@ test('app identity reports the serving build and private workspace', async () =>
   const response = await request({ path: '/api/app-info' });
   assert.equal(response.status, 200);
   assert.deepEqual(JSON.parse(response.text), {
-    name: 'Scout', version: APP_VERSION, appRoot: APP_ROOT, workspaceRoot: WORKSPACE_ROOT,
+    name: 'Scout', version: APP_VERSION, uiBuildId: UI_BUILD_ID, appRoot: APP_ROOT, workspaceRoot: WORKSPACE_ROOT,
   });
+});
+
+test('served shell and service worker receive the exact UI build id', async () => {
+  const page = await request({ path: '/' });
+  assert.equal(page.headers['cache-control'], 'no-cache');
+  assert.match(page.text, new RegExp(`meta name="scout-ui-build" content="${UI_BUILD_ID}"`));
+  assert.match(page.text, new RegExp(`app\\.js\\?v=${UI_BUILD_ID}`));
+  assert.match(page.text, new RegExp(`scout-icon\\.png\\?v=${UI_BUILD_ID}`));
+  assert.doesNotMatch(page.text, /__SCOUT_UI_BUILD__/);
+
+  const manifest = await request({ path: '/manifest.webmanifest' });
+  assert.equal(manifest.headers['cache-control'], 'no-cache');
+  assert.match(manifest.text, new RegExp(`scout-icon\\.png\\?v=${UI_BUILD_ID}`));
+  assert.doesNotMatch(manifest.text, /__SCOUT_UI_BUILD__/);
+
+  const worker = await request({ path: '/service-worker.js' });
+  assert.equal(worker.headers['cache-control'], 'no-cache');
+  assert.match(worker.text, new RegExp(`const BUILD = '${UI_BUILD_ID}'`));
+  assert.doesNotMatch(worker.text, /__SCOUT_UI_BUILD__/);
 });
 
 test('restart responds first, then schedules the respawn', async () => {
@@ -331,4 +364,18 @@ test('legacy CV downloads require a hash-bound explicit override', async () => {
   const downloaded = await request({ path: `/api/cv/pdf?slug=${slug}&download=1` });
   assert.equal(downloaded.status, 200);
   assert.equal(downloaded.text, 'synthetic-pdf');
+});
+
+test('CV index keeps legacy sources visible and describes missing derived files', async () => {
+  const slug = 'legacy-visible';
+  const app = path.join(testWorkspace, 'applications', slug);
+  fs.mkdirSync(app, { recursive: true });
+  fs.writeFileSync(path.join(app, 'cv.typ'), '= Legacy source\n');
+  const response = await request({ path: '/api/cv' });
+  assert.equal(response.status, 200);
+  const index = JSON.parse(response.text);
+  assert.ok(index.applications.includes(slug));
+  assert.deepEqual(index.entries.find((entry) => entry.slug === slug), {
+    slug, source: true, pdf: false, outreach: false, evidence: false, quality: false,
+  });
 });

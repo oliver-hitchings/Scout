@@ -18,6 +18,8 @@ Release only from this clean-history public application repository. Never copy c
 
    ```powershell
    npm ci --omit=dev
+   node tools/typst-runtime.mjs install
+   node tools/typst-runtime.mjs verify --compile
    $Version = (Get-Content package.json | ConvertFrom-Json).version
    node tools/build-release.mjs --installer --version $Version
    ```
@@ -40,9 +42,9 @@ The tag workflow uses the protected GitHub Environment `beta-vps`. Configure an 
 
 Tailnet policy should allow `tag:scout-deploy` to reach only TCP 22 on the Scout VPS. Install the matching public key only for the unprivileged deployment user. The VPS sudoers policy should allow that user to run only `/usr/bin/systemctl restart scout-host.service` without a password; validate the file with `visudo`.
 
-The OAuth client needs only the `auth_keys` scope and permission to create `tag:scout-deploy` devices. The workflow sends [the reviewed deployment script](../tools/deploy-vps.sh) over the private SSH connection. It refuses a dirty or unexpected checkout, verifies that the release ref resolves to the workflow commit, runs `npm ci` and `npm test`, restarts the service, checks the version on `127.0.0.1:8459`, confirms the Tailscale Serve configuration did not change and runs the remote-hosting preflight. On failure after checkout, it restores the previous application commit and dependencies before restarting the service. It never changes the separate workspace or provider credential directories.
+The OAuth client needs only the `auth_keys` scope and permission to create `tag:scout-deploy` devices. The workflow sends [the reviewed deployment script](../tools/deploy-vps.sh) over the private SSH connection. It refuses a dirty or unexpected checkout, verifies that the release ref resolves to the workflow commit, runs `npm ci`, installs and verifies the pinned app-local Typst runtime, runs `npm test`, restarts the service, checks the version on `127.0.0.1:8459`, confirms the Tailscale Serve configuration did not change and runs the remote-hosting preflight. On failure after checkout, it restores the previous application commit and dependencies before restarting the service. It never changes the separate workspace or provider credential directories.
 
-Before tagging a release, update the stable `codex/release-candidate` branch to the reviewed commit and manually dispatch **Cross-platform release candidate** from that branch with the exact `package.json` version and **Deploy VPS** selected. First select **Test rollback** while the VPS still runs the previous commit; that job must fail deliberately and log a healthy rollback. Then dispatch it again without **Test rollback** and require success. Workflow dispatch never enters the publication job.
+Before tagging a release, update the protected, stable `codex/release-candidate` branch to the reviewed commit and manually dispatch **Cross-platform release candidate** from that branch with the exact `package.json` version and **Deploy VPS** selected. First select **Test rollback** while the VPS still runs the previous commit; that job must fail deliberately and log a healthy rollback. Then dispatch it again without **Test rollback** and require success. Workflow dispatch never enters the publication job.
 
 Record live acceptance in the pull request or release record. Confirm owner access, rejection of a different Tailscale identity, crash recovery, reboot recovery, provider authentication, both scheduled jobs, a completed encrypted backup, and a temporary isolated restore. Do not keep a completed acceptance checklist as a current root document.
 

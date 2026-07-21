@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,15 +18,17 @@ import { detectProviders } from './lib/providers.mjs';
 import { doctor } from './lib/doctor.mjs';
 import { extractCvText } from './lib/cvImport.mjs';
 import { setupReadiness } from './lib/setupReadiness.mjs';
+import { OperationConflictError, OperationManager } from './lib/operations.mjs';
 import {
-  activateOnboardingProposal, createOnboardingProposal, discardOnboardingProposal, readOnboardingProposal,
+  activateOnboardingProposal, activatedProposalRecovery, createOnboardingProposal, discardOnboardingProposal,
+  readOnboardingProposal, recoverActivatedProposal,
 } from './lib/onboardingProposal.mjs';
 import { loadDeviceSettings, pendingDeviceSections, saveDeviceSettings, setWindowsStartup, updateDownloadDirectory, windowsStartupStatus } from './lib/deviceSettings.mjs';
 import { disableRemoteAccess, enableRemoteAccess, remoteAccessStatus } from './lib/remoteAccess.mjs';
 import { checkForUpdate, downloadVerifiedUpdate } from './lib/updates.mjs';
 import {
-  confirmRecoveryKey, connectWorkspaceSync, detectGit, disableWorkspaceSync, pendingRecoveryKey,
-  prepareGithubDeployKey, queueWorkspaceSync, restoreWorkspaceFromGithub, syncStatus,
+  adoptExistingWorkspaceFromGithub, confirmRecoveryKey, connectWorkspaceSync, detectGit, disableWorkspaceSync, loadSyncSettings, pendingRecoveryKey,
+  prepareGithubDeployKey, queueWorkspaceSync, restoreWorkspaceFromGithub, rotateWorkspaceRecoveryPassphrase, syncStatus,
 } from './lib/workspaceSync.mjs';
 import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
 import { loadEnv, saveEnv } from './lib/env.mjs';
@@ -40,10 +43,25 @@ export const REPO_ROOT = APP_ROOT; // retained for API compatibility
 export const WORKSPACE_ROOT = resolveWorkspaceRoot({ appRoot: APP_ROOT });
 export const PORT = Number(process.env.PORT) || 8459;
 export const APP_VERSION = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version;
+const UI_BUILD_FILES = [
+  'index.html', 'app.js', 'setup.js', 'reportView.js', 'service-worker.js', 'manifest.webmanifest',
+  'assets/scout-icon.ico', 'assets/scout-icon.png', 'assets/scout-idle.png',
+  'assets/scout-thinking.png', 'assets/scout-searching.png', 'assets/scout-explaining.png',
+  'assets/scout-found.png', 'assets/scout-warning.png',
+];
+function computeUiBuildId() {
+  const hash = createHash('sha256');
+  for (const name of UI_BUILD_FILES) {
+    hash.update(name).update('\0').update(fs.readFileSync(path.join(__dirname, name))).update('\0');
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+export const UI_BUILD_ID = computeUiBuildId();
 const WORKSPACE = workspacePaths(WORKSPACE_ROOT);
 const TRACKER = WORKSPACE.tracker;
 const REPORTS_DIR = WORKSPACE.reports;
 const SCAN_RUNS = WORKSPACE.scanRuns;
+const operations = new OperationManager();
 
 // Fresh installations remain uninitialised until the person chooses either a
 // new local workspace or Restore. Existing workspaces keep the legacy fast path.
@@ -104,6 +122,12 @@ function serveStatic(res, file, type) {
   res.end(buf);
 }
 
+function serveUiTemplate(res, name, type) {
+  const body = fs.readFileSync(path.join(__dirname, name), 'utf8').replaceAll('__SCOUT_UI_BUILD__', UI_BUILD_ID);
+  res.setHeader('Cache-Control', 'no-cache');
+  return sendText(res, 200, type, body);
+}
+
 function reportDates() {
   if (!fs.existsSync(REPORTS_DIR)) return [];
   return fs.readdirSync(REPORTS_DIR)
@@ -152,12 +176,29 @@ function loopbackSocket(address) {
 }
 
 const LOCAL_ONLY_ROUTES = new Set([
+  'POST /api/workspace/create',
+  'POST /api/workspace/restore',
   'POST /api/device/settings',
   'POST /api/update/download',
   'POST /api/setup/section',
+  'POST /api/setup/recovery',
   'POST /api/remote-access/enable',
   'POST /api/remote-access/disable',
   'POST /api/shutdown',
+  'POST /api/workspace/adopt-private',
+  'POST /api/sync/connect',
+  'POST /api/sync/deploy-key',
+  'POST /api/sync/disable',
+  'POST /api/sync/recovery-key',
+  'POST /api/sync/recovery-key/confirm',
+  'POST /api/sync/passphrase',
+]);
+
+const REMOTE_MUTATION_WITHOUT_BACKUP = new Set([
+  'POST /api/sync/backup',
+  'POST /api/sync/retry',
+  'POST /api/update/check',
+  'POST /api/restart',
 ]);
 
 function applySecurityHeaders(res, url) {
@@ -217,12 +258,21 @@ export function requestAccess(req, url, settings = loadDeviceSettings()) {
     || url.pathname.startsWith('/api/sync/')
     || url.pathname.startsWith('/api/workspace/')
     || url.pathname.startsWith('/api/remote-access/')
-    || ['POST /api/setup/proposal', 'POST /api/setup/activate', 'DELETE /api/setup/proposal'].includes(`${req.method} ${url.pathname}`);
+    || ['POST /api/setup/proposal', 'POST /api/setup/activate', 'POST /api/setup/recovery', 'DELETE /api/setup/proposal'].includes(`${req.method} ${url.pathname}`);
   if (mutatingApi && requiresJson) {
     const mediaType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
     if (mediaType !== 'application/json') {
       return { ok: false, status: 415, error: 'application/json required' };
     }
+  }
+  if (mutatingApi && access === 'remote-owner'
+      && !REMOTE_MUTATION_WITHOUT_BACKUP.has(`${req.method} ${url.pathname}`)
+      && !loadSyncSettings(WORKSPACE_ROOT).enabled) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Encrypted private backup must be enabled on the Scout host before remote changes are allowed',
+    };
   }
   return { ok: true, access };
 }
@@ -263,7 +313,7 @@ function currentDeviceSettings() {
 
 function handleRead(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/') {
-    return serveStatic(res, path.join(__dirname, 'index.html'), 'text/html; charset=utf-8');
+    return serveUiTemplate(res, 'index.html', 'text/html; charset=utf-8');
   }
   if (req.method === 'GET' && url.pathname === '/app.js') {
     return serveStatic(res, path.join(__dirname, 'app.js'), 'text/javascript; charset=utf-8');
@@ -275,10 +325,10 @@ function handleRead(req, res, url) {
     return serveStatic(res, path.join(__dirname, 'setup.js'), 'text/javascript; charset=utf-8');
   }
   if (req.method === 'GET' && url.pathname === '/manifest.webmanifest') {
-    return serveStatic(res, path.join(__dirname, 'manifest.webmanifest'), 'application/manifest+json; charset=utf-8');
+    return serveUiTemplate(res, 'manifest.webmanifest', 'application/manifest+json; charset=utf-8');
   }
   if (req.method === 'GET' && url.pathname === '/service-worker.js') {
-    return serveStatic(res, path.join(__dirname, 'service-worker.js'), 'text/javascript; charset=utf-8');
+    return serveUiTemplate(res, 'service-worker.js', 'text/javascript; charset=utf-8');
   }
   if (req.method === 'GET' && url.pathname.startsWith('/lib/')) {
     const name = url.pathname.slice('/lib/'.length);
@@ -296,6 +346,16 @@ function handleRead(req, res, url) {
     const fallback = path.join(__dirname, 'assets', 'scout-icon.png');
     return serveStatic(res, fs.existsSync(requested) ? requested : fallback, type);
   }
+  if (req.method === 'GET' && url.pathname === '/api/operations') {
+    const type = url.searchParams.get('type');
+    if (type && !['proposal', 'scan'].includes(type)) return sendJson(res, 400, { error: 'operation type must be proposal or scan' });
+    return sendJson(res, 200, { operation: operations.latest(type), operations: operations.list(type) });
+  }
+  if (req.method === 'GET' && url.pathname.startsWith('/api/operations/')) {
+    const id = decodeURIComponent(url.pathname.slice('/api/operations/'.length));
+    const operation = operations.get(id);
+    return operation ? sendJson(res, 200, { operation }) : sendJson(res, 404, { error: 'operation not found' });
+  }
   if (req.method === 'GET' && url.pathname === '/api/setup/status') {
     if (!workspaceInitialised()) {
       const config = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'templates', 'workspace', 'workspace.json'), 'utf8'));
@@ -305,6 +365,7 @@ function handleRead(req, res, url) {
         workspaceRoot: WORKSPACE_ROOT,
         appRoot: APP_ROOT,
         appVersion: APP_VERSION,
+        platform: process.platform,
         config,
         providers: {},
         adzunaConfigured: !!(env.ADZUNA_APP_ID && env.ADZUNA_API_KEY),
@@ -321,6 +382,7 @@ function handleRead(req, res, url) {
         requestAccess: req.scoutAccess,
         git: detectGit(),
         sync: syncStatus(WORKSPACE_ROOT),
+        recovery: { available: false, file: 'cv/master-cv.md', reason: 'workspace is not initialised' },
         pendingSetupSections: [],
       });
     }
@@ -332,6 +394,7 @@ function handleRead(req, res, url) {
       workspaceRoot: WORKSPACE_ROOT,
       appRoot: APP_ROOT,
       appVersion: APP_VERSION,
+      platform: process.platform,
       config,
       providers,
       adzunaConfigured: !!(env.ADZUNA_APP_ID && env.ADZUNA_API_KEY),
@@ -342,13 +405,14 @@ function handleRead(req, res, url) {
       readiness: readiness.checks,
       scanHealth: readScanHealth(),
       schedule: readScheduleSummary(config),
-      doctor: doctor(WORKSPACE_ROOT),
+      doctor: doctor(WORKSPACE_ROOT, { appRoot: APP_ROOT }),
       git: detectGit(),
       sync: syncStatus(WORKSPACE_ROOT),
       device: currentDeviceSettings(),
       remoteAccess: publicRemoteStatus(remoteAccessStatus(loadDeviceSettings())),
       requestAccess: req.scoutAccess,
       pendingSetupSections: [...pendingWorkspaceSections(readiness.established ? { ...config.setup, completedAt: config.setup?.completedAt || 'legacy' } : config.setup), ...pendingDeviceSections(loadDeviceSettings())],
+      recovery: activatedProposalRecovery(WORKSPACE_ROOT),
     });
   }
   if (req.method === 'GET' && url.pathname === '/api/setup/proposal') {
@@ -357,7 +421,7 @@ function handleRead(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/app-info') {
     return sendJson(res, 200, {
-      name: 'Scout', version: APP_VERSION, appRoot: APP_ROOT, workspaceRoot: WORKSPACE_ROOT,
+      name: 'Scout', version: APP_VERSION, uiBuildId: UI_BUILD_ID, appRoot: APP_ROOT, workspaceRoot: WORKSPACE_ROOT,
     });
   }
   if (req.method === 'GET' && url.pathname === '/api/remote-access/status') {
@@ -541,11 +605,26 @@ routes['POST /api/workspace/restore'] = async (req, res, body) => {
   try {
     const result = await restoreWorkspaceFromGithub({
       remoteUrl: b.remoteUrl, targetRoot: WORKSPACE_ROOT, secret: b.secret,
-    }, { validateWorkspace: (root) => doctor(root, { requireProvider: false }) });
+    }, { validateWorkspace: (root) => doctor(root, { requireProvider: false, appRoot: APP_ROOT }) });
     syncManagedInstructions(APP_ROOT, WORKSPACE_ROOT);
-    const health = doctor(WORKSPACE_ROOT, { requireProvider: false });
+    const health = doctor(WORKSPACE_ROOT, { requireProvider: false, appRoot: APP_ROOT });
     if (!health.ok) return replyJson(res, 409, { error: 'The restored workspace did not pass Scout doctor', doctor: health });
     return replyJson(res, 200, { ...result, doctor: health });
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
+};
+
+routes['POST /api/workspace/adopt-private'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Adoption requires the existing workspace to be initialised' });
+  try {
+    const result = await adoptExistingWorkspaceFromGithub({
+      remoteUrl: b.remoteUrl, targetRoot: WORKSPACE_ROOT, passphrase: b.passphrase, confirmation: b.confirmation,
+    }, {
+      prepareWorkspace: (root) => syncManagedInstructions(APP_ROOT, root),
+      validateWorkspace: (root) => doctor(root, { requireProvider: false, appRoot: APP_ROOT }),
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    return replyJson(res, 200, result);
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 
@@ -598,6 +677,15 @@ routes['POST /api/sync/recovery-key/confirm'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create or restore the workspace first' });
   return replyJson(res, 200, confirmRecoveryKey(WORKSPACE_ROOT));
+};
+
+routes['POST /api/sync/passphrase'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (!workspaceInitialised()) return replyJson(res, 409, { error: 'Create or restore the workspace first' });
+  try {
+    const result = await rotateWorkspaceRecoveryPassphrase(WORKSPACE_ROOT, b.passphrase);
+    return replyJson(res, result.ok ? 200 : 503, result);
+  } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 
 function applyTrackerMutation(res, mutate, commitMessage) {
@@ -681,6 +769,9 @@ routes['POST /api/cv/save'] = (req, res, body) => {
   let abs;
   try { abs = safeCvPath(WORKSPACE_ROOT, b.path); } catch (e) { return replyJson(res, 400, { error: e.message }); }
   if (typeof b.content !== 'string') return replyJson(res, 400, { error: 'content required' });
+  if (path.resolve(abs) === path.resolve(WORKSPACE.cv, 'master-cv.md') && Buffer.byteLength(b.content.trim(), 'utf8') < 500) {
+    return replyJson(res, 409, { error: 'The master CV is empty or incomplete. Scout kept the existing file; restore the reviewed proposal or enter at least 500 bytes before saving.' });
+  }
   try { fs.writeFileSync(abs, b.content); } catch (e) { return replyJson(res, 500, { error: e.message }); }
   void queueCheckpoint(`edit cv - ${b.path}`);
   replyJson(res, 200, { ok: true, savedLocally: true, syncQueued: true });
@@ -688,7 +779,7 @@ routes['POST /api/cv/save'] = (req, res, body) => {
 
 routes['POST /api/cv/render'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  const r = renderCv(WORKSPACE_ROOT, b.slug || '');
+  const r = renderCv(WORKSPACE_ROOT, b.slug || '', { appRoot: APP_ROOT });
   if (r.ok) void queueCheckpoint(`render cv - ${b.slug || 'application'}`);
   replyJson(res, 200, r);
 };
@@ -697,7 +788,7 @@ routes['POST /api/cv/quality'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try {
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
-    const result = runCvQuality(WORKSPACE_ROOT, b.slug || '', { locale: config.locale });
+    const result = runCvQuality(WORKSPACE_ROOT, b.slug || '', { locale: config.locale, appRoot: APP_ROOT });
     void queueCheckpoint(`review cv quality - ${b.slug || 'application'}`);
     return replyJson(res, 200, result);
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
@@ -715,20 +806,22 @@ routes['POST /api/cv/quality/override'] = (req, res, body) => {
 
 import { registerChatRoutes } from './lib/chatService.mjs';
 import { registerCompanyRoutes } from './lib/companyService.mjs';
-let proposalGenerationRunning = false;
-routes['POST /api/setup/proposal'] = async (req, res, body) => {
+routes['POST /api/setup/proposal'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   const provider = b.provider || loadWorkspaceConfig(WORKSPACE_ROOT).ai?.provider;
   if (!['codex', 'claude'].includes(provider)) return replyJson(res, 400, { error: 'choose an authenticated AI provider first' });
-  if (proposalGenerationRunning) return replyJson(res, 409, { error: 'an onboarding proposal is already being generated' });
-  proposalGenerationRunning = true;
   try {
-    const result = await createOnboardingProposal(WORKSPACE_ROOT, provider);
-    void queueCheckpoint('stage setup proposal');
-    return replyJson(res, 200, result);
+    const operation = operations.start('proposal', async (update) => {
+      const result = await createOnboardingProposal(WORKSPACE_ROOT, provider, { onProgress: update });
+      void queueCheckpoint('stage setup proposal');
+      return { ok: true, proposalId: result.proposalId, files: result.files };
+    }, { phase: 'Preparing approved evidence', total: 4 });
+    return replyJson(res, 202, { operation });
   }
-  catch (e) { return replyJson(res, 400, { error: e.message }); }
-  finally { proposalGenerationRunning = false; }
+  catch (e) {
+    if (e instanceof OperationConflictError) return replyJson(res, 409, { error: e.message, operation: e.operation });
+    return replyJson(res, 400, { error: e.message });
+  }
 };
 
 routes['POST /api/setup/activate'] = (req, res, body) => {
@@ -739,6 +832,15 @@ routes['POST /api/setup/activate'] = (req, res, body) => {
     return replyJson(res, 200, result);
   }
   catch (e) { return replyJson(res, 409, { error: e.message }); }
+};
+
+routes['POST /api/setup/recovery'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  try {
+    const result = recoverActivatedProposal(WORKSPACE_ROOT, b.confirmed);
+    void queueCheckpoint('recover activated master cv');
+    return replyJson(res, 200, result);
+  } catch (e) { return replyJson(res, 409, { error: e.message }); }
 };
 
 routes['DELETE /api/setup/proposal'] = (req, res) => {
@@ -961,19 +1063,30 @@ routes['POST /api/setup/import-cv'] = (req, res, body) => {
 import { installSchedule, runScan } from '../tools/scout.mjs';
 import { removeSchedule, runScheduledNow } from './lib/scheduler.mjs';
 
-let supervisedScanRunning = false;
-routes['POST /api/scan'] = async (req, res, body) => {
+routes['POST /api/scan'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  if (supervisedScanRunning) return replyJson(res, 409, { error: 'a supervised scan is already running' });
   const config = loadWorkspaceConfig(WORKSPACE_ROOT);
   const provider = b.provider || config.ai?.provider;
   if (!['codex', 'claude'].includes(provider)) return replyJson(res, 400, { error: 'choose an authenticated AI provider first' });
-  supervisedScanRunning = true;
   try {
-    const result = await runScan(WORKSPACE_ROOT, provider, 'primary');
-    return replyJson(res, result.ok ? 200 : 500, { ...result, scanHealth: readScanHealth() });
-  } catch (e) { return replyJson(res, 500, { error: e.message }); }
-  finally { supervisedScanRunning = false; }
+    const operation = operations.start('scan', async (update) => {
+      const result = await runScan(WORKSPACE_ROOT, provider, 'primary', { onProgress: update });
+      if (!result.ok) throw new Error(result.error || `scan ended with ${result.status}`);
+      const scanHealth = readScanHealth();
+      return {
+        ok: true, status: result.status,
+        summary: {
+          healthy: scanHealth.healthy, degraded: scanHealth.degraded, lastRunAt: scanHealth.lastRunAt,
+          candidatesFound: scanHealth.candidatesFound, keepersAdded: scanHealth.keepersAdded,
+          discarded: scanHealth.discarded, reportDate: String(scanHealth.lastRunAt || '').slice(0, 10) || null,
+        },
+      };
+    }, { phase: 'Validating approved evidence', total: 5 });
+    return replyJson(res, 202, { operation });
+  } catch (e) {
+    if (e instanceof OperationConflictError) return replyJson(res, 409, { error: e.message, operation: e.operation });
+    return replyJson(res, 400, { error: e.message });
+  }
 };
 
 routes['POST /api/schedule'] = (req, res, body) => {
