@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 const workflow = fs.readFileSync(new URL('../.github/workflows/windows-release.yml', import.meta.url), 'utf8');
+const ci = fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const workspaceRepair = fs.readFileSync(new URL('../.github/workflows/vps-workspace-repair.yml', import.meta.url), 'utf8');
 const deploy = fs.readFileSync(new URL('./deploy-vps.sh', import.meta.url), 'utf8');
 
@@ -14,6 +15,12 @@ test('tagged release workflow validates version and requires private markers', (
   assert.match(workflow, /Tag does not match package version/);
   assert.match(workflow, /--require-markers/);
   assert.match(workflow, /SCOUT_RELEASE_MARKERS/);
+});
+
+test('CI audits fork pull requests without exposing private release markers', () => {
+  assert.doesNotMatch(ci, /pull_request_target/);
+  assert.match(ci, /Audit staged public tree for fork pull requests[\s\S]*if: github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.repo\.full_name != github\.repository[\s\S]*--root dist\/release\/stage --stage\s/);
+  assert.match(ci, /Audit staged public tree with required private markers[\s\S]*if: github\.event_name != 'pull_request' \|\| github\.event\.pull_request\.head\.repo\.full_name == github\.repository[\s\S]*--require-markers[\s\S]*SCOUT_RELEASE_MARKERS: \$\{\{ secrets\.SCOUT_RELEASE_MARKERS \}\}/);
 });
 
 test('release publication has scoped write permission and publishes checksum', () => {
