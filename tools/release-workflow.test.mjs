@@ -48,6 +48,8 @@ test('tagged release deploys the private VPS before publication', () => {
   assert.match(deploy, /127\.0\.0\.1:8459\/api\/app-info/);
   assert.match(deploy, /cmp --silent "\$serve_before" "\$serve_after"/);
   assert.match(deploy, /remote preflight --require-serve-mapping/);
+  assert.match(deploy, /127\.0\.0\.1:8459\/api\/cv/);
+  assert.match(deploy, /Array\.isArray\(index\.entries\)/);
   assert.match(deploy, /SCOUT_VPS_DEPLOY_USER:-scout-deploy/);
   assert.match(deploy, /SCOUT_VPS_SERVICE_USER:-ubuntu/);
   assert.match(deploy, /property=ExecStart/);
