@@ -160,11 +160,13 @@ export function assessCvSource(source, manifest, { locale = 'en-GB', pdfExists =
   return { options, bulletCount: bullets.length, evidenceBulletCount: evidenceBullets.length, issues, blocking, warnings, pass: issues.length === 0 };
 }
 
-export function runCvQuality(root, slug, { locale = 'en-GB', compile = true, now = () => new Date().toISOString() } = {}) {
+export function runCvQuality(root, slug, {
+  locale = 'en-GB', compile = true, now = () => new Date().toISOString(), appRoot,
+} = {}) {
   const paths = cvQualityPaths(root, slug);
   if (!fs.existsSync(paths.source)) throw new Error(`CV source does not exist: applications/${slug}/cv.typ`);
   let render = { ok: fs.existsSync(paths.pdf), stdout: '', stderr: '' };
-  if (compile) render = renderCv(root, slug);
+  if (compile) render = renderCv(root, slug, { appRoot });
   const source = fs.readFileSync(paths.source, 'utf8');
   let manifest = null;
   let manifestError = null;

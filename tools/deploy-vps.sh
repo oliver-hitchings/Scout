@@ -146,6 +146,8 @@ fi
 (
   cd "$app_root"
   npm ci --omit=dev
+  node tools/typst-runtime.mjs install
+  node tools/typst-runtime.mjs verify --compile
   npm test
 )
 
@@ -174,6 +176,7 @@ if ! cmp --silent "$serve_before" "$serve_after"; then
   false
 fi
 node "$app_root/tools/scout.mjs" remote preflight --require-serve-mapping
+node "$app_root/tools/typst-runtime.mjs" verify --compile
 
 trap - ERR
 printf 'Scout %s is healthy; workspace, provider homes and Tailscale Serve mapping were preserved.\n' "$version"

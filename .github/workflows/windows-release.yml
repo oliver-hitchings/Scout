@@ -33,6 +33,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm }
       - run: npm ci --omit=dev
+      - run: node tools/typst-runtime.mjs install
+      - run: node tools/typst-runtime.mjs verify --compile
       - run: npm test
       - run: choco install innosetup --yes --no-progress
       - name: Select and validate version
@@ -56,6 +58,7 @@ jobs:
           if ($p.ExitCode) { throw 'Installer failed' }
           $installed = Join-Path $env:LOCALAPPDATA 'Programs\Scout'; $workspace = Join-Path $env:RUNNER_TEMP 'Scout Workspace'
           & "$installed\runtime\ScoutRuntime.exe" "$installed\app\tools\scout.mjs" workspace init --workspace $workspace | Out-Null
+          & "$installed\runtime\ScoutRuntime.exe" "$installed\app\tools\typst-runtime.mjs" verify --compile | Out-Null
           if (-not (Test-Path "$installed\Scout.exe")) { throw 'Scout host missing' }
           $u = Start-Process "$installed\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
           if ($u.ExitCode -or -not (Test-Path "$workspace\workspace.json")) { throw 'Uninstall smoke failed' }
@@ -75,6 +78,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm }
       - run: npm ci --omit=dev
+      - run: node tools/typst-runtime.mjs install
+      - run: node tools/typst-runtime.mjs verify --compile
       - run: npm test
       - run: node tools/build-platform.mjs mac
       - run: npm run release:audit -- --root "dist/release/macos-$(node -p process.arch)" --stage --require-markers
@@ -94,6 +99,7 @@ jobs:
           file "$runtime"
           "$runtime" --version
           "$runtime" "$cli" workspace init --workspace "$workspace"
+          "$runtime" "$mount/Scout.app/Contents/Resources/app/tools/typst-runtime.mjs" verify --compile
           test -f "$workspace/workspace.json"
           hdiutil detach "$mount"
           test -f "$workspace/workspace.json"
@@ -109,6 +115,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm }
       - run: npm ci --omit=dev
+      - run: node tools/typst-runtime.mjs install
+      - run: node tools/typst-runtime.mjs verify --compile
       - run: npm test
       - run: node tools/build-platform.mjs linux
       - run: npm run release:audit -- --root dist/release/linux-x64 --stage --require-markers
@@ -117,6 +125,7 @@ jobs:
         run: |
           sudo apt-get install -y ./installer/output/*.deb
           workspace=$(mktemp -d)/Scout; /opt/scout/runtime/node /opt/scout/app/tools/scout.mjs workspace init --workspace "$workspace"
+          /opt/scout/runtime/node /opt/scout/app/tools/typst-runtime.mjs verify --compile
           sudo apt-get remove -y scout; test -f "$workspace/workspace.json"
           tar -tzf installer/output/*.tar.gz | grep -q scout-dashboard
       - uses: actions/upload-artifact@v4

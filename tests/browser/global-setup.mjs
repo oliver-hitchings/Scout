@@ -27,8 +27,14 @@ export default async function globalSetup() {
   fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
   fs.writeFileSync(path.join(workspace, 'data', 'opportunities.json'), `${JSON.stringify({
     updated: '2026-07-20',
-    opportunities: [],
+    opportunities: [
+      { id: 'legacy-systems-hardware-2026-07', company: 'Legacy Systems', role: 'Hardware Engineer', status: 'new', score: 82, category: 'startup', sources: [] },
+      { id: 'new-systems-product-2026-07', company: 'New Systems', role: 'Product Engineer', status: 'new', score: 78, category: 'startup', sources: [] },
+    ],
   }, null, 2)}\n`);
+  const legacy = path.join(workspace, 'applications', 'legacy-systems');
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(path.join(legacy, 'cv.typ'), '= Legacy CV\n\nExisting source remains editable.\n');
 
   process.env.SCOUT_WORKSPACE = workspace;
   process.env.SCOUT_DEVICE_SETTINGS = path.join(workspace, '.scout', 'device-settings.json');

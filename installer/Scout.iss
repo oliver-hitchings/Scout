@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0-beta.14"
+  #define MyAppVersion "0.1.0-beta.15"
 #endif
 
 #ifndef StageDir
@@ -34,7 +34,7 @@ ChangesEnvironment=no
 
 [Files]
 Source: "{#StageDir}\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StageDir}\runtime\ScoutRuntime.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
+Source: "{#StageDir}\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\Scout.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

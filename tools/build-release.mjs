@@ -14,6 +14,7 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'tools/scout.mjs', target: 'tools/scout.mjs' },
   { source: 'tools/remote-access.mjs', target: 'tools/remote-access.mjs' },
   { source: 'tools/remote-hosting-preflight.mjs', target: 'tools/remote-hosting-preflight.mjs' },
+  { source: 'tools/typst-runtime.mjs', target: 'tools/typst-runtime.mjs' },
   { source: 'tools/scan-lock.mjs', target: 'tools/scan-lock.mjs' },
   { source: 'tools/fetch-adzuna.mjs', target: 'tools/fetch-adzuna.mjs' },
   { source: 'tools/fetch-ats.mjs', target: 'tools/fetch-ats.mjs' },
@@ -44,6 +45,7 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'package.json', target: 'package.json' },
   { source: 'package-lock.json', target: 'package-lock.json' },
   { source: 'LICENSE', target: 'LICENSE' },
+  { source: 'THIRD_PARTY_NOTICES.md', target: 'THIRD_PARTY_NOTICES.md' },
 ]);
 
 const PUBLIC_DOCS = RELEASE_FILES.filter((entry) => entry.source.startsWith('docs/'));
@@ -63,10 +65,10 @@ export const PUBLIC_SOURCE_FILES = Object.freeze([
     'tools/fetch-adzuna.mjs', 'tools/fetch-ats.mjs', 'tools/fetch-hiring-cafe.mjs',
     'tools/scan-lock.mjs', 'tools/scan-lock.test.mjs', 'tools/scan-skill-parity.test.mjs',
     'tools/scout.mjs', 'tools/scout.test.mjs',
-    'tools/remote-access.mjs', 'tools/remote-hosting-preflight.mjs', 'tools/remote-hosting-preflight.test.mjs', 'tools/remote-hosting-docs.test.mjs', 'tools/deploy-vps.sh', 'tools/windows-host.test.mjs',
+    'tools/remote-access.mjs', 'tools/remote-hosting-preflight.mjs', 'tools/remote-hosting-preflight.test.mjs', 'tools/remote-hosting-docs.test.mjs', 'tools/typst-runtime.mjs', 'tools/typst-runtime.test.mjs', 'tools/deploy-vps.sh', 'tools/windows-host.test.mjs',
   ].map((source) => ({ source, target: source })),
   ...PUBLIC_DOCS,
-  ...['.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'REMOTE_HOSTING_TODO.md', 'CONTRIBUTING.md', 'SECURITY.md', 'package.json', 'package-lock.json', 'LICENSE']
+  ...['.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'REMOTE_HOSTING_TODO.md', 'CONTRIBUTING.md', 'SECURITY.md', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md']
     .map((source) => ({ source, target: source })),
 ]);
 
@@ -184,6 +186,7 @@ export function stageRelease({
   nodeExecutable = process.execPath,
   includeDependencies = true,
   platform = process.platform,
+  typstExecutable,
 } = {}) {
   const resolvedRoot = path.resolve(root);
   const resolvedStage = path.resolve(stageDir);
@@ -215,6 +218,10 @@ export function stageRelease({
   const runtimeName = platform === 'win32' ? 'ScoutRuntime.exe' : 'node';
   fs.copyFileSync(required(path.dirname(nodeExecutable), path.basename(nodeExecutable)), path.join(runtimeDir, runtimeName));
   if (platform !== 'win32') fs.chmodSync(path.join(runtimeDir, runtimeName), 0o755);
+  const typstName = platform === 'win32' ? 'typst.exe' : 'typst';
+  const typstSource = typstExecutable || path.join(resolvedRoot, '.scout-runtime', typstName);
+  fs.copyFileSync(required(path.dirname(typstSource), path.basename(typstSource)), path.join(runtimeDir, typstName));
+  if (platform !== 'win32') fs.chmodSync(path.join(runtimeDir, typstName), 0o755);
 
   return { root: resolvedRoot, stageDir: resolvedStage, appDir };
 }

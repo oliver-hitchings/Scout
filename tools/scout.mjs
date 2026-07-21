@@ -282,7 +282,7 @@ async function main() {
   const argv = process.argv.slice(2);
   const command = argv[0] || 'help';
   const root = selectedWorkspace(argv);
-  if (command === 'doctor') return print(doctor(root));
+  if (command === 'doctor') return print(doctor(root, { appRoot: APP_ROOT }));
   if (command === 'remote') {
     const action = argv[1] || 'preflight';
     if (action !== 'preflight') throw new Error('remote action must be preflight');
@@ -317,7 +317,7 @@ async function main() {
     const slug = argv[2];
     if (!slug) throw new Error('cv quality requires an application slug');
     const config = loadWorkspaceConfig(root);
-    const result = runCvQuality(root, slug, { locale: config.locale });
+    const result = runCvQuality(root, slug, { locale: config.locale, appRoot: APP_ROOT });
     await queueWorkspaceSync(root, `review cv quality - ${slug}`).catch(() => {});
     print(result);
     if (!result.pass) process.exitCode = 1;

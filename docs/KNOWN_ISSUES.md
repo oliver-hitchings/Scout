@@ -3,6 +3,14 @@
 This page tracks confirmed problems in released Scout packages. Check
 [Troubleshooting](TROUBLESHOOTING.md) for general setup and diagnostic guidance.
 
+## CV sources hidden and Typst unavailable in beta.14
+
+- **Affected release:** Scout `0.1.0-beta.14`
+- **First recorded:** 2026-07-21
+- **Status:** Resolved in Scout `0.1.0-beta.15`.
+
+Beta.14 depended on a separately installed `typst` command and offered CV creation only inside expanded opportunity cards. Beta.15 packages a pinned compiler, keeps legacy CV sources visible when derived files are missing, and adds a creation route to the CV library.
+
 ## Stale settings dialog in beta.13
 
 - **Affected release:** Scout `0.1.0-beta.13`

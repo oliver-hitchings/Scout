@@ -11,7 +11,8 @@ test('Windows host owns tray lifecycle and named runtime', () => {
   assert.match(host, /api\/shutdown/);
   assert.doesNotMatch(host, /AssignProcessToJobObject|CreateKillJob/);
   assert.match(installer, /Source: "\{#StageDir\}\\Scout\.exe"/);
-  assert.match(installer, /runtime\\ScoutRuntime\.exe/);
+  assert.match(installer, /runtime\\\*/);
+  assert.match(installer, /recursesubdirs/);
   assert.doesNotMatch(installer, /PowerShell|ScoutLauncher\.ps1/);
 });
 

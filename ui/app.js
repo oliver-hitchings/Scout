@@ -1005,13 +1005,30 @@ const Scout = {
 
   async renderCv() {
     const list = await this.api('/api/cv');
+    this.state.cvFiles = list;
     const el = document.getElementById('tab-cv');
-    const appBtns = list.applications.map((s) => {
-      const cvPath = `applications/${s}/cv.typ`;
-      const opportunityId = this.opportunityIdForSlug(s);
-      return `<button class="act" data-action="open-cv" data-cv-path="${this.esc(cvPath)}" data-slug="${this.esc(s)}" data-opportunity-id="${this.esc(opportunityId || '')}">${this.esc(s)}</button>`;
-    }).join('') || '<div class="meta">no tailored CVs yet - run /tailor</div>';
+    const entries = list.entries || (list.applications || []).map((slug) => ({ slug, source: true }));
+    const appBtns = entries.map((entry) => {
+      const cvPath = `applications/${entry.slug}/cv.typ`;
+      const matches = this.opportunitiesForSlug(entry.slug);
+      const opportunityId = matches.length === 1 ? matches[0].id : null;
+      const label = matches.length === 1
+        ? `${matches[0].company} — ${matches[0].role}`
+        : matches.length > 1 ? `${matches[0].company} — ${matches.length} tracked roles` : entry.slug;
+      const states = [entry.pdf ? 'PDF ready' : 'PDF missing', entry.quality ? 'quality recorded' : 'legacy', matches.length ? null : 'unmatched']
+        .filter(Boolean).map((value) => `<span class="chip">${this.esc(value)}</span>`).join('');
+      return `<button class="act cv-entry" data-action="open-cv" data-cv-path="${this.esc(cvPath)}" data-slug="${this.esc(entry.slug)}" data-opportunity-id="${this.esc(opportunityId || '')}"><span class="cv-entry-label">${this.esc(label)}</span><span class="cv-entry-state">${states}</span></button>`;
+    }).join('') || '<div class="meta">No tailored CVs yet. Create one from a tracked opportunity.</div>';
+    const opportunities = (this.state.data?.opportunities || [])
+      .filter((entry) => !['rejected', 'accepted'].includes(entry.status))
+      .sort((a, b) => `${a.company} ${a.role}`.localeCompare(`${b.company} ${b.role}`));
+    const opportunityOptions = opportunities.map((entry) =>
+      `<option value="${this.esc(entry.id)}">${this.esc(entry.company)} — ${this.esc(entry.role)}</option>`).join('');
     el.innerHTML = `
+      <div class="cv-library-head"><div><h2>CV library</h2><div class="meta">Existing sources remain available even before a PDF or quality review exists.</div></div><button class="act bridge" data-action="toggle-cv-create">Create tailored CV</button></div>
+      <div id="cv-create-panel" class="cv-create-panel hidden">
+        ${opportunityOptions ? `<label>Tracked opportunity<select id="cv-create-opportunity">${opportunityOptions}</select></label><button class="act primary" data-action="start-cv-create">Continue</button>` : '<div class="meta">Add a tracked opportunity before creating a tailored CV.</div>'}
+      </div>
       <div class="cv-layout">
         <aside class="cv-sidebar">
           <div class="label">master</div>
@@ -1058,9 +1075,34 @@ const Scout = {
   },
 
   opportunityIdForSlug(slug) {
-    const matches = (this.state.data?.opportunities || [])
-      .filter((entry) => this.slugOf(entry.company) === slug);
+    const matches = this.opportunitiesForSlug(slug);
     return matches.length === 1 ? matches[0].id : null;
+  },
+
+  opportunitiesForSlug(slug) {
+    return (this.state.data?.opportunities || []).filter((entry) => this.slugOf(entry.company) === slug);
+  },
+
+  toggleCvCreate() {
+    document.getElementById('cv-create-panel')?.classList.toggle('hidden');
+  },
+
+  startCvCreate() {
+    const id = document.getElementById('cv-create-opportunity')?.value;
+    if (!id) return;
+    const entry = (this.state.data?.opportunities || []).find((item) => item.id === id);
+    const slug = this.slugOf(entry?.company);
+    if ((this.state.cvFiles?.applications || []).includes(slug)) return this.seeCv(slug, id);
+    this.chooseCvOptions(id);
+  },
+
+  async refreshCvFilesIfTouched(filesTouched = []) {
+    if (!(filesTouched || []).some((file) => /^applications\/[^/]+\/(?:cv\.typ|cv\.pdf|cv-quality\.json)$/.test(String(file)))) return;
+    try {
+      this.state.cvFiles = await this.api('/api/cv');
+      this.renderAll();
+      if (this.state.tab === 'cv') await this.renderCv();
+    } catch { /* a refresh failure must not hide a completed chat turn */ }
   },
 
   async openCv(pathRel, slug, opportunityId = null) {
@@ -1562,6 +1604,7 @@ const Scout = {
     }
     c.streaming = false;
     c.mode = null;
+    await this.refreshCvFilesIfTouched(c.data.filesTouched);
     if (this.chat !== c) return;
     if (terminalError && startedWithoutSession) {
       const message = terminalError;
@@ -1766,6 +1809,8 @@ const Scout = {
       case 'open-company-role-chat': return this.openCompanyRoleChat(id);
       case 'close-company-history': return this.closeCompanyHistory();
       case 'open-cv': return this.openCv(element.dataset.cvPath, slug || null, element.dataset.opportunityId || null);
+      case 'toggle-cv-create': return this.toggleCvCreate();
+      case 'start-cv-create': return this.startCvCreate();
       case 'save-cv': return this.saveCv();
       case 'download-cv': return this.downloadCv();
       case 'open-chat-for-cv': return this.openChatForCv();
