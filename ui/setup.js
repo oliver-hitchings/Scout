@@ -517,9 +517,16 @@ const Setup = {
   },
 
   renderProviderSettings() {
+    const models = this.status?.config?.ai?.models || {};
     this.el('setup-body').innerHTML = `
       <div class="setup-provider-list">${this.providerCard('codex')}${this.providerCard('claude')}</div>
-      <p><button id="settings-save-provider" class="act primary" type="button">Save provider</button>
+      <div class="setup-callout"><strong>Models for individual job work</strong>
+      <p>Choose an optional model for each provider when asking about a specific job, tailoring a CV or preparing for an interview. Leave blank to use that provider's default.</p>
+      <div class="setup-grid">
+        <label class="setup-field">Codex model<input id="setup-chat-model-codex" type="text" value="${this.escape(models.codex || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:-]+"></label>
+        <label class="setup-field">Claude model<input id="setup-chat-model-claude" type="text" value="${this.escape(models.claude || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:-]+"></label>
+      </div></div>
+      <p><button id="settings-save-provider" class="act primary" type="button">Save AI settings</button>
       <button id="settings-refresh-providers" class="act" type="button">Refresh status</button></p>`;
     this.el('settings-save-provider').addEventListener('click', () => this.saveProviderSetting());
     this.el('settings-refresh-providers').addEventListener('click', () => this.refreshStatus({ keepOpen: true }));
@@ -529,13 +536,17 @@ const Setup = {
     const provider = this.selectedProvider();
     if (!provider) return this.setMessage('Choose an installed, signed-in and compatible provider.', 'error');
     try {
+      const models = {
+        codex: this.el('setup-chat-model-codex').value.trim() || null,
+        claude: this.el('setup-chat-model-claude').value.trim() || null,
+      };
       const result = await requestJson('/api/setup/config', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ai: { provider, model: null } }),
+        body: JSON.stringify({ ai: { provider, model: null, models } }),
       });
       this.status.config = result.config;
       window.Scout?.applyWorkspaceConfig?.(result.config);
-      this.setMessage('AI provider saved.', 'good');
+      this.setMessage('AI provider and job-work models saved.', 'good');
     } catch (error) { this.setMessage(error.message, 'error'); }
   },
 
@@ -856,7 +867,8 @@ const Setup = {
     const showSecond = this.view === 'section' && (this.showVerificationPass || secondRun);
     const scheduleRow = (id, name, mode, run, defaultTime) => `<div class="setup-schedule-row" data-schedule-row="${this.escape(id)}">
       <label class="setup-field">${this.escape(name[0].toUpperCase() + name.slice(1))} ${mode === 'primary' ? 'daily scan' : 'verification pass'} time<input data-schedule-time type="time" value="${this.escape(run?.time || defaultTime)}"></label>
-      <p><button class="act" data-schedule-enable="${this.escape(id)}" data-provider="${this.escape(name)}" data-mode="${this.escape(mode)}" type="button" ${healthy ? '' : 'disabled'}>${run?.configured ? 'Save time' : `Enable ${name} ${mode === 'primary' ? 'daily scan' : 'verification pass'}`}</button>${run?.configured ? ` <button class="act" data-schedule-disable="${this.escape(id)}" type="button">Disable</button>` : ''}</p>
+      <label class="setup-field">Scan model <span>Optional; used for this scan job. Blank uses the provider default</span><input data-schedule-model type="text" value="${this.escape(run?.model || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:-]+"></label>
+      <p><button class="act" data-schedule-enable="${this.escape(id)}" data-provider="${this.escape(name)}" data-mode="${this.escape(mode)}" type="button" ${healthy ? '' : 'disabled'}>${run?.configured ? 'Save scan settings' : `Enable ${name} ${mode === 'primary' ? 'daily scan' : 'verification pass'}`}</button>${run?.configured ? ` <button class="act" data-schedule-disable="${this.escape(id)}" type="button">Disable</button>` : ''}</p>
     </div>`;
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame" role="img" aria-label="Scout is ready to search"></span></div><div class="scout-bubble tail-left">
@@ -875,7 +887,7 @@ const Setup = {
     this.el('setup-add-verification')?.addEventListener('click', () => { this.showVerificationPass = true; this.renderFirstScan({ includeBackup }); });
     this.el('setup-body').querySelectorAll('[data-schedule-enable]').forEach((button) => button.addEventListener('click', () => {
       const row = button.closest('[data-schedule-row]');
-      this.saveSchedule({ id: button.dataset.scheduleEnable, provider: button.dataset.provider, mode: button.dataset.mode, time: row.querySelector('[data-schedule-time]').value });
+      this.saveSchedule({ id: button.dataset.scheduleEnable, provider: button.dataset.provider, mode: button.dataset.mode, time: row.querySelector('[data-schedule-time]').value, model: row.querySelector('[data-schedule-model]').value.trim() || null });
     }));
     this.el('setup-body').querySelectorAll('[data-schedule-disable]').forEach((button) => button.addEventListener('click', () => this.disableSchedule(button.dataset.scheduleDisable)));
     this.el('setup-body').querySelector('[data-report-date]')?.addEventListener('click', (event) => { event.preventDefault(); window.Scout?.openReport?.(event.currentTarget.dataset.reportDate); });
@@ -886,7 +898,9 @@ const Setup = {
   async runSupervisedScan() {
     this.setMessage('Starting the supervised scan…');
     try {
-      const result = await requestJson('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: this.status?.config?.ai?.provider }) });
+      const provider = this.status?.config?.ai?.provider;
+      const model = this.el('setup-body').querySelector(`[data-schedule-row="${provider}-primary"] [data-schedule-model]`)?.value.trim() || null;
+      const result = await requestJson('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider, model }) });
       this.operations.scan = result.operation;
       this.render();
       this.watchOperation('scan', result.operation.id);
@@ -1125,11 +1139,11 @@ const Setup = {
     finally { this.setBusy(false); }
   },
 
-  async saveSchedule({ id, provider, mode, time }) {
+  async saveSchedule({ id, provider, mode, time, model = null }) {
     this.setBusy(true);
     try {
       await requestJson('/api/schedule', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-        action: 'install', id, time: time || '07:30', provider, mode,
+        action: 'install', id, time: time || '07:30', provider, mode, model,
       }) });
       await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage(`${provider} ${mode === 'primary' ? 'daily scan' : 'verification pass'} saved.`, 'good');
     } catch (error) { this.setMessage(error.message, 'error'); }

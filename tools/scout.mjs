@@ -9,7 +9,7 @@ import { fetchAdzuna, resolveAdzunaCredentials } from '../ui/lib/adzuna.mjs';
 import { fetchConfiguredPortals } from '../ui/lib/ats.mjs';
 import { fetchHiringCafe } from '../ui/lib/hiringCafe.mjs';
 import { loadEnv } from '../ui/lib/env.mjs';
-import { providerStatus } from '../ui/lib/providers.mjs';
+import { assertSafeModel, providerStatus } from '../ui/lib/providers.mjs';
 import { setupReadiness } from '../ui/lib/setupReadiness.mjs';
 import { runStructuredTurn } from '../ui/lib/structuredTurn.mjs';
 import { compactCandidates, SCAN_ASSESSMENT_SCHEMA, validateAssessments, writeScanArtifacts } from '../ui/lib/scanPipeline.mjs';
@@ -129,10 +129,10 @@ export function assertScanReady(root, provider, { providerStatusFn = providerSta
   return readiness;
 }
 
-export async function runScan(root, provider, mode, { onProgress = () => {} } = {}) {
+export async function runScan(root, provider, mode, { onProgress = () => {}, model } = {}) {
   onProgress({ phase: 'Validating approved evidence', current: 1, total: 5 });
   assertScanReady(root, provider);
-  const result = await runScanWith(root, provider, mode, { onProgress });
+  const result = await runScanWith(root, provider, mode, { onProgress, model });
   await queueWorkspaceSync(root, `complete ${mode || 'primary'} scan`).catch(() => {});
   return result;
 }
@@ -195,7 +195,7 @@ function buildScanContext(paths, config, candidates) {
 export async function runScanWith(root, provider, mode, {
   providerStatusFn = providerStatus, collectSourcesFn = collectScanSources,
   runStructuredTurnFn = runStructuredTurn, acquireLockFn = acquireScanLock, releaseLockFn = releaseScanLock,
-  onProgress = () => {},
+  onProgress = () => {}, model,
 } = {}) {
   if (!['codex', 'claude'].includes(provider)) throw new Error('provider must be codex or claude');
   if (!['primary', 'second-pass'].includes(mode)) throw new Error('mode must be primary or second-pass');
@@ -203,6 +203,9 @@ export async function runScanWith(root, provider, mode, {
   if (!status.installed || !status.authenticated) throw new Error(`${provider} is not installed and authenticated; run scout doctor`);
   syncManagedInstructions(APP_ROOT, root);
   const config = loadWorkspaceConfig(root);
+  model = model === undefined
+    ? (config.ai?.provider === provider ? assertSafeModel(config.ai?.model) : null)
+    : assertSafeModel(model);
   const startedAt = new Date().toISOString();
   const lock = acquireLockFn(root, { agent: provider, mode });
   if (!lock.ok) {
@@ -239,7 +242,7 @@ export async function runScanWith(root, provider, mode, {
       ].join('\n\n');
       const turn = await runStructuredTurnFn({
         provider, status, schema: SCAN_ASSESSMENT_SCHEMA, prompt,
-        model: config.ai?.provider === provider ? config.ai?.model : null,
+        model,
         validate: (value) => validateAssessments(value, candidates), timeoutMs: 20 * 60 * 1000, maxInputTokens: 75_000,
       });
       assessmentResult = turn.value;
@@ -272,16 +275,19 @@ export async function runScanWith(root, provider, mode, {
   return result;
 }
 
-export function installSchedule(root, time, provider, { id = `${provider}-primary`, mode = 'primary' } = {}) {
+export function installSchedule(root, time, provider, { id = `${provider}-primary`, mode = 'primary', model = null } = {}) {
   if (!['codex', 'claude'].includes(provider)) throw new Error('schedule provider must be codex or claude');
   if (!['primary', 'second-pass'].includes(mode)) throw new Error('schedule mode must be primary or second-pass');
+  model = assertSafeModel(model);
   const config = loadWorkspaceConfig(root);
   removeLegacySchedule();
   const cli = fileURLToPath(import.meta.url);
   if (process.platform !== 'win32') {
-    const result = registerUnixSchedule({ id, platform: process.platform, command: process.execPath, args: [cli, 'scan', '--workspace', root, '--provider', provider, '--mode', mode], workingDirectory: APP_ROOT, time, timezone: config.timezone });
+    const args = [cli, 'scan', '--workspace', root, '--provider', provider, '--mode', mode];
+    if (model) args.push('--model', model);
+    const result = registerUnixSchedule({ id, platform: process.platform, command: process.execPath, args, workingDirectory: APP_ROOT, time, timezone: config.timezone });
     if (result.ok) {
-      config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, provider, mode }];
+      config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, provider, mode, model: model || null }];
       writeWorkspaceConfig(root, config);
     }
     return result;
@@ -289,10 +295,10 @@ export function installSchedule(root, time, provider, { id = `${provider}-primar
   const scriptFile = path.join(os.tmpdir(), `scout-task-${process.pid}.ps1`);
   fs.writeFileSync(scriptFile, schedulerRegistrationScript(), 'utf8');
   try {
-    const argumentsText = `"${cli}" scan --workspace "${root}" --provider ${provider} --mode ${mode}`;
+    const argumentsText = `"${cli}" scan --workspace "${root}" --provider ${provider} --mode ${mode}${model ? ` --model ${model}` : ''}`;
     const result = registerDailySchedule({ id, scriptFile, command: process.execPath, argumentsText, workingDirectory: APP_ROOT, time });
     if (result.ok) {
-      config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, provider, mode }];
+      config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, provider, mode, model: model || null }];
       writeWorkspaceConfig(root, config);
     }
     return result;
@@ -331,7 +337,9 @@ async function main() {
   if (command === 'scan') {
     const config = loadWorkspaceConfig(root);
     const provider = argValue('--provider', argv) || config.ai?.provider;
-    const result = await runScan(root, provider, argValue('--mode', argv) || 'primary');
+    const result = await runScan(root, provider, argValue('--mode', argv) || 'primary', {
+      model: argv.includes('--model') ? argValue('--model', argv) : undefined,
+    });
     print(result);
     if (!result.ok) process.exitCode = 1;
     return;
@@ -402,10 +410,11 @@ async function main() {
       return print(installSchedule(root, argValue('--time', argv) || '07:30', provider, {
         id: argValue('--id', argv) || `${provider}-${mode}`,
         mode,
+        model: argValue('--model', argv),
       }));
     }
   }
-  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude [--mode primary|second-pass]\n  schedule install|status|remove|run-now [--id ID] [--time HH:MM] [--provider PROVIDER] [--mode primary|second-pass]`);
+  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude [--mode primary|second-pass] [--model MODEL]\n  schedule install|status|remove|run-now [--id ID] [--time HH:MM] [--provider PROVIDER] [--mode primary|second-pass] [--model MODEL]`);
 }
 
 const isMain = isMainModule(import.meta.url);

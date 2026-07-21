@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import {
   CURRENT_WORKSPACE_SCHEMA, defaultWorkspaceRoot, mergeWorkspaceDefaults, migrateWorkspace, resolveWorkspaceRoot,
-  syncManagedInstructions, validateWorkspaceConfig, workspacePaths,
+  modelForProvider, syncManagedInstructions, validateWorkspaceConfig, workspacePaths,
 } from './workspace.mjs';
 
 const roots = [];
@@ -53,7 +53,7 @@ test('schema-one daily schedule migrates to a named primary job with a backup', 
   assert.ok(result.backup);
   assert.equal(config.schemaVersion, 2);
   assert.deepEqual(config.schedule.jobs, [{
-    id: 'claude-primary', enabled: true, time: '07:30', provider: 'claude', mode: 'primary',
+    id: 'claude-primary', enabled: true, time: '07:30', provider: 'claude', mode: 'primary', model: null,
   }]);
 });
 
@@ -66,6 +66,27 @@ test('workspace defaults are merged deeply for older schema-one files', () => {
   assert.deepEqual(merged.search.locations, []);
   assert.equal(merged.triage.actionScore, 70);
   assert.equal(merged.sources.adzuna.country, 'gb');
+});
+
+test('job-work models are selected independently for each provider with a legacy fallback', () => {
+  const config = mergeWorkspaceDefaults({
+    ai: { provider: 'codex', model: 'legacy-codex', models: { codex: 'gpt-job', claude: 'claude-job' } },
+  });
+  assert.equal(modelForProvider(config, 'codex'), 'gpt-job');
+  assert.equal(modelForProvider(config, 'claude'), 'claude-job');
+
+  const legacy = mergeWorkspaceDefaults({ ai: { provider: 'codex', model: 'legacy-codex' } });
+  assert.equal(modelForProvider(legacy, 'codex'), 'legacy-codex');
+  assert.equal(modelForProvider(legacy, 'claude'), null);
+});
+
+test('workspace rejects unsafe job-work and scheduled-scan model identifiers', () => {
+  const badJobModel = mergeWorkspaceDefaults({ ai: { models: { codex: 'model & command' } } });
+  assert.throws(() => validateWorkspaceConfig(badJobModel), /ai\.models\.codex is invalid/);
+  const badScanModel = mergeWorkspaceDefaults({ schedule: { jobs: [{
+    id: 'codex-primary', enabled: true, time: '07:30', provider: 'codex', mode: 'primary', model: 'model & command',
+  }] } });
+  assert.throws(() => validateWorkspaceConfig(badScanModel), /codex-primary model is invalid/);
 });
 
 test('managed workspace upgrades keep chat transcripts out of Git without replacing user ignores', () => {

@@ -10,7 +10,7 @@ import { runTurn } from './chatRun.mjs';
 import { buildPrefills, HANDOFF_SUMMARY_PROMPT, handoffOpening, slugOf } from './chatPrompts.mjs';
 import { runCvQuality } from './cvQuality.mjs';
 import { readUsage } from './usage.mjs';
-import { loadWorkspaceConfig } from './workspace.mjs';
+import { loadWorkspaceConfig, modelForProvider } from './workspace.mjs';
 import { providerStatus } from './providers.mjs';
 import { runStructuredTurn } from './structuredTurn.mjs';
 import {
@@ -90,7 +90,7 @@ export function registerChatRoutes({
     const config = loadWorkspaceConfig(repoRoot);
     const status = providerStatusFn(engine);
     if (!status.installed || !status.authenticated) throw new Error(`${engine} CLI is not installed and signed in`);
-    return { config, status, model: config.ai?.provider === engine ? config.ai?.model : null };
+    return { config, status, model: modelForProvider(config, engine) };
   }
 
   function engineBuild(engine, resumeId) {

@@ -32,13 +32,19 @@ On Windows, Codex runs under its documented `unelevated` sandbox. Scout never us
 
 ## Configure
 
-Set `ai.provider` to `codex` or `claude` in `workspace.json`. Leave `ai.model` as `null` unless you have a specific supported model requirement; provider defaults age better than hard-coded model names.
+Choose the primary provider in **Settings → AI providers**. The same screen accepts an optional model identifier for Codex and Claude independently. Those choices apply to individual job conversations, CV tailoring, fit assessment and interview preparation. Leave either field blank to use that provider's current default; provider defaults age better than hard-coded model names.
+
+Scan models are separate. Choose an optional model for each job under **Settings → Scans & schedule**. The supervised scan uses the model shown for the primary scan row, and an enabled daily job saves its own model. Leaving it blank uses the provider default rather than the job-conversation model.
+
+In `workspace.json`, the job-work choices are `ai.models.codex` and `ai.models.claude`; scheduled scan choices are stored on each `schedule.jobs[]` item. The singular `ai.model` field is retained only as a compatibility fallback for older workspaces.
 
 Run a primary scan with:
 
 ```powershell
 scout scan --provider codex --mode primary
 ```
+
+For a one-off explicit override, add `--model MODEL`. Omit it to use the configured compatibility/default behaviour.
 
 `second-pass` is a verification workflow, not an independent licence to add weak or unverified results.
 
@@ -48,7 +54,7 @@ scout scan --provider codex --mode primary
 - **Installed but unauthenticated:** run the provider's status command, complete its official login, then retry.
 - **Signed in but update required:** update the official CLI, verify `--output-schema` (Codex) or `--json-schema` (Claude) support, and refresh Scout.
 - **Works in terminal, not Scout:** restart Scout/Windows after `PATH` changes and check whether the CLI is installed for a different Windows user.
-- **Model rejected:** clear `ai.model` and use the provider default.
+- **Model rejected:** clear the relevant model field in **Settings → AI providers** or **Settings → Scans & schedule** and use the provider default.
 - **Corporate/network restriction:** test the provider directly and follow its proxy/firewall documentation; do not paste credentials into Scout logs or issues.
 
 Provider output may contain private prompt context. Keep workspace `logs/` private when requesting support.

@@ -14,7 +14,7 @@ import { scheduleStatus, scheduleSummary } from './lib/scheduler.mjs';
 import { loadPortals, portalSummary } from './lib/ats.mjs';
 import { JOB_CATEGORIES } from './lib/filters.mjs';
 import { buildSourcePayload, sourceUrlOf, SourceCache } from './lib/source.mjs';
-import { detectProviders } from './lib/providers.mjs';
+import { assertSafeModel, detectProviders } from './lib/providers.mjs';
 import { doctor } from './lib/doctor.mjs';
 import { extractCvText } from './lib/cvImport.mjs';
 import { setupReadiness } from './lib/setupReadiness.mjs';
@@ -867,7 +867,7 @@ routes['POST /api/setup/config'] = (req, res, body) => {
         hiringCafe: { ...current.sources?.hiringCafe, ...(b.sources?.hiringCafe || {}) },
       },
       commute: { ...current.commute, ...(b.commute || {}) },
-      ai: { ...current.ai, ...(b.ai || {}) },
+      ai: { ...current.ai, ...(b.ai || {}), models: { ...current.ai?.models, ...(b.ai?.models || {}) } },
       schedule: b.schedule?.jobs ? { jobs: b.schedule.jobs } : current.schedule,
       setup: { ...current.setup, ...(b.setup || {}) },
     };
@@ -1067,10 +1067,12 @@ routes['POST /api/scan'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   const config = loadWorkspaceConfig(WORKSPACE_ROOT);
   const provider = b.provider || config.ai?.provider;
+  let model;
+  try { model = assertSafeModel(b.model); } catch (e) { return replyJson(res, 400, { error: e.message }); }
   if (!['codex', 'claude'].includes(provider)) return replyJson(res, 400, { error: 'choose an authenticated AI provider first' });
   try {
     const operation = operations.start('scan', async (update) => {
-      const result = await runScan(WORKSPACE_ROOT, provider, 'primary', { onProgress: update });
+      const result = await runScan(WORKSPACE_ROOT, provider, 'primary', { onProgress: update, model });
       if (!result.ok) throw new Error(result.error || `scan ended with ${result.status}`);
       const scanHealth = readScanHealth();
       return {
@@ -1096,11 +1098,12 @@ routes['POST /api/schedule'] = (req, res, body) => {
     const mode = b.mode || 'primary';
     const provider = b.provider || config.ai?.provider;
     const id = b.id || `${provider}-${mode}`;
+    const model = assertSafeModel(b.model);
     let result;
     if (b.action === 'install') {
       const health = readScanHealth();
       if (!health.lastRunAt || !health.healthy) return replyJson(res, 409, { error: 'complete a healthy supervised scan before enabling daily scans' });
-      result = installSchedule(WORKSPACE_ROOT, b.time || '07:30', provider, { id, mode });
+      result = installSchedule(WORKSPACE_ROOT, b.time || '07:30', provider, { id, mode, model });
     } else if (b.action === 'remove') {
       result = removeSchedule({ id });
       if (result.ok) {
