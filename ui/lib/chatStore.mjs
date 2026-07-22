@@ -20,8 +20,8 @@ export function chatPath(repoRoot, id, purpose = 'job') {
   return path.join(repoRoot, 'data', 'chats', `${storageId(id, chatPurpose(purpose))}.json`);
 }
 
-export function emptyChat(engine) {
-  return { engine, cliSessionId: null, messages: [], filesTouched: [], handoffs: [] };
+export function emptyChat(engine, model = null) {
+  return { engine, model: model || null, cliSessionId: null, messages: [], filesTouched: [], handoffs: [] };
 }
 
 export function loadChat(repoRoot, id, purpose = 'job') {

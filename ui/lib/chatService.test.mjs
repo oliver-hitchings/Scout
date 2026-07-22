@@ -529,3 +529,66 @@ test('handoff save errors end SSE and release the running slot', { concurrency: 
     ENGINES.claude = oldClaude;
   }
 });
+
+test('a conversation keeps the model it was started with', async () => {
+  const root = tmpRoot();
+  let captured;
+  const routes = routeFixture(root, {
+    runTurnFn: (options) => {
+      captured = options;
+      return {
+        stop() {},
+        finished: Promise.resolve({ ok: true, text: 'Done.', updates: ['Done.'], sessionId: 'session-1', filesTouched: [], usage: {} }),
+      };
+    },
+  });
+  await callRoute(
+    routes['POST /api/chat/send'],
+    JSON.stringify({ id: ID, engine: 'claude', model: 'claude-opus-4-8', text: 'Hello' }),
+  );
+  assert.ok(captured.args.includes('claude-opus-4-8'), 'the chosen model reaches the CLI invocation');
+  assert.equal(loadChat(root, ID).model, 'claude-opus-4-8');
+
+  // The CLI session is already bound to that model, so a later request cannot
+  // switch it mid-conversation.
+  await callRoute(
+    routes['POST /api/chat/send'],
+    JSON.stringify({ id: ID, engine: 'claude', model: 'claude-haiku-4-5', text: 'Again' }),
+  );
+  assert.equal(loadChat(root, ID).model, 'claude-opus-4-8');
+  assert.equal(captured.args.includes('claude-haiku-4-5'), false);
+});
+
+test('an unsafe model identifier is rejected before any turn runs', async () => {
+  const root = tmpRoot();
+  let ran = false;
+  const routes = routeFixture(root, {
+    runTurnFn: () => { ran = true; return { stop() {}, finished: Promise.resolve({ ok: true, text: '', updates: [], sessionId: 's', filesTouched: [], usage: {} }) }; },
+  });
+  const response = await callRoute(
+    routes['POST /api/chat/send'],
+    JSON.stringify({ id: ID, engine: 'claude', model: 'model & command', text: 'Hello' }),
+  );
+  assert.equal(response.statusCode, 400);
+  assert.match(JSON.parse(response.text()).error, /model is invalid/);
+  assert.equal(ran, false);
+});
+
+test('the engine picker is answered without spawning a provider CLI', async () => {
+  const root = tmpRoot();
+  let providerChecks = 0;
+  const routes = routeFixture(root, {
+    providerStatusFn: (engine) => { providerChecks += 1; return { installed: true, authenticated: true, executable: engine, env: {} }; },
+  });
+  const response = new MockResponse();
+  routes['GET /api/engines'](new EventEmitter(), response, '', new URL('http://127.0.0.1/api/engines'));
+  await response.finished;
+  const body = JSON.parse(response.text());
+  assert.deepEqual(Object.keys(body.engines).sort(), ['claude', 'codex']);
+  for (const engine of ['claude', 'codex']) {
+    assert.ok(Array.isArray(body.engines[engine].models));
+    assert.ok('usage' in body.engines[engine]);
+    assert.ok('defaultModel' in body.engines[engine]);
+  }
+  assert.equal(providerChecks, 0, 'opening the picker must not probe provider CLIs');
+});

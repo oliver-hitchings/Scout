@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { claudeUsageFromLines, codexUsageFromLines, readUsage } from './usage.mjs';
+import { claudeUsageFromLines, codexUsageFromLines, readUsage, windowLabel } from './usage.mjs';
 
 const NOW = Date.parse('2026-07-10T12:00:00Z');
 const line = (hoursAgo, input, output) => JSON.stringify({
@@ -65,4 +65,63 @@ test('readUsage reads real files under both trees', () => {
   const u = readUsage(home, NOW);
   assert.equal(u.claude.fiveHourTokens, 300);
   assert.equal(u.codex.primary.usedPercent, 55);
+});
+
+const AT = Date.parse('2026-07-22T12:00:00.000Z');
+const claudeLine = (model, minutesAgo, tokens) => JSON.stringify({
+  timestamp: new Date(AT - minutesAgo * 60000).toISOString(),
+  message: { model, usage: { input_tokens: tokens, output_tokens: 0, cache_creation_input_tokens: 0 } },
+});
+
+test('Claude usage is split per model for spend, keeping account totals intact', () => {
+  const usage = claudeUsageFromLines([
+    claudeLine('claude-opus-4-8', 30, 1000),
+    claudeLine('claude-opus-4-8', 60 * 24, 2000),
+    claudeLine('claude-sonnet-5', 60, 500),
+  ], AT);
+  assert.equal(usage.fiveHourTokens, 1500);
+  assert.equal(usage.weekTokens, 3500);
+  // Heaviest weekly spend first.
+  assert.deepEqual(usage.byModel, [
+    { model: 'claude-opus-4-8', fiveHourTokens: 1000, weekTokens: 3000 },
+    { model: 'claude-sonnet-5', fiveHourTokens: 500, weekTokens: 500 },
+  ]);
+});
+
+test('Claude turns without a recorded model still count towards the account total', () => {
+  const line = JSON.stringify({
+    timestamp: new Date(AT - 60000).toISOString(),
+    message: { usage: { input_tokens: 700, output_tokens: 0 } },
+  });
+  const usage = claudeUsageFromLines([line], AT);
+  assert.equal(usage.fiveHourTokens, 700);
+  assert.deepEqual(usage.byModel, []);
+});
+
+test('each limit window is labelled from its own length', () => {
+  assert.equal(windowLabel(300), '5-hour');
+  assert.equal(windowLabel(10080), 'weekly');
+  assert.equal(windowLabel(1440), 'daily');
+  assert.equal(windowLabel(null), 'current window');
+  assert.equal(windowLabel(0), 'current window');
+});
+
+test('a weekly primary window is not reported as a five-hour window', () => {
+  const line = JSON.stringify({
+    rate_limits: {
+      primary: { used_percent: 100, window_minutes: 10080, resets_in_seconds: 3600 },
+      secondary: null,
+      plan_type: 'plus',
+    },
+  });
+  const usage = codexUsageFromLines([line], AT);
+  assert.equal(usage.primary.label, 'weekly');
+  assert.equal(usage.primary.usedPercent, 100);
+  assert.equal(usage.primary.resetsAt, new Date(AT + 3600 * 1000).toISOString());
+  assert.equal(usage.planType, 'plus');
+  assert.equal(usage.windows.length, 1);
+});
+
+test('Codex usage stays unknown when no rate limits were recorded', () => {
+  assert.equal(codexUsageFromLines(['{"not":"rate limits"}'], AT).unknown, true);
 });
