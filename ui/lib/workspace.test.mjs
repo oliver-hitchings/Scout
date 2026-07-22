@@ -52,8 +52,9 @@ test('schema-one daily schedule migrates to a named primary job with a backup', 
   assert.equal(result.from, 1);
   assert.ok(result.backup);
   assert.equal(config.schemaVersion, 2);
+  // A schedule written before per-day scheduling keeps running every day.
   assert.deepEqual(config.schedule.jobs, [{
-    id: 'claude-primary', enabled: true, time: '07:30', provider: 'claude', mode: 'primary', model: null,
+    id: 'claude-primary', enabled: true, time: '07:30', days: [0, 1, 2, 3, 4, 5, 6], provider: 'claude', mode: 'primary', model: null,
   }]);
 });
 

@@ -5,6 +5,34 @@ const STEPS = ['Welcome', 'AI provider', 'Your search', 'Adzuna', 'Import CV', '
 const SETUP_DEFERRED_KEY = 'scout.setup.legacySkipped.v1';
 const SUPPORTED_CV = /\.(pdf|docx|md|markdown|txt)$/i;
 const DISMISSIBLE_VIEWS = new Set(['hub', 'section', 'retune', 'backup-details']);
+// Sunday = 0, matching ui/lib/scheduler.mjs. Kept as a literal here because
+// setup.js stays self-contained so a browser attached to a pre-update server
+// can still boot.
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
+// Alternating splits the week so the two providers never scan on the same day.
+export const ALTERNATING_DAYS = Object.freeze({ primary: [0, 1, 3, 5], 'second-pass': [2, 4, 6] });
+const DAY_PRESETS = [
+  ['every', 'Every day'],
+  ['alternating', 'Alternating with the other provider'],
+  ['weekdays', 'Weekdays only'],
+  ['custom', 'Custom days'],
+];
+
+export function presetDays(preset, mode = 'primary') {
+  if (preset === 'alternating') return [...(ALTERNATING_DAYS[mode] || ALTERNATING_DAYS.primary)];
+  if (preset === 'weekdays') return [1, 2, 3, 4, 5];
+  return [...EVERY_DAY];
+}
+
+export function matchingPreset(days, mode = 'primary') {
+  const value = [...new Set(days || [])].sort((a, b) => a - b).join(',');
+  if (!value || value === EVERY_DAY.join(',')) return 'every';
+  if (value === presetDays('alternating', mode).join(',')) return 'alternating';
+  if (value === presetDays('weekdays').join(',')) return 'weekdays';
+  return 'custom';
+}
+
 const SETTINGS_SECTIONS = [
   ['search', 'Search & profile', 'Roles, locations, compensation, commute and exclusions'],
   ['providers', 'AI providers', 'Choose the signed-in provider Scout uses'],
@@ -940,11 +968,18 @@ const Setup = {
       && this.status?.providers?.[name]?.capabilities?.structuredOutput !== false);
     const secondRun = (schedule.runs || []).find((run) => run.mode === 'second-pass');
     const showSecond = this.view === 'section' && (this.showVerificationPass || secondRun);
-    const scheduleRow = (id, name, mode, run, defaultTime) => `<div class="setup-schedule-row" data-schedule-row="${this.escape(id)}">
-      <label class="setup-field">${this.escape(name[0].toUpperCase() + name.slice(1))} ${mode === 'primary' ? 'daily scan' : 'verification pass'} time<input data-schedule-time type="time" value="${this.escape(run?.time || defaultTime)}"></label>
+    const scheduleRow = (id, name, mode, run, defaultTime) => {
+      const days = run?.days?.length ? run.days : EVERY_DAY;
+      const preset = matchingPreset(days, mode);
+      return `<div class="setup-schedule-row" data-schedule-row="${this.escape(id)}" data-schedule-mode="${this.escape(mode)}">
+      <label class="setup-field">${this.escape(name[0].toUpperCase() + name.slice(1))} ${mode === 'primary' ? 'scan' : 'verification pass'} time<input data-schedule-time type="time" value="${this.escape(run?.time || defaultTime)}"></label>
+      <label class="setup-field">Days<select data-schedule-preset>${DAY_PRESETS.map(([value, label]) => `<option value="${value}" ${preset === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <fieldset class="setup-schedule-days" data-schedule-days ${preset === 'custom' ? '' : 'hidden'}><legend>Days this job runs</legend>${DAY_LABELS.map((label, day) => `<label><input type="checkbox" data-schedule-day="${day}" ${days.includes(day) ? 'checked' : ''}> ${label}</label>`).join('')}</fieldset>
       <label class="setup-field">Scan model <span>Optional; used for this scan job. Blank uses the provider default</span><input data-schedule-model type="text" value="${this.escape(run?.model || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:\\-]+"></label>
-      <p><button class="act" data-schedule-enable="${this.escape(id)}" data-provider="${this.escape(name)}" data-mode="${this.escape(mode)}" type="button" ${healthy ? '' : 'disabled'}>${run?.configured ? 'Save scan settings' : `Enable ${name} ${mode === 'primary' ? 'daily scan' : 'verification pass'}`}</button>${run?.configured ? ` <button class="act" data-schedule-disable="${this.escape(id)}" type="button">Disable</button>` : ''}</p>
+      <p><button class="act" data-schedule-enable="${this.escape(id)}" data-provider="${this.escape(name)}" data-mode="${this.escape(mode)}" type="button" ${healthy ? '' : 'disabled'}>${run?.configured ? 'Save scan settings' : `Enable ${name} ${mode === 'primary' ? 'scan' : 'verification pass'}`}</button>${run?.configured ? ` <button class="act" data-schedule-disable="${this.escape(id)}" type="button">Disable</button>` : ''}</p>
+      ${run?.configured ? `<p class="meta">Currently runs: ${this.escape(run.daysLabel || 'Every day')} at ${this.escape(run.time || defaultTime)}.</p>` : ''}
     </div>`;
+    };
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame" role="img" aria-label="Scout is ready to search"></span></div><div class="scout-bubble tail-left">
       <h2>${healthy ? 'Your first scan is ready to review' : 'Run your first search with me'}</h2>
@@ -960,9 +995,29 @@ const Setup = {
       ${includeBackup ? this.backupPanelHtml() : ''}`;
     this.el('setup-run-scan').addEventListener('click', () => this.runSupervisedScan());
     this.el('setup-add-verification')?.addEventListener('click', () => { this.showVerificationPass = true; this.renderFirstScan({ includeBackup }); });
+    // A preset ticks the day boxes it stands for; editing the boxes directly
+    // switches the preset to Custom so the two controls never disagree.
+    this.el('setup-body').querySelectorAll('[data-schedule-preset]').forEach((select) => select.addEventListener('change', () => {
+      const row = select.closest('[data-schedule-row]');
+      const group = row.querySelector('[data-schedule-days]');
+      if (select.value === 'custom') { group.hidden = false; return; }
+      const days = presetDays(select.value, row.dataset.scheduleMode);
+      row.querySelectorAll('[data-schedule-day]').forEach((box) => { box.checked = days.includes(Number(box.dataset.scheduleDay)); });
+      group.hidden = true;
+    }));
+    this.el('setup-body').querySelectorAll('[data-schedule-day]').forEach((box) => box.addEventListener('change', () => {
+      const row = box.closest('[data-schedule-row]');
+      row.querySelector('[data-schedule-preset]').value = matchingPreset(this.selectedScheduleDays(row), row.dataset.scheduleMode);
+    }));
     this.el('setup-body').querySelectorAll('[data-schedule-enable]').forEach((button) => button.addEventListener('click', () => {
       const row = button.closest('[data-schedule-row]');
-      this.saveSchedule({ id: button.dataset.scheduleEnable, provider: button.dataset.provider, mode: button.dataset.mode, time: row.querySelector('[data-schedule-time]').value, model: row.querySelector('[data-schedule-model]').value.trim() || null });
+      const days = this.selectedScheduleDays(row);
+      if (!days.length) return this.setMessage('Choose at least one day for this scan job.', 'error');
+      this.saveSchedule({
+        id: button.dataset.scheduleEnable, provider: button.dataset.provider, mode: button.dataset.mode,
+        time: row.querySelector('[data-schedule-time]').value, days,
+        model: row.querySelector('[data-schedule-model]').value.trim() || null,
+      });
     }));
     this.el('setup-body').querySelectorAll('[data-schedule-disable]').forEach((button) => button.addEventListener('click', () => this.disableSchedule(button.dataset.scheduleDisable)));
     this.el('setup-body').querySelector('[data-report-date]')?.addEventListener('click', (event) => { event.preventDefault(); window.Scout?.openReport?.(event.currentTarget.dataset.reportDate); });
@@ -1214,13 +1269,21 @@ const Setup = {
     finally { this.setBusy(false); }
   },
 
-  async saveSchedule({ id, provider, mode, time, model = null }) {
+  selectedScheduleDays(row) {
+    return [...row.querySelectorAll('[data-schedule-day]')]
+      .filter((box) => box.checked)
+      .map((box) => Number(box.dataset.scheduleDay));
+  },
+
+  async saveSchedule({ id, provider, mode, time, model = null, days = null }) {
     this.setBusy(true);
     try {
       await requestJson('/api/schedule', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-        action: 'install', id, time: time || '07:30', provider, mode, model,
+        action: 'install', id, time: time || '07:30', provider, mode, model, days,
       }) });
-      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render(); this.setMessage(`${provider} ${mode === 'primary' ? 'daily scan' : 'verification pass'} saved.`, 'good');
+      await this.refreshStatus({ keepOpen: true }); this.step = STEPS.length - 1; this.render();
+      const run = (this.status?.schedule?.runs || []).find((item) => item.id === id);
+      this.setMessage(`${provider} ${mode === 'primary' ? 'scan' : 'verification pass'} saved: ${run?.daysLabel || 'Every day'} at ${run?.time || time}.`, 'good');
     } catch (error) { this.setMessage(error.message, 'error'); }
     finally { this.setBusy(false); }
   },

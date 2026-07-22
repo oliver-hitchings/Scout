@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 import {
+  ALTERNATING_DAYS,
   buildConfig,
   bytesToBase64,
   formatLocalDateTime,
+  matchingPreset,
+  presetDays,
   handoffAction,
   operationElapsed,
   operationRemaining,
@@ -125,4 +128,23 @@ test('first-run setup offers optional local create, private backup guidance, and
   assert.match(source, />Retry</);
   assert.match(source, /api\/sync\/recovery-key\/confirm/);
   assert.doesNotMatch(source, /setup-next'\)\.onclick/);
+});
+
+test('the alternating preset gives each provider its own days', () => {
+  const primary = presetDays('alternating', 'primary');
+  const second = presetDays('alternating', 'second-pass');
+  assert.deepEqual(primary, ALTERNATING_DAYS.primary);
+  assert.deepEqual(second, ALTERNATING_DAYS['second-pass']);
+  assert.equal(primary.some((day) => second.includes(day)), false);
+  assert.deepEqual([...primary, ...second].sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6]);
+});
+
+test('day presets round-trip to the selection they describe', () => {
+  for (const mode of ['primary', 'second-pass']) {
+    for (const preset of ['every', 'alternating', 'weekdays']) {
+      assert.equal(matchingPreset(presetDays(preset, mode), mode), preset);
+    }
+  }
+  assert.equal(matchingPreset([1, 4], 'primary'), 'custom');
+  assert.equal(matchingPreset([], 'primary'), 'every');
 });

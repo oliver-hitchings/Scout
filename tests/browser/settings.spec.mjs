@@ -149,7 +149,7 @@ test('scan settings offer only the selected provider until verification is reque
   await page.getByRole('button', { name: 'Settings' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Scans & schedule' }).click();
-  await expect(dialog.getByText('Codex daily scan time')).toBeVisible();
+  await expect(dialog.getByText('Codex scan time')).toBeVisible();
   await expect(dialog.getByText('Claude verification pass time')).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Add verification pass' }).click();
   await expect(dialog.getByText('Claude verification pass time')).toBeVisible();
@@ -189,10 +189,13 @@ test('AI and scan settings save independent provider model choices', async ({ pa
   await dialog.getByRole('button', { name: 'Back to settings' }).click();
   await dialog.getByRole('button', { name: 'Scans & schedule' }).click();
   await dialog.locator('[data-schedule-row="codex-primary"] [data-schedule-model]').fill('gpt-scan');
-  await dialog.getByRole('button', { name: 'Enable codex daily scan' }).click();
+  // Alternating splits the week so the two providers never scan on the same day.
+  await dialog.locator('[data-schedule-row="codex-primary"] [data-schedule-preset]').selectOption('alternating');
+  await dialog.getByRole('button', { name: 'Enable codex scan' }).click();
   await expect.poll(() => scheduleRequest).toBeTruthy();
   expect(scheduleRequest).toMatchObject({
     action: 'install', id: 'codex-primary', provider: 'codex', mode: 'primary', model: 'gpt-scan',
+    days: [0, 1, 3, 5],
   });
 });
 
@@ -258,7 +261,7 @@ test('proposal and scan operations show reviewable progress and strict zero-keep
   await expect(dialog.getByText(/19 mandatory gates/)).toBeVisible();
   await expect(dialog.getByText(/21 assessment discards/)).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Finish setup — scan continues' })).toBeVisible();
-  await expect(dialog.getByText('Codex daily scan time')).toBeVisible();
+  await expect(dialog.getByText('Codex scan time')).toBeVisible();
   await expect(dialog.getByText('Claude verification pass time')).toHaveCount(0);
 });
 

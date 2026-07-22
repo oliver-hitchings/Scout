@@ -12,5 +12,5 @@
   },
   "commute": { "origin": "", "mode": "either", "maxMinutes": 180, "includeUnknown": true },
   "ai": { "provider": null, "model": null, "models": { "codex": null, "claude": null } },
-  "schedule": { "enabled": false, "time": "07:30", "provider": null }
+  "schedule": { "jobs": [] }
 }
