@@ -31,6 +31,10 @@ import {
   prepareGithubDeployKey, queueWorkspaceSync, restoreWorkspaceFromGithub, rotateWorkspaceRecoveryPassphrase, syncStatus,
 } from './lib/workspaceSync.mjs';
 import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
+import {
+  acquireTrackerMutationLock, mutateTrackerSnapshot, readTrackerSnapshot,
+  releaseTrackerMutationLock, TrackerRevisionConflictError,
+} from './lib/trackerPersistence.mjs';
 import { loadEnv, saveEnv } from './lib/env.mjs';
 import {
   loadWorkspaceConfig, migrateWorkspace, resolveWorkspaceRoot, seedWorkspace, syncManagedInstructions,
@@ -436,9 +440,10 @@ async function handleRead(req, res, url) {
       updated: today(), opportunities: [], triage: { action: [], unlock: [], hold: [] },
       pipeline: {}, scanHealth: { healthy: false, lastRunAt: null },
       schedule: { enabled: false, configured: false }, categories: JOB_CATEGORIES,
-      workspaceConfig: null, bootstrap: true,
+      workspaceConfig: null, bootstrap: true, trackerRevision: null,
     });
-    const data = readTracker();
+    const snapshot = readTrackerSnapshot(TRACKER);
+    const data = snapshot.data;
     const todayValue = today();
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
     return sendJson(res, 200, {
@@ -449,6 +454,7 @@ async function handleRead(req, res, url) {
       schedule: readScheduleSummary(config),
       categories: readCategories(),
       workspaceConfig: config,
+      trackerRevision: snapshot.revision,
     });
   }
   if (req.method === 'GET' && url.pathname === '/api/pipeline') {
@@ -564,7 +570,11 @@ export function createServer() {
           replyJson(res, 413, { error: 'request body too large' });
         }
       });
-      req.on('end', () => { if (!tooLarge) routes[routeKey](req, res, body, url); });
+      req.on('end', () => {
+        if (tooLarge) return;
+        Promise.resolve(routes[routeKey](req, res, body, url))
+          .catch((error) => { if (!res.writableEnded) replyJson(res, 500, { error: error.message }); });
+      });
       return;
     }
     handleRead(req, res, url)
@@ -691,80 +701,94 @@ routes['POST /api/sync/passphrase'] = async (req, res, body) => {
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 
-function applyTrackerMutation(res, mutate, commitMessage) {
-  let data;
-  try { data = readTracker(); } catch (e) { return replyJson(res, 500, { error: `tracker unreadable: ${e.message}` }); }
-  let next;
-  try { next = mutate(data); } catch (e) { return replyJson(res, 400, { error: e.message }); }
-  try { fs.writeFileSync(TRACKER_FILE, serializeTracker(next)); }
-  catch (e) { return replyJson(res, 500, { error: `write failed: ${e.message}` }); }
-  void queueCheckpoint(commitMessage);
-  return replyJson(res, 200, { ok: true, savedLocally: true, syncQueued: true });
+async function applyTrackerMutation(res, mutate, commitMessage, expectedRevision) {
+  const lock = await acquireTrackerMutationLock(WORKSPACE_ROOT);
+  if (!lock) return replyJson(res, 409, { conflict: true, error: 'A scan is updating the tracker. Scout did not overwrite it; try again shortly.' });
+  try {
+    const result = mutateTrackerSnapshot(TRACKER_FILE, mutate, serializeTracker, { expectedRevision });
+    const reason = typeof commitMessage === 'function' ? commitMessage(result.data) : commitMessage;
+    void queueCheckpoint(reason);
+    return replyJson(res, 200, {
+      ok: true, savedLocally: true, syncQueued: true, trackerRevision: result.revision,
+    });
+  } catch (e) {
+    if (e instanceof TrackerRevisionConflictError) {
+      return replyJson(res, 409, {
+        conflict: true,
+        currentRevision: e.currentRevision,
+        error: 'The tracker changed while this page was open. Scout preserved the newer data; refresh and retry.',
+      });
+    }
+    if (e instanceof SyntaxError) return replyJson(res, 500, { error: `tracker unreadable: ${e.message}` });
+    return replyJson(res, 400, { error: e.message });
+  } finally {
+    releaseTrackerMutationLock(WORKSPACE_ROOT, lock.token);
+  }
 }
 
 function company(data, id) { try { return findEntry(data, id).company; } catch { return id; } }
 
-routes['POST /api/status'] = (req, res, body) => {
+routes['POST /api/status'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => setStatus(d, b.id, b.status),
-    `ui: status ${b.status} - ${company(readTracker(), b.id)}`);
+  await applyTrackerMutation(res, (d) => setStatus(d, b.id, b.status),
+    (d) => `ui: status ${b.status} - ${company(d, b.id)}`, b.trackerRevision);
 };
 
-routes['POST /api/note'] = (req, res, body) => {
+routes['POST /api/note'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   if (!b.text || !b.text.trim()) return replyJson(res, 400, { error: 'note text required' });
-  applyTrackerMutation(res, (d) => addNote(d, b.id, b.text.trim(), today()),
-    `ui: note - ${company(readTracker(), b.id)}`);
+  await applyTrackerMutation(res, (d) => addNote(d, b.id, b.text.trim(), today()),
+    (d) => `ui: note - ${company(d, b.id)}`, b.trackerRevision);
 };
 
-routes['POST /api/log'] = (req, res, body) => {
+routes['POST /api/log'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => logEvent(d, b.id, b.event, b.note || '', today()),
-    `ui: log ${b.event} - ${company(readTracker(), b.id)}`);
+  await applyTrackerMutation(res, (d) => logEvent(d, b.id, b.event, b.note || '', today()),
+    (d) => `ui: log ${b.event} - ${company(d, b.id)}`, b.trackerRevision);
 };
 
-routes['POST /api/contact'] = (req, res, body) => {
+routes['POST /api/contact'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   const mutate = typeof b.index === 'number'
     ? (d) => editContact(d, b.id, b.index, b.contact || {})
     : (d) => addContact(d, b.id, b.contact || {});
-  applyTrackerMutation(res, mutate, `ui: contact - ${company(readTracker(), b.id)}`);
+  await applyTrackerMutation(res, mutate, (d) => `ui: contact - ${company(d, b.id)}`, b.trackerRevision);
 };
 
-routes['POST /api/category'] = (req, res, body) => {
+routes['POST /api/category'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => setCategory(d, b.id, b.category),
-    `ui: category ${b.category} - ${company(readTracker(), b.id)}`);
+  await applyTrackerMutation(res, (d) => setCategory(d, b.id, b.category),
+    (d) => `ui: category ${b.category} - ${company(d, b.id)}`, b.trackerRevision);
 };
 
-routes['POST /api/commute'] = (req, res, body) => {
+routes['POST /api/commute'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => setCommute(d, b.id, b.commute || {}, today()),
-    `ui: commute - ${company(readTracker(), b.id)}`);
+  await applyTrackerMutation(res, (d) => setCommute(d, b.id, b.commute || {}, today()),
+    (d) => `ui: commute - ${company(d, b.id)}`, b.trackerRevision);
 };
 
-routes['POST /api/applied'] = (req, res, body) => {
+routes['POST /api/applied'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => markApplied(d, b.id, today(), b.note || ''),
-    `ui: applied - ${company(readTracker(), b.id)}`);
+  await applyTrackerMutation(res, (d) => markApplied(d, b.id, today(), b.note || ''),
+    (d) => `ui: applied - ${company(d, b.id)}`, b.trackerRevision);
 };
 
-routes['POST /api/rejected'] = (req, res, body) => {
+routes['POST /api/rejected'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => markRejected(d, b.id, today(), b.note || ''),
-    `ui: rejected - ${company(readTracker(), b.id)}`);
+  await applyTrackerMutation(res, (d) => markRejected(d, b.id, today(), b.note || ''),
+    (d) => `ui: rejected - ${company(d, b.id)}`, b.trackerRevision);
 };
 
-routes['POST /api/stage'] = (req, res, body) => {
+routes['POST /api/stage'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => addApplicationStage(d, b.id, b.stage || {}, today()),
-    `ui: stage - ${company(readTracker(), b.id)}`);
+  await applyTrackerMutation(res, (d) => addApplicationStage(d, b.id, b.stage || {}, today()),
+    (d) => `ui: stage - ${company(d, b.id)}`, b.trackerRevision);
 };
 
-routes['POST /api/stage/complete'] = (req, res, body) => {
+routes['POST /api/stage/complete'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  applyTrackerMutation(res, (d) => completeApplicationStage(d, b.id, b.index, today()),
-    `ui: complete stage - ${company(readTracker(), b.id)}`);
+  await applyTrackerMutation(res, (d) => completeApplicationStage(d, b.id, b.index, today()),
+    (d) => `ui: complete stage - ${company(d, b.id)}`, b.trackerRevision);
 };
 
 routes['POST /api/cv/save'] = (req, res, body) => {

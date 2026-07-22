@@ -50,6 +50,10 @@ This is not automatically a failed scan. Scout shows the number reviewed, number
 
 Scout refuses to start a scan when the approved profile, calibration or master CV is incomplete. If Setup reports an empty activated master CV and offers the validated recovery control, use it there; Scout backs up the current file and restores only the hash-checked reviewed staging copy. If the control is unavailable, preserve the workspace and inspect the reported mismatch.
 
+## A tracker change conflicts with a scan
+
+Scout briefly waits when a scan is finishing, then refreshes and retries a stale tracker change once. If the scan is still running, Scout reports that it did not overwrite the tracker. Wait for the scan to finish and repeat the change; do not edit `data/opportunities.json` or remove `.scout-scan.lock` while a live scan is active.
+
 ## Restore fails
 
 Restore requires an empty target folder, the private repository HTTPS URL, and either the passphrase or emergency recovery key. Scout rejects malformed/tampered recovery data, symlinks, unsupported workspace schemas and workspaces that fail `scout doctor`. Codex/Claude authentication is not restored; sign in to the provider separately. Startup and scheduled scans require explicit confirmation on the new computer.

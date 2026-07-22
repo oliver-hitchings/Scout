@@ -58,6 +58,34 @@ test('first service worker installation does not pretend Scout has updated', asy
   await expect(page.locator('#ui-update-banner')).toBeHidden();
 });
 
+test('a stale tracker mutation refreshes its revision and retries exactly once', async ({ page }) => {
+  let revision = 'revision-before-scan';
+  const revisionsSent = [];
+  await page.route('**/api/opportunities', async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    await route.fulfill({ response, json: { ...data, trackerRevision: revision } });
+  });
+  await page.route('**/api/applied', async (route) => {
+    revisionsSent.push(route.request().postDataJSON().trackerRevision);
+    if (revisionsSent.length === 1) {
+      revision = 'revision-after-scan';
+      await route.fulfill({
+        status: 409, contentType: 'application/json',
+        body: JSON.stringify({ conflict: true, error: 'The tracker changed' }),
+      });
+      return;
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+
+  await page.reload();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect.poll(() => page.evaluate(() => window.Scout.state.data?.trackerRevision)).toBe('revision-before-scan');
+  await page.evaluate(() => window.Scout.post('/api/applied', { id: 'new-systems-product-2026-07', note: '' }));
+  expect(revisionsSent).toEqual(['revision-before-scan', 'revision-after-scan']);
+});
+
 test('backup status opens dedicated details and advanced backup settings', async ({ page }) => {
   const sync = page.locator('#sync-status');
   await sync.click();

@@ -12,6 +12,7 @@ process.env.SCOUT_WORKSPACE = testWorkspace;
 process.env.SCOUT_DEVICE_SETTINGS = path.join(testWorkspace, 'device-settings.json');
 const { APP_ROOT, APP_VERSION, UI_BUILD_ID, WORKSPACE_ROOT, createServer, providerDetection, restartControl, shutdownControl } = await import('./server.mjs');
 const { seedWorkspace } = await import('./lib/workspace.mjs');
+const { acquireScanLock, releaseScanLock } = await import('../tools/scan-lock.mjs');
 
 let server;
 let port;
@@ -406,4 +407,60 @@ test('a slow setup provider probe does not delay unrelated API requests', { conc
   } finally {
     providerDetection.detect = original;
   }
+});
+
+test('a UI mutation racing scan completion preserves every tracked user field', { concurrency: false }, async () => {
+  seedWorkspace(APP_ROOT, testWorkspace);
+  const trackerFile = path.join(testWorkspace, 'data', 'opportunities.json');
+  const id = 'race-example-2026-07';
+  const original = {
+    updated: '2026-07-22',
+    opportunities: [{
+      id, company: 'Race Example', role: 'Engineer', status: 'interviewing', score: 70,
+      category: 'startup', notes: '[2026-07-20] Existing note',
+      contacts: [{ name: 'Alex', role: 'Hiring manager', linkedin: '', foundVia: 'event' }],
+      commute: { originPostcode: 'SW1A 1AA', carMinutes: 35, publicTransportMinutes: 42 },
+      application: { appliedAt: '2026-07-19', stages: [{ name: 'Screen', completed: true, completedAt: '2026-07-21' }] },
+      log: [],
+    }],
+  };
+  fs.writeFileSync(trackerFile, `${JSON.stringify(original, null, 2)}\n`);
+  const before = JSON.parse((await request({ path: '/api/opportunities' })).text);
+  const scanLock = acquireScanLock(testWorkspace, { agent: 'test-scan', mode: 'primary' });
+  assert.equal(scanLock.ok, true);
+
+  const mutation = request({
+    method: 'POST', path: '/api/note',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, text: 'Arrived during scan completion', trackerRevision: before.trackerRevision }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const scanned = structuredClone(original);
+  scanned.updated = '2026-07-23';
+  scanned.opportunities[0].score = 84;
+  const temporary = `${trackerFile}.scan-test`;
+  fs.writeFileSync(temporary, `${JSON.stringify(scanned, null, 2)}\n`);
+  fs.renameSync(temporary, trackerFile);
+  releaseScanLock(testWorkspace, scanLock.lock.token);
+
+  const conflict = await mutation;
+  assert.equal(conflict.status, 409);
+  assert.equal(JSON.parse(conflict.text).conflict, true);
+  const refreshed = JSON.parse((await request({ path: '/api/opportunities' })).text);
+  const retry = await request({
+    method: 'POST', path: '/api/note',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, text: 'Arrived during scan completion', trackerRevision: refreshed.trackerRevision }),
+  });
+  assert.equal(retry.status, 200);
+
+  const saved = JSON.parse(fs.readFileSync(trackerFile, 'utf8')).opportunities[0];
+  assert.equal(saved.score, 84);
+  assert.equal(saved.status, original.opportunities[0].status);
+  assert.equal(saved.category, original.opportunities[0].category);
+  assert.deepEqual(saved.contacts, original.opportunities[0].contacts);
+  assert.deepEqual(saved.commute, original.opportunities[0].commute);
+  assert.deepEqual(saved.application, original.opportunities[0].application);
+  assert.match(saved.notes, /Existing note/);
+  assert.match(saved.notes, /Arrived during scan completion/);
 });
