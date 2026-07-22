@@ -4,20 +4,39 @@ Scout can register multiple named, per-user scheduler jobs. Scheduling is option
 
 First-run setup offers only the provider selected for the workspace, for example a Codex primary scan. A second compatible provider appears only after choosing **Add verification pass** in **Settings → Scans & schedule**. It is never enabled implicitly.
 
+## Choosing which days a job runs
+
+Each job runs on a set of weekdays. **Days** offers four choices:
+
+- **Every day** — the default, and what existing schedules keep after an upgrade.
+- **Alternating with the other provider** — the primary job runs Sunday, Monday, Wednesday and Friday; the verification pass runs Tuesday, Thursday and Saturday. The two providers never scan on the same day, which halves daily provider usage and gives each scan a fresh day of postings to find.
+- **Weekdays only** — Monday to Friday.
+- **Custom days** — tick individual days.
+
+A day set of Sunday to Saturday is stored as `days` on each schedule job, with Sunday as `0`. Windows uses a weekly Task Scheduler trigger, Linux prefixes `OnCalendar` with the day names, and macOS lists one `StartCalendarInterval` entry per weekday. A job with every day selected keeps its simpler daily trigger.
+
+Scout deliberately uses weekdays rather than an "every N days" interval: only a weekly pattern is expressed natively and identically by all three schedulers, and two jobs meant to alternate stay aligned after a missed or catch-up run.
+
 An optional two-provider VPS schedule is:
 
 - `claude-primary` at 07:30 in `primary` mode;
 - `codex-second-pass` at 08:30 in `second-pass` mode.
 
+Run both every day for the fastest turnaround, or select **Alternating** on each job to spread them across the week.
+
 Linux timers pin the workspace IANA timezone (normally `Europe/London`) in `OnCalendar`, so daylight-saving changes do not shift the intended wall-clock time even when the VPS itself runs UTC.
 
-The one-hour gap exceeds Scout's 45-minute native execution limit. The workspace lock remains authoritative: if a prior scan is still active, the later run is recorded as skipped and never overlaps it.
+When two jobs share a day, the one-hour gap exceeds Scout's 45-minute native execution limit. The workspace lock remains authoritative: if a prior scan is still active, the later run is recorded as skipped and never overlaps it.
 
 ## Install and inspect
 
 ```powershell
 scout schedule install --id claude-primary --time 07:30 --provider claude --mode primary
 scout schedule install --id codex-second-pass --time 08:30 --provider codex --mode second-pass
+
+# Or alternate them across the week (Sunday is 0):
+scout schedule install --id claude-primary --time 07:30 --days 0,1,3,5 --provider claude --mode primary
+scout schedule install --id codex-second-pass --time 08:30 --days 2,4,6 --provider codex --mode second-pass
 scout schedule status
 scout schedule run-now --id claude-primary
 ```

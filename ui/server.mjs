@@ -1184,7 +1184,10 @@ routes['POST /api/schedule'] = (req, res, body) => {
     if (b.action === 'install') {
       const health = readScanHealth();
       if (!health.lastRunAt || !health.healthy) return replyJson(res, 409, { error: 'complete a healthy supervised scan before enabling daily scans' });
-      result = installSchedule(WORKSPACE_ROOT, b.time || '07:30', provider, { id, mode, model });
+      if (b.days !== undefined && b.days !== null && !Array.isArray(b.days)) {
+        return replyJson(res, 400, { error: 'days must be an array of whole numbers from 0 (Sunday) to 6 (Saturday)' });
+      }
+      result = installSchedule(WORKSPACE_ROOT, b.time || '07:30', provider, { id, mode, model, days: b.days ?? null });
     } else if (b.action === 'remove') {
       result = removeSchedule({ id });
       if (result.ok) {

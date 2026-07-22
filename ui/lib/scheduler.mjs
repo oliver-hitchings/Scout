@@ -41,6 +41,37 @@ function validateTime(value) {
   return value;
 }
 
+// Days of the week a job may run on, Sunday = 0. Every platform scheduler can
+// express a weekly day set natively and deterministically, which an "every N
+// days" interval cannot: two jobs meant to alternate drift apart after a
+// missed run, and Windows Task Scheduler cannot keep them aligned at all.
+export const EVERY_DAY = Object.freeze([0, 1, 2, 3, 4, 5, 6]);
+const WINDOWS_DAY_ELEMENTS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const SHORT_DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// An absent or empty selection means every day, so workspaces written before
+// per-day scheduling keep their existing behaviour after an upgrade.
+export function normaliseScheduleDays(value) {
+  if (value === null || value === undefined) return [...EVERY_DAY];
+  const supplied = Array.isArray(value) ? value : [value];
+  const days = [...new Set(supplied.map(Number))]
+    .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+    .sort((a, b) => a - b);
+  return days.length ? days : [...EVERY_DAY];
+}
+
+export function isEveryDay(value) {
+  return normaliseScheduleDays(value).length === EVERY_DAY.length;
+}
+
+export function describeScheduleDays(value) {
+  const days = normaliseScheduleDays(value);
+  if (isEveryDay(days)) return 'Every day';
+  if (days.join(',') === '1,2,3,4,5') return 'Weekdays';
+  if (days.join(',') === '0,6') return 'Weekends';
+  return days.map((day) => SHORT_DAY_NAMES[day]).join(', ');
+}
+
 function validateTimezone(value) {
   const timezone = String(value || '');
   if (!/^[A-Za-z0-9_+\-/]+$/.test(timezone)) throw new Error('schedule timezone must be a valid IANA timezone');
@@ -58,12 +89,17 @@ function localDateTime(value) {
   return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}:00`;
 }
 
-export function taskXml({ command, args = [], workingDirectory, time, userId = process.env.USERNAME, now = new Date() }) {
+export function taskXml({ command, args = [], workingDirectory, time, userId = process.env.USERNAME, now = new Date(), days = null }) {
   validateTime(time);
-  const start = localDateTime(new Date(nextScheduledRun(time, now)));
+  const selected = normaliseScheduleDays(days);
+  const start = localDateTime(new Date(nextScheduledRun(time, now, null, selected)));
+  const recurrence = isEveryDay(selected)
+    ? '<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>'
+    // Child order matches what Windows itself exports for a weekly trigger.
+    : `<ScheduleByWeek><WeeksInterval>1</WeeksInterval><DaysOfWeek>${selected.map((day) => `<${WINDOWS_DAY_ELEMENTS[day]} />`).join('')}</DaysOfWeek></ScheduleByWeek>`;
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers><CalendarTrigger><StartBoundary>${start}</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers>
+  <Triggers><CalendarTrigger><StartBoundary>${start}</StartBoundary><Enabled>true</Enabled>${recurrence}</CalendarTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>${quoteXml(userId || '')}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT45M</ExecutionTimeLimit><Enabled>true</Enabled></Settings>
   <Actions Context="Author"><Exec><Command>${quoteXml(command)}</Command><Arguments>${quoteXml(args.join(' '))}</Arguments><WorkingDirectory>${quoteXml(workingDirectory)}</WorkingDirectory></Exec></Actions>
@@ -104,26 +140,33 @@ function zonedInstant({ year, month, day, hour, minute }, timezone) {
   return new Date(candidate);
 }
 
-export function nextScheduledRun(time, now = new Date(), timezone = null) {
+export function nextScheduledRun(time, now = new Date(), timezone = null, days = null) {
   validateTime(time);
   const [hours, minutes] = time.split(':').map(Number);
+  const wanted = new Set(normaliseScheduleDays(days));
+  // Walk forward a day at a time until the weekday is selected and the run is
+  // still in the future. Seven candidates always cover a weekly pattern.
   if (timezone) {
     const zone = validateTimezone(timezone);
     const today = zonedParts(now, zone);
-    let next = zonedInstant({ year: today.year, month: today.month, day: today.day, hour: hours, minute: minutes }, zone);
-    if (next <= now) {
-      const tomorrow = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
-      next = zonedInstant({
-        year: tomorrow.getUTCFullYear(), month: tomorrow.getUTCMonth() + 1, day: tomorrow.getUTCDate(),
+    for (let offset = 0; offset <= 7; offset += 1) {
+      const day = new Date(Date.UTC(today.year, today.month - 1, today.day + offset));
+      if (!wanted.has(day.getUTCDay())) continue;
+      const candidate = zonedInstant({
+        year: day.getUTCFullYear(), month: day.getUTCMonth() + 1, day: day.getUTCDate(),
         hour: hours, minute: minutes,
       }, zone);
+      if (candidate > now) return candidate.toISOString();
     }
-    return next.toISOString();
+    return null;
   }
-  const next = new Date(now);
-  next.setHours(hours, minutes, 0, 0);
-  if (next <= now) next.setDate(next.getDate() + 1);
-  return next.toISOString();
+  for (let offset = 0; offset <= 7; offset += 1) {
+    const candidate = new Date(now);
+    candidate.setDate(candidate.getDate() + offset);
+    candidate.setHours(hours, minutes, 0, 0);
+    if (wanted.has(candidate.getDay()) && candidate > now) return candidate.toISOString();
+  }
+  return null;
 }
 
 export function scheduleSummary(config = {}, scanHealth = null, tasks = [], now = new Date()) {
@@ -132,11 +175,14 @@ export function scheduleSummary(config = {}, scanHealth = null, tasks = [], now 
   const runs = jobs.map((job, index) => {
     const task = taskList[index] || {};
     const enabled = Boolean(job.enabled && task.ok);
+    const days = normaliseScheduleDays(job.days);
     return {
       ...job,
+      days,
+      daysLabel: describeScheduleDays(days),
       enabled,
       configured: Boolean(job.enabled),
-      nextRunAt: enabled ? nextScheduledRun(job.time, now, config.timezone || null) : null,
+      nextRunAt: enabled ? nextScheduledRun(job.time, now, config.timezone || null, days) : null,
       lastRunAt: scanHealth?.runs?.[job.id]?.lastRunAt || null,
       lastResult: scanHealth?.runs?.[job.id]?.lastResult || 'never',
       taskOk: Boolean(task.ok),
@@ -185,10 +231,16 @@ export function runScheduledNow({ id = 'primary', spawn = spawnSync, platform = 
   return { ok: r.status === 0, output: String(r.stdout || r.stderr || '').trim() };
 }
 
-export function macLaunchAgent({ id = 'primary', command, args, workingDirectory, time, pathValue = process.env.PATH || '' }) {
+export function macLaunchAgent({ id = 'primary', command, args, workingDirectory, time, pathValue = process.env.PATH || '', days = null }) {
   const names = nativeScheduleNames(id);
   validateTime(time); const [hour, minute] = time.split(':');
-  return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${names.mac}</string><key>ProgramArguments</key><array>${[command, ...args].map((v) => `<string>${quoteXml(v)}</string>`).join('')}</array><key>WorkingDirectory</key><string>${quoteXml(workingDirectory)}</string><key>EnvironmentVariables</key><dict><key>PATH</key><string>${quoteXml(pathValue)}</string></dict><key>StartCalendarInterval</key><dict><key>Hour</key><integer>${Number(hour)}</integer><key>Minute</key><integer>${Number(minute)}</integer></dict><key>ProcessType</key><string>Background</string></dict></plist>`;
+  const selected = normaliseScheduleDays(days);
+  // launchd repeats a bare Hour/Minute dict daily. A day subset is expressed as
+  // an array of dicts, one per weekday.
+  const calendar = isEveryDay(selected)
+    ? `<dict><key>Hour</key><integer>${Number(hour)}</integer><key>Minute</key><integer>${Number(minute)}</integer></dict>`
+    : `<array>${selected.map((day) => `<dict><key>Weekday</key><integer>${day}</integer><key>Hour</key><integer>${Number(hour)}</integer><key>Minute</key><integer>${Number(minute)}</integer></dict>`).join('')}</array>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${names.mac}</string><key>ProgramArguments</key><array>${[command, ...args].map((v) => `<string>${quoteXml(v)}</string>`).join('')}</array><key>WorkingDirectory</key><string>${quoteXml(workingDirectory)}</string><key>EnvironmentVariables</key><dict><key>PATH</key><string>${quoteXml(pathValue)}</string></dict><key>StartCalendarInterval</key>${calendar}<key>ProcessType</key><string>Background</string></dict></plist>`;
 }
 
 export function removeLegacySchedule({ spawn = spawnSync, platform = process.platform, home = os.homedir(), uid = process.getuid?.(), fileSystem = fs } = {}) {
@@ -224,26 +276,28 @@ function systemdPath(value) {
       : `\\x${byte.toString(16).padStart(2, '0')}`
   )).join('');
 }
-export function linuxSystemdUnits({ id = 'primary', command, args, workingDirectory, time, timezone = 'Europe/London', pathValue = process.env.PATH || '' }) {
+export function linuxSystemdUnits({ id = 'primary', command, args, workingDirectory, time, timezone = 'Europe/London', pathValue = process.env.PATH || '', days = null }) {
   const names = nativeScheduleNames(id);
   validateTime(time);
   const zone = validateTimezone(timezone);
+  const selected = normaliseScheduleDays(days);
+  const dayPrefix = isEveryDay(selected) ? '' : `${selected.map((day) => SHORT_DAY_NAMES[day]).join(',')} `;
   return {
-    service: `[Unit]\nDescription=Scout daily scan\n[Service]\nType=exec\nWorkingDirectory=${systemdPath(workingDirectory)}\nEnvironment=${systemdQuote(`PATH=${pathValue}`)}\nExecStart=${[command, ...args].map(systemdQuote).join(' ')}\nRuntimeMaxSec=2700\n`,
-    timer: `[Unit]\nDescription=Run Scout daily (${id})\n[Timer]\nOnCalendar=*-*-* ${time}:00 ${zone}\nPersistent=true\nUnit=${names.linux}.service\n[Install]\nWantedBy=timers.target\n`,
+    service: `[Unit]\nDescription=Scout scheduled scan\n[Service]\nType=exec\nWorkingDirectory=${systemdPath(workingDirectory)}\nEnvironment=${systemdQuote(`PATH=${pathValue}`)}\nExecStart=${[command, ...args].map(systemdQuote).join(' ')}\nRuntimeMaxSec=2700\n`,
+    timer: `[Unit]\nDescription=Run Scout on ${describeScheduleDays(selected).toLowerCase()} (${id})\n[Timer]\nOnCalendar=${dayPrefix}*-*-* ${time}:00 ${zone}\nPersistent=true\nUnit=${names.linux}.service\n[Install]\nWantedBy=timers.target\n`,
   };
 }
 
-export function registerUnixSchedule({ id = 'primary', platform = process.platform, command, args, workingDirectory, time, timezone = 'Europe/London', spawn = spawnSync, home = os.homedir(), uid = process.getuid?.(), fileSystem = fs }) {
+export function registerUnixSchedule({ id = 'primary', platform = process.platform, command, args, workingDirectory, time, timezone = 'Europe/London', spawn = spawnSync, home = os.homedir(), uid = process.getuid?.(), fileSystem = fs, days = null }) {
   const names = nativeScheduleNames(id);
   if (platform === 'darwin') {
     const dir = path.join(home, 'Library', 'LaunchAgents'); fileSystem.mkdirSync(dir, { recursive: true }); const file = path.join(dir, `${names.mac}.plist`);
-    fileSystem.writeFileSync(file, macLaunchAgent({ id, command, args, workingDirectory, time, pathValue: `/opt/homebrew/bin:/usr/local/bin:${path.join(home, '.local/bin')}:${process.env.PATH || ''}` }));
+    fileSystem.writeFileSync(file, macLaunchAgent({ id, command, args, workingDirectory, time, days, pathValue: `/opt/homebrew/bin:/usr/local/bin:${path.join(home, '.local/bin')}:${process.env.PATH || ''}` }));
     spawn('launchctl', ['bootout', `gui/${uid}/${names.mac}`], { encoding: 'utf8' }); const r = spawn('launchctl', ['bootstrap', `gui/${uid}`, file], { encoding: 'utf8' });
     return { ok: r.status === 0, supported: true, output: String(r.stdout || r.stderr || '').trim() };
   }
   if (platform === 'linux') {
-    const dir = path.join(home, '.config', 'systemd', 'user'); fileSystem.mkdirSync(dir, { recursive: true }); const units = linuxSystemdUnits({ id, command, args, workingDirectory, time, timezone, pathValue: `/usr/local/bin:${path.join(home, '.local/bin')}:${path.join(home, '.npm-global/bin')}:${process.env.PATH || ''}` });
+    const dir = path.join(home, '.config', 'systemd', 'user'); fileSystem.mkdirSync(dir, { recursive: true }); const units = linuxSystemdUnits({ id, command, args, workingDirectory, time, timezone, days, pathValue: `/usr/local/bin:${path.join(home, '.local/bin')}:${path.join(home, '.npm-global/bin')}:${process.env.PATH || ''}` });
     const serviceFile = path.join(dir, `${names.linux}.service`);
     const timerFile = path.join(dir, `${names.linux}.timer`);
     fileSystem.writeFileSync(serviceFile, units.service); fileSystem.writeFileSync(timerFile, units.timer);
@@ -262,27 +316,35 @@ export function schedulerRegistrationScript() {
   [Parameter(Mandatory=$true)][string]$Command,
   [Parameter(Mandatory=$true)][string]$Arguments,
   [Parameter(Mandatory=$true)][string]$WorkingDirectory,
-  [Parameter(Mandatory=$true)][string]$Time
+  [Parameter(Mandatory=$true)][string]$Time,
+  [Parameter(Mandatory=$false)][string]$Days = ''
 )
 $ErrorActionPreference = 'Stop'
 $at = [datetime]::Today.Add([timespan]::Parse($Time))
 if ($at -le (Get-Date)) { $at = $at.AddDays(1) }
 $action = New-ScheduledTaskAction -Execute $Command -Argument $Arguments -WorkingDirectory $WorkingDirectory
-$trigger = New-ScheduledTaskTrigger -Daily -At $at
+if ([string]::IsNullOrWhiteSpace($Days)) {
+  $trigger = New-ScheduledTaskTrigger -Daily -At $at
+} else {
+  $selected = $Days.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+  $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $selected -At $at
+}
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 45) -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 `;
 }
 
-export function registerDailySchedule({ id = 'primary', scriptFile, command, argumentsText, workingDirectory, time, spawn = spawnSync }) {
+export function registerDailySchedule({ id = 'primary', scriptFile, command, argumentsText, workingDirectory, time, spawn = spawnSync, days = null }) {
   validateTime(time);
   const names = nativeScheduleNames(id);
   if (process.platform !== 'win32') return { ok: false, supported: false, error: 'Windows Task Scheduler registration is available only on Windows' };
+  const selected = normaliseScheduleDays(days);
   const r = spawn('powershell.exe', [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile,
     '-TaskName', names.task, '-Command', command, '-Arguments', argumentsText,
     '-WorkingDirectory', workingDirectory, '-Time', time,
+    '-Days', isEveryDay(selected) ? '' : selected.map((day) => WINDOWS_DAY_ELEMENTS[day]).join(','),
   ], { encoding: 'utf8', windowsHide: true });
   return { ok: r.status === 0, supported: true, output: String(r.stdout || r.stderr || '').trim() };
 }

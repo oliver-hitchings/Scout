@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFile } from './atomicWrite.mjs';
+import { normaliseScheduleDays } from './scheduler.mjs';
 
 export const CURRENT_WORKSPACE_SCHEMA = 2;
 
@@ -120,6 +121,9 @@ export function normaliseScheduleJobs(schedule = {}, fallbackProvider = null) {
     id: String(job.id || `${job.provider || fallbackProvider || 'provider'}-${job.mode || 'primary'}`),
     enabled: Boolean(job.enabled),
     time: job.time || '07:30',
+    // Workspaces written before per-day scheduling have no days and keep
+    // running every day.
+    days: normaliseScheduleDays(job.days),
     provider: job.provider || fallbackProvider || null,
     mode: job.mode || 'primary',
     model: job.model || null,
@@ -178,6 +182,12 @@ export function validateWorkspaceConfig(value) {
     if (ids.has(job.id)) throw new Error(`workspace schedule job id is duplicated: ${job.id}`);
     ids.add(job.id);
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(job.time || ''))) throw new Error(`workspace schedule job ${job.id} time must be HH:MM`);
+    if (job.days !== undefined && job.days !== null) {
+      if (!Array.isArray(job.days)) throw new Error(`workspace schedule job ${job.id} days must be an array`);
+      if (job.days.some((day) => !Number.isInteger(day) || day < 0 || day > 6)) {
+        throw new Error(`workspace schedule job ${job.id} days must be whole numbers from 0 (Sunday) to 6 (Saturday)`);
+      }
+    }
     if (!['codex', 'claude'].includes(job.provider)) throw new Error(`workspace schedule job ${job.id} provider must be codex or claude`);
     if (!['primary', 'second-pass'].includes(job.mode)) throw new Error(`workspace schedule job ${job.id} mode must be primary or second-pass`);
     if (job.model !== null && job.model !== undefined && !/^[A-Za-z0-9._:-]+$/.test(String(job.model))) throw new Error(`workspace schedule job ${job.id} model is invalid`);

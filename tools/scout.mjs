@@ -16,7 +16,7 @@ import { compactCandidates, SCAN_ASSESSMENT_SCHEMA, validateAssessments, writeSc
 import { isMainModule } from '../ui/lib/mainModule.mjs';
 import { runCvQuality } from '../ui/lib/cvQuality.mjs';
 import { queueWorkspaceSync } from '../ui/lib/workspaceSync.mjs';
-import { registerDailySchedule, registerUnixSchedule, removeLegacySchedule, removeSchedule, runScheduledNow, scheduleStatus, schedulerRegistrationScript } from '../ui/lib/scheduler.mjs';
+import { normaliseScheduleDays, registerDailySchedule, registerUnixSchedule, removeLegacySchedule, removeSchedule, runScheduledNow, scheduleStatus, schedulerRegistrationScript } from '../ui/lib/scheduler.mjs';
 import {
   loadWorkspaceConfig, resolveWorkspaceRoot, seedWorkspace as seedWorkspaceFiles,
   syncManagedInstructions, workspacePaths, writeWorkspaceConfig,
@@ -324,19 +324,20 @@ export async function runScanWith(root, provider, mode, {
   return result;
 }
 
-export function installSchedule(root, time, provider, { id = `${provider}-primary`, mode = 'primary', model = null } = {}) {
+export function installSchedule(root, time, provider, { id = `${provider}-primary`, mode = 'primary', model = null, days = null } = {}) {
   if (!['codex', 'claude'].includes(provider)) throw new Error('schedule provider must be codex or claude');
   if (!['primary', 'second-pass'].includes(mode)) throw new Error('schedule mode must be primary or second-pass');
   model = assertSafeModel(model);
+  const selectedDays = normaliseScheduleDays(days);
   const config = loadWorkspaceConfig(root);
   removeLegacySchedule();
   const cli = fileURLToPath(import.meta.url);
   if (process.platform !== 'win32') {
     const args = [cli, 'scan', '--workspace', root, '--provider', provider, '--mode', mode];
     if (model) args.push('--model', model);
-    const result = registerUnixSchedule({ id, platform: process.platform, command: process.execPath, args, workingDirectory: APP_ROOT, time, timezone: config.timezone });
+    const result = registerUnixSchedule({ id, platform: process.platform, command: process.execPath, args, workingDirectory: APP_ROOT, time, timezone: config.timezone, days: selectedDays });
     if (result.ok) {
-      config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, provider, mode, model: model || null }];
+      config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, days: selectedDays, provider, mode, model: model || null }];
       writeWorkspaceConfig(root, config);
     }
     return result;
@@ -345,9 +346,9 @@ export function installSchedule(root, time, provider, { id = `${provider}-primar
   fs.writeFileSync(scriptFile, schedulerRegistrationScript(), 'utf8');
   try {
     const argumentsText = `"${cli}" scan --workspace "${root}" --provider ${provider} --mode ${mode}${model ? ` --model ${model}` : ''}`;
-    const result = registerDailySchedule({ id, scriptFile, command: process.execPath, argumentsText, workingDirectory: APP_ROOT, time });
+    const result = registerDailySchedule({ id, scriptFile, command: process.execPath, argumentsText, workingDirectory: APP_ROOT, time, days: selectedDays });
     if (result.ok) {
-      config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, provider, mode, model: model || null }];
+      config.schedule.jobs = [...config.schedule.jobs.filter((job) => job.id !== id), { id, enabled: true, time, days: selectedDays, provider, mode, model: model || null }];
       writeWorkspaceConfig(root, config);
     }
     return result;
@@ -456,14 +457,16 @@ async function main() {
     if (action === 'install') {
       const provider = argValue('--provider', argv) || config.ai?.provider;
       const mode = argValue('--mode', argv) || 'primary';
+      const days = argValue('--days', argv);
       return print(installSchedule(root, argValue('--time', argv) || '07:30', provider, {
         id: argValue('--id', argv) || `${provider}-${mode}`,
         mode,
         model: argValue('--model', argv),
+        days: days ? days.split(',').map((day) => Number(day.trim())) : null,
       }));
     }
   }
-  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude [--mode primary|second-pass] [--model MODEL]\n  schedule install|status|remove|run-now [--id ID] [--time HH:MM] [--provider PROVIDER] [--mode primary|second-pass] [--model MODEL]`);
+  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude [--mode primary|second-pass] [--model MODEL]\n  schedule install|status|remove|run-now [--id ID] [--time HH:MM] [--days 0,1,2] [--provider PROVIDER] [--mode primary|second-pass] [--model MODEL]`);
 }
 
 const isMain = isMainModule(import.meta.url);
