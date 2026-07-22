@@ -34,8 +34,19 @@ test('manual settings has a persistent accessible close control', () => {
   assert.match(html, /id="setup-close"[^>]*aria-label="Close settings"/);
   assert.match(html, /\.setup-head\s*\{[^}]*position:\s*sticky/s);
   assert.match(html, /\.setup-close\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/s);
-  assert.match(setup, /event\.key === 'Escape'[\s\S]*closeSettings\(\)/);
+  assert.match(setup, /ScoutModal\?\.register[\s\S]*onEscape: \(\) => this\.closeSettings\(\)/);
   assert.match(setup, /event\.target === this\.el\('setup-overlay'\)[\s\S]*closeSettings\(\)/);
+});
+
+test('dialogs share focus, inert-background, escape, and nested-layer management', () => {
+  assert.match(app, /const ScoutModal = \(\(\) =>/);
+  assert.match(app, /document\.body\.children[\s\S]*element\.inert/);
+  assert.match(app, /event\.key === 'Escape'[\s\S]*entry\.options\.onEscape/);
+  assert.match(app, /event\.key !== 'Tab'[\s\S]*last\.focus/);
+  assert.match(app, /ScoutModal\.register\(document\.getElementById\?\.\('cv-options-overlay'\)/);
+  assert.match(app, /ScoutModal\.register\(document\.getElementById\?\.\('chat-drawer'\)/);
+  assert.match(html, /id="chat-drawer"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(html, /id="company-drawer"[^>]*role="dialog"[^>]*aria-modal="true"/);
 });
 
 test('established settings and backup use separate dismissible views', () => {

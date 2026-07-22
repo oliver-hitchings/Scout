@@ -68,6 +68,8 @@ The first-run wizard accepts selectable-text PDF, DOCX, Markdown and plain text 
 
 Complete the setup questions for your role families, sectors, locations, minimum salary, commute preferences, exclusions and preferred writing tone. Scout then makes one schema-constrained proposal from those fields and the imported evidence. Review or discard the five staged files before activation. See [AI Setup](AI_SETUP.md) for details or [Configuration](CONFIGURATION.md) for manual editing.
 
+Setup, Settings, CV options and side drawers keep keyboard focus inside the active dialog and return it to the control that opened the dialog. Press **Escape** to close an optional dialog or drawer. Mandatory first-run setup remains open until its required action is complete.
+
 Scout uses these approved answers, the imported CV and generated search lanes to find and score jobs. It does not inspect unrelated Codex/Claude conversations or automatically infer a career from previous AI usage.
 
 ### Tailor a CV

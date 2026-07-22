@@ -221,12 +221,52 @@ test('settings opens a hub and retuning is explicit and dismissible', async ({ p
   await expect(dialog.getByRole('heading', { name: 'Search & profile' })).toBeVisible();
   await dialog.getByRole('button', { name: 'Retune my search' }).click();
   await expect(dialog.getByRole('heading', { name: 'Retune Scout' })).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Retune Scout' })).toBeFocused();
   await expect(dialog.getByRole('heading', { name: 'Choose an AI provider' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Close settings' })).toBeVisible();
 
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(settings).toBeFocused();
+});
+
+test('settings traps focus, makes the dashboard inert, and restores its opener', async ({ page }) => {
+  const settings = page.getByRole('button', { name: 'Settings' });
+  await settings.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.locator('.settings-card')).toHaveCount(7);
+  await expect(dialog.getByRole('heading', { name: 'Scout settings' })).toBeFocused();
+  await expect.poll(() => page.locator('main').evaluate((element) => element.inert)).toBe(true);
+
+  await page.keyboard.press('Shift+Tab');
+  await expect(dialog.getByRole('button', { name: 'App & device' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(dialog.getByRole('button', { name: 'Close settings' })).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(settings).toBeFocused();
+  await expect.poll(() => page.locator('main').evaluate((element) => element.inert)).toBe(false);
+});
+
+test('a setup-adjacent drawer becomes the active modal layer then returns focus to setup', async ({ page }) => {
+  await page.getByRole('button', { name: 'Settings' }).click();
+  const setupDialog = page.locator('#setup-overlay');
+  await expect(setupDialog.locator('#setup-title')).toBeFocused();
+
+  await page.evaluate(() => {
+    const drawer = document.getElementById('chat-drawer');
+    drawer.innerHTML = '<div class="chat-head"><button class="act" data-action="close-chat">close</button></div><textarea aria-label="Synthetic chat"></textarea>';
+    drawer.classList.remove('hidden');
+  });
+  const chatDialog = page.getByRole('dialog', { name: 'Scout job conversation' });
+  await expect(chatDialog.getByRole('button', { name: 'close' })).toBeFocused();
+  await expect.poll(() => setupDialog.evaluate((element) => element.inert)).toBe(true);
+
+  await page.keyboard.press('Escape');
+  await expect(chatDialog).toBeHidden();
+  await expect.poll(() => setupDialog.evaluate((element) => element.inert)).toBe(false);
+  await expect(setupDialog.locator('#setup-title')).toBeFocused();
 });
 
 test('a slow initial setup response cannot replace an explicit Settings view', async ({ page }) => {
@@ -336,6 +376,8 @@ test('mandatory first-run setup cannot be dismissed', async ({ page }) => {
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Welcome to Scout' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Close settings' })).toBeHidden();
+  await expect(dialog.getByRole('heading', { name: 'Welcome to Scout' })).toBeFocused();
+  await expect.poll(() => page.locator('main').evaluate((element) => element.inert)).toBe(true);
   await page.keyboard.press('Escape');
   await expect(dialog).toBeVisible();
 });
@@ -358,8 +400,8 @@ test('a stale UI prompts for a safe refresh and protects dirty work', async ({ p
   await page.evaluate(() => { window.Scout.cvState.dirty = false; });
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await banner.getByRole('button', { name: 'Refresh Scout' }).click();
-  await expect(banner).toContainText('Close or finish the open Scout settings first');
+  await expect.poll(() => banner.evaluate((element) => element.inert)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.Scout.uiReloadBlocker())).toBe('Close or finish the open Scout settings first.');
   await page.getByRole('button', { name: 'Close settings' }).click();
 
   await Promise.all([

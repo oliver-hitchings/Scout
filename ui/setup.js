@@ -127,7 +127,6 @@ const Setup = {
   restoredPreferences: null,
   pendingRecoveryKey: null,
   settingsOpen: false,
-  settingsReturnFocus: null,
   view: 'closed',
   settingsSection: null,
   refreshSequence: 0,
@@ -138,6 +137,10 @@ const Setup = {
   showVerificationPass: false,
 
   el(id) { return document.getElementById(id); },
+
+  focusDialogTitle() {
+    window.ScoutModal?.focus(this.el('setup-overlay'), '#setup-title');
+  },
 
   async init() {
     if (!this.el('setup-overlay')) return;
@@ -151,8 +154,8 @@ const Setup = {
     this.el('setup-overlay').addEventListener('click', (event) => {
       if (event.target === this.el('setup-overlay')) this.closeSettings();
     });
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && !this.el('setup-overlay').classList.contains('hidden')) this.closeSettings();
+    window.ScoutModal?.register(this.el('setup-overlay'), {
+      initialFocus: '#setup-title', onEscape: () => this.closeSettings(),
     });
     await this.refreshStatus();
   },
@@ -287,7 +290,6 @@ const Setup = {
 
   async openSettings(section = null) {
     this.settingsOpen = true;
-    if (!this.settingsReturnFocus) this.settingsReturnFocus = document.activeElement;
     this.view = section ? 'section' : 'hub';
     this.settingsSection = section;
     this.incrementalSection = null;
@@ -305,7 +307,6 @@ const Setup = {
 
   async openBackupDetails() {
     this.settingsOpen = true;
-    this.settingsReturnFocus = document.activeElement;
     this.view = 'backup-details';
     this.settingsSection = null;
     this.incrementalSection = null;
@@ -327,9 +328,6 @@ const Setup = {
     this.settingsSection = null;
     this.el('setup-close').classList.add('hidden');
     this.el('setup-overlay').classList.add('hidden');
-    const target = this.settingsReturnFocus;
-    this.settingsReturnFocus = null;
-    if (target?.isConnected) target.focus();
   },
 
   async restartServer() {
@@ -499,6 +497,7 @@ const Setup = {
     this.preferenceDraft = null;
     this.preferenceStep = 0;
     this.render();
+    this.focusDialogTitle();
   },
 
   renderSettingsHub() {
@@ -515,6 +514,7 @@ const Setup = {
         this.view = 'section';
         this.settingsSection = button.dataset.settingsSection;
         this.render();
+        this.focusDialogTitle();
       });
     });
   },
@@ -549,6 +549,7 @@ const Setup = {
       this.preferenceStep = 0;
       this.preferenceDraft = null;
       this.render();
+      this.focusDialogTitle();
     });
   },
 
@@ -598,6 +599,7 @@ const Setup = {
       this.preferenceStep = 0;
       this.preferenceDraft = null;
       this.render();
+      this.focusDialogTitle();
     });
   },
 
