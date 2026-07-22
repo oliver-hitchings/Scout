@@ -6,11 +6,21 @@ This is the provider-neutral contract for manual and scheduled scans.
 
 Every run declares `agent=codex|claude` and `mode=primary|broadened|second-pass`. Scout's trusted runtime owns the private workspace lock, source collection, normalisation, deduplication, mandatory gates, score arithmetic, tracker merge, report generation and scan-run record. A live lock stops an overlapping run; the blocked run is recorded as skipped instead of running concurrently. Stale locks older than two hours may be recovered.
 
-The provider receives only the private scoring configuration, bounded profile/CV evidence and at most 40 normalised candidates with capped descriptions. It returns schema-constrained assessments from one non-resumable, no-tools turn. It never invokes Scout, browses independently, writes workspace files, applies for a role or sends outreach. When sources yield zero candidates, Scout skips the provider entirely and still writes a truthful healthy-empty or degraded run.
+The provider receives only the scoring-relevant part of the private configuration (locale, currency, search, triage and commute), bounded profile/CV evidence and at most 60 normalised candidates with capped descriptions, carrying only the fields the assessment reads. It returns schema-constrained assessments from one non-resumable, no-tools turn. It never invokes Scout, browses independently, writes workspace files, applies for a role or sends outreach. When sources yield zero candidates, Scout skips the provider entirely and still writes a truthful healthy-empty or degraded run.
 
 Direct developer workflows may inspect or commit workspace changes separately. Git is not part of installed scan health: missing Git, a non-Git workspace or a commit failure cannot make otherwise valid scan artifacts unhealthy.
 
 Interactive tracker changes use the same workspace lock as scans. Each browser response includes a tracker revision; a mutation made from a stale page is rejected before writing, the interface refreshes the current tracker and retries once. Successful UI mutations flush a complete temporary file and atomically replace `data/opportunities.json`. This prevents a scan finishing at the same time as a note, status, contact, category, commute or application-stage edit from silently overwriting either side.
+
+## Candidate selection, liveness and cost
+
+Before the provider is asked to score anything, the trusted runtime:
+
+1. **Balances sources.** Each configured source receives a guaranteed share of the candidate budget, then the remainder is shared among the sources that still have postings. A single large source can no longer consume the whole budget and leave the others contributing nothing. Whatever did not fit is recorded as `candidates_dropped` and `candidates_dropped_by_source` in the scan-run record, so a truncated scan is visible rather than silent.
+2. **Applies hard exclusions.** The user's stated dealbreakers are matched against company, role and description using exactly the same rule the post-assessment trusted pass uses, so this only removes candidates that would have been discarded anyway.
+3. **Confirms each advert is still open.** A `HEAD` request, then a `GET`, classifies each advert as `live`, `gone` or `unverified` under a bounded concurrency, a per-host delay and an overall time budget. `gone` means a 404 or 410, a redirect to the board's generic index, or wording such as "no longer accepting applications". Everything else — timeouts, DNS failures, blocks, 429s and 5xx — is `unverified` and the candidate is kept, so an offline host can never mass-close a tracker. Closed adverts are counted as `advert_closed` and never reach the provider.
+
+A `second-pass` run is a verification pass, not a repeat of discovery. It re-examines the roles today's primary scan kept, plus those close enough to the threshold that a second opinion could change the outcome, rather than re-scoring every candidate. When there is nothing from today to verify it falls back to the full set, so a standalone second-pass run still does useful work.
 
 ## Search coverage and health
 

@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { compactCandidates, gateAssessment, validateAssessments, validateWrittenScanArtifacts, writeScanArtifacts } from './scanPipeline.mjs';
+import {
+  applyHardExclusions, compactCandidates, DEFAULT_CANDIDATE_LIMIT, gateAssessment, promptCandidate,
+  validateAssessments, validateWrittenScanArtifacts, verificationCandidates, writeScanArtifacts,
+} from './scanPipeline.mjs';
 
 const dimensions = [{ name: 'Fit', score: 90, maximum: 100, evidence: 'Advert and profile' }];
 const assessment = (status = 'met') => ({
@@ -14,14 +17,14 @@ const assessment = (status = 'met') => ({
 
 test('candidate input is deduplicated, capped and descriptions are bounded', () => {
   const job = { company: 'Acme', title: 'Engineer', url: 'https://example.test/job', description: 'x'.repeat(2000) };
-  const result = compactCandidates({ one: { jobs: [job, job] } }, 40);
+  const { candidates: result } = compactCandidates({ one: { jobs: [job, job] } }, 40);
   assert.equal(result.length, 1);
   assert.equal(result[0].description.length, 1200);
 });
 
 test('candidate input collapses the same cross-provider role and preserves every source', () => {
   const description = 'Build reliable Kubernetes services with AWS observability and mentor engineers.';
-  const result = compactCandidates({
+  const { candidates: result } = compactCandidates({
     one: { jobs: [{ company: 'Acme Ltd', title: 'Senior Platform Engineer', location: 'London, UK', url: 'https://a.test/1?utm_source=feed', source: 'adzuna', providerId: 'a1', description }] },
     two: { jobs: [{ company: 'Acme', title: 'Senior Platform Engineer', location: 'London', url: 'https://g.test/9', source: 'ats-greenhouse', providerId: 'g9', description }] },
   });
@@ -32,7 +35,7 @@ test('candidate input collapses the same cross-provider role and preserves every
 
 test('candidate input keeps similar but distinct openings separate', () => {
   const common = { company: 'Acme', location: 'London', source: 'ats-greenhouse', description: 'Build reliable platform services.' };
-  const result = compactCandidates({ one: { jobs: [
+  const { candidates: result } = compactCandidates({ one: { jobs: [
     { ...common, title: 'Software Engineer', providerId: 'one', url: 'https://x.test/1' },
     { ...common, title: 'Software Engineer', providerId: 'two', url: 'https://x.test/2' },
     { ...common, title: 'Staff Software Engineer', providerId: 'three', url: 'https://x.test/3' },
@@ -41,7 +44,7 @@ test('candidate input keeps similar but distinct openings separate', () => {
 });
 
 test('mandatory advert language is assigned stable signals that assessments cannot omit', () => {
-  const candidates = compactCandidates({ one: { jobs: [{ company: 'Acme', title: 'Engineer', url: 'https://example.test/job', description: 'AWS is required. Mentoring is helpful.' }] } });
+  const { candidates } = compactCandidates({ one: { jobs: [{ company: 'Acme', title: 'Engineer', url: 'https://example.test/job', description: 'AWS is required. Mentoring is helpful.' }] } });
   assert.deepEqual(candidates[0].mandatorySignals, [{ id: 'mandatory-01', text: 'AWS is required' }]);
   assert.throws(() => validateAssessments({ assessments: [assessment('met')] }, candidates), /omitted mandatory advert evidence/);
   const covered = assessment('unknown');
@@ -50,7 +53,7 @@ test('mandatory advert language is assigned stable signals that assessments cann
 });
 
 test('normalized source requirement summaries are mandatory without keyword heuristics', () => {
-  const candidates = compactCandidates({ one: { jobs: [{
+  const { candidates } = compactCandidates({ one: { jobs: [{
     company: 'Example', title: 'Senior Rust Engineer', url: 'https://example.test/rust',
     description: 'Build cross-platform libraries.',
     requirements: 'Rust software engineer with cross-platform experience; fluent in English; eligible for stock options',
@@ -133,7 +136,7 @@ test('forty zero-keeper candidates produce a bounded sanitised audit without tra
     startedAt: '2026-07-14T10:00:00Z',
   });
   assert.equal(artifacts.tracker.opportunities.length, 0);
-  assert.deepEqual(artifacts.run.discarded, { hard_exclusion: 0, mandatory_unmet: 16, below_threshold: 0, provider_discarded: 24 });
+  assert.deepEqual(artifacts.run.discarded, { hard_exclusion: 0, mandatory_unmet: 16, below_threshold: 0, provider_discarded: 24, advert_closed: 0 });
   assert.equal(artifacts.run.reviewed.length, 40);
   assert.deepEqual(Object.keys(artifacts.run.reviewed[0]).sort(), ['categoryId', 'company', 'outcome', 'reasons', 'role', 'score', 'source', 'sourceUrl'].sort());
   assert.doesNotMatch(JSON.stringify(artifacts.run.reviewed), /full advert|profileEvidence|Built systems/);
@@ -167,7 +170,7 @@ test('later cross-provider reposts update one opportunity without losing user-ow
     tags: [], contacts: [], log: [],
   }] };
   fs.writeFileSync(path.join(root, 'data', 'opportunities.json'), `${JSON.stringify(existing)}\n`);
-  const candidates = compactCandidates({ ats: { jobs: [{
+  const { candidates } = compactCandidates({ ats: { jobs: [{
     company: 'Acme', title: 'Senior Platform Engineer', location: 'London', source: 'ats-greenhouse', providerId: 'g9',
     url: 'https://g.test/new', description,
   }] } });
@@ -212,4 +215,119 @@ test('trusted runtime applies configured hard exclusions even when provider omit
   });
   assert.equal(artifacts.tracker.opportunities.length, 0);
   assert.equal(artifacts.run.discarded.hard_exclusion, 1);
+});
+
+// Distinct company names, so the identity rules treat these as separate jobs.
+const WORDS = ['Alder', 'Birch', 'Cedar', 'Dahlia', 'Elm', 'Fern', 'Ginkgo', 'Hazel', 'Iris', 'Juniper'];
+const uniqueName = (prefix, index) => `${prefix}-${WORDS[index % WORDS.length]}${Math.floor(index / WORDS.length)}`;
+const jobsFor = (prefix, count) => Array.from({ length: count }, (_, index) => ({
+  company: `${uniqueName(prefix, index)} Holdings`, title: `${uniqueName(prefix, index)} Platform Engineer`,
+  url: `https://${prefix}.test/jobs/${index}`, source: prefix, providerId: `${prefix}-${index}`,
+  description: `Build ${uniqueName(prefix, index)} systems.`,
+}));
+
+test('one oversized source cannot starve the others', () => {
+  const { candidates, dropped } = compactCandidates({
+    ats: { jobs: jobsFor('ats', 200) },
+    hiring_cafe: { jobs: jobsFor('cafe', 30) },
+    adzuna: { jobs: jobsFor('adzuna', 30) },
+  }, 60);
+  assert.equal(candidates.length, 60);
+  const bySource = {};
+  for (const candidate of candidates) bySource[candidate.source] = (bySource[candidate.source] || 0) + 1;
+  // Every configured source must reach the assessment, which the previous
+  // source-ordered fill made impossible once the cap was reached.
+  assert.deepEqual(Object.keys(bySource).sort(), ['adzuna', 'ats', 'cafe']);
+  for (const source of ['adzuna', 'ats', 'cafe']) assert.ok(bySource[source] >= 20, `${source} received ${bySource[source]}`);
+  // Truncation is reported rather than silent, per source.
+  assert.equal(dropped.perSource.ats, 200 - bySource.ats);
+  assert.equal(dropped.perSource.hiring_cafe, 30 - bySource.cafe);
+  assert.equal(dropped.perSource.adzuna, 30 - bySource.adzuna);
+  assert.equal(dropped.total, 260 - 60);
+});
+
+test('a scan that fits reports nothing dropped and keeps stable candidate ids', () => {
+  const { candidates, dropped } = compactCandidates({ ats: { jobs: jobsFor('ats', 5) } }, DEFAULT_CANDIDATE_LIMIT);
+  assert.equal(candidates.length, 5);
+  assert.deepEqual(dropped, { perSource: {}, total: 0 });
+  assert.deepEqual(candidates.map((candidate) => candidate.candidateId), [
+    'candidate-001', 'candidate-002', 'candidate-003', 'candidate-004', 'candidate-005',
+  ]);
+});
+
+test('hard exclusions are applied before any provider turn', () => {
+  const { candidates } = compactCandidates({ one: { jobs: [
+    { company: 'Acme', title: 'Engineer', url: 'https://x.test/1', description: 'Extensive travel is required.' },
+    { company: 'Beta', title: 'Engineer', url: 'https://x.test/2', description: 'Fully remote role.' },
+    { company: 'Gamma', title: 'Gambling Product Engineer', url: 'https://x.test/3', description: 'Casino products.' },
+  ] } });
+  const result = applyHardExclusions(candidates, ['extensive travel', 'gambling']);
+  assert.deepEqual(result.kept.map((item) => item.company), ['Beta']);
+  assert.deepEqual(result.excluded.map((item) => item.hardExclusionMatches), [['extensive travel'], ['gambling']]);
+  assert.equal(applyHardExclusions(candidates, []).kept.length, candidates.length);
+  assert.equal(applyHardExclusions(candidates, ['', '   ']).kept.length, candidates.length);
+  // Tags are deliberately not searched: the post-assessment trusted pass looks
+  // only at company, role and description, and the two must agree.
+  const tagged = [{ company: 'Acme', role: 'Engineer', description: 'Remote role.', tags: ['gambling'] }];
+  assert.equal(applyHardExclusions(tagged, ['gambling']).kept.length, 1);
+});
+
+test('the prompt payload drops fields the model never reads', () => {
+  const { candidates } = compactCandidates({ one: { jobs: [{
+    company: 'Acme', title: 'Engineer', url: 'https://x.test/1', providerId: 'p1',
+    description: 'Rust is required.', requirements: 'Rust; English',
+  }] } });
+  const payload = promptCandidate(candidates[0]);
+  for (const field of ['requirements', 'sourceReferences', 'providerId', 'duplicateCount', 'sources']) {
+    assert.equal(field in payload, false, `${field} must not reach the provider`);
+  }
+  for (const field of ['candidateId', 'company', 'role', 'url', 'description', 'mandatorySignals']) {
+    assert.ok(field in payload, `${field} is needed for scoring`);
+  }
+});
+
+test('a full candidate set stays well inside the scan context budget', () => {
+  const jobs = jobsFor('ats', DEFAULT_CANDIDATE_LIMIT).map((job) => ({
+    ...job, description: 'x'.repeat(4000), requirements: 'y'.repeat(4000),
+  }));
+  const { candidates } = compactCandidates({ ats: { jobs } }, DEFAULT_CANDIDATE_LIMIT);
+  const payload = JSON.stringify(candidates.map(promptCandidate));
+  // Guards against silent prompt growth: 60 maximally verbose adverts must stay
+  // far below the 280,000-character assembled-context limit so the profile,
+  // calibration and CV still fit.
+  assert.equal(candidates.length, DEFAULT_CANDIDATE_LIMIT);
+  assert.ok(payload.length < 140_000, `prompt candidates grew to ${payload.length} characters`);
+});
+
+test('a verification pass re-examines only what the primary scan decided today', () => {
+  const candidates = [
+    { candidateId: 'candidate-001', url: 'https://x.test/kept', sources: ['https://x.test/kept'] },
+    { candidateId: 'candidate-002', url: 'https://x.test/near', sources: ['https://x.test/near'] },
+    { candidateId: 'candidate-003', url: 'https://x.test/unrelated', sources: ['https://x.test/unrelated'] },
+    { candidateId: 'candidate-004', url: 'https://x.test/old', sources: ['https://x.test/old'] },
+  ];
+  const tracker = { opportunities: [
+    { id: 'a', status: 'new', score: 82, lastChecked: '2026-07-22', sources: ['https://x.test/kept'] },
+    { id: 'b', status: 'watch', score: 47, lastChecked: '2026-07-22', sources: ['https://x.test/near'] },
+    { id: 'c', status: 'new', score: 12, lastChecked: '2026-07-22', sources: ['https://x.test/unrelated'] },
+    { id: 'd', status: 'new', score: 90, lastChecked: '2026-07-01', sources: ['https://x.test/old'] },
+  ] };
+  const result = verificationCandidates(candidates, tracker, '2026-07-22', { checkScore: 55 });
+  assert.equal(result.verified, true);
+  // Today's keeper and the near-threshold watch item, not the clearly rejected
+  // one and not an entry from an earlier day.
+  assert.deepEqual(result.candidates.map((item) => item.candidateId), ['candidate-001', 'candidate-002']);
+});
+
+test('a verification pass with nothing from today falls back to the full set', () => {
+  const candidates = [{ candidateId: 'candidate-001', url: 'https://x.test/1', sources: ['https://x.test/1'] }];
+  const empty = verificationCandidates(candidates, { opportunities: [] }, '2026-07-22', {});
+  assert.equal(empty.verified, false);
+  assert.deepEqual(empty.candidates, candidates);
+
+  const unmatched = verificationCandidates(candidates, {
+    opportunities: [{ id: 'z', status: 'new', score: 80, lastChecked: '2026-07-22', sources: ['https://other.test/9'] }],
+  }, '2026-07-22', {});
+  assert.equal(unmatched.verified, false);
+  assert.deepEqual(unmatched.candidates, candidates);
 });
