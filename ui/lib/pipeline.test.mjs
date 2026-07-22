@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pipeline, applicationSummary } from './pipeline.mjs';
+import { pipeline, applicationSummary, emptyTrackerView } from './pipeline.mjs';
+import { triage } from './derive.mjs';
 
 const entry = (over) => ({
   id: over.id || 'x',
@@ -49,4 +50,26 @@ test('pipeline buckets active, awaiting, closed and flags work', () => {
   assert.equal(out.summary.total, data.opportunities.length);
   assert.equal(out.flags.some((f) => f.id === 'prep' && f.kind === 'interview-prep'), true);
   assert.equal(out.flags.some((f) => f.id === 'active' && f.kind === 'stale'), true);
+});
+
+test('the uninitialised view matches the shape a populated workspace returns', () => {
+  const empty = emptyTrackerView('2026-07-12');
+  const populated = {
+    updated: '2026-07-12',
+    opportunities: [entry({ id: 'new', status: 'new', score: 80, lastChecked: '2026-07-01' })],
+  };
+  const live = {
+    ...populated,
+    triage: triage(populated, '2026-07-12'),
+    pipeline: pipeline(populated, '2026-07-12'),
+  };
+  assert.deepEqual(Object.keys(empty).sort(), Object.keys(live).sort());
+  assert.deepEqual(Object.keys(empty.pipeline).sort(), Object.keys(live.pipeline).sort());
+  assert.deepEqual(Object.keys(empty.triage).sort(), Object.keys(live.triage).sort());
+  // The dashboard iterates these directly; a missing array crashes first paint.
+  for (const key of ['new', 'watch', 'active', 'awaitingDecision', 'recentlyClosed', 'flags']) {
+    assert.deepEqual(empty.pipeline[key], [], `pipeline.${key} must be an empty array`);
+  }
+  assert.equal(empty.pipeline.summary.total, 0);
+  assert.deepEqual(empty.opportunities, []);
 });

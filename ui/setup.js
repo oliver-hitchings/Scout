@@ -33,6 +33,12 @@ export function matchingPreset(days, mode = 'primary') {
   return 'custom';
 }
 
+// Settings section -> the STEPS index that edits it. Named so the mapping is
+// stated once instead of being recomputed as a literal at each call site.
+export const RETUNE_ENTRY_STEPS = Object.freeze({
+  search: STEPS.indexOf('Your search'),
+  sources: STEPS.indexOf('Adzuna'),
+});
 const SETTINGS_SECTIONS = [
   ['search', 'Search & profile', 'Roles, locations, compensation, commute and exclusions'],
   ['providers', 'AI providers', 'Choose the signed-in provider Scout uses'],
@@ -182,8 +188,45 @@ const Setup = {
   operationTimers: {},
   backgroundOperations: new Set(),
   showVerificationPass: false,
+  // The wizard step a retune or resume began from. Back returns to the settings
+  // hub from that step rather than walking further into first-run onboarding.
+  retuneEntryStep: null,
+  retuneSubtitle: null,
 
   el(id) { return document.getElementById(id); },
+
+  // Settings sections open the wizard step that actually edits them. Numeric
+  // step arithmetic at each call site previously landed one step early, so
+  // "Retune my search" opened the AI provider question.
+  enterRetune(section) {
+    const entry = RETUNE_ENTRY_STEPS[section];
+    if (!Number.isInteger(entry) || entry < 0) throw new Error(`unknown retune section: ${section}`);
+    this.view = 'retune';
+    this.step = entry;
+    this.retuneEntryStep = entry;
+    this.retuneSubtitle = null;
+    this.preferenceStep = 0;
+    this.preferenceDraft = null;
+    this.render();
+  },
+
+  // Unfinished proposal or scan work is resumed here. An established workspace
+  // must never be dropped into the blocking first-run wizard: it keeps a close
+  // control and a route back to settings, otherwise a staged-but-unactivated
+  // proposal locks the dashboard away on every reload.
+  resumeAt(step) {
+    const established = Boolean(this.status?.established || this.status?.setupComplete);
+    this.view = established ? 'retune' : 'onboarding';
+    this.step = step;
+    this.retuneEntryStep = established ? step : null;
+    this.retuneSubtitle = established ? 'Finish or discard the setup work Scout has staged.' : null;
+    this.el('setup-overlay').classList.remove('hidden');
+    this.render();
+  },
+
+  atRetuneEntry() {
+    return this.view === 'retune' && this.retuneEntryStep !== null && this.step === this.retuneEntryStep;
+  },
 
   focusDialogTitle() {
     window.ScoutModal?.focus(this.el('setup-overlay'), '#setup-title');
@@ -250,17 +293,11 @@ const Setup = {
       const proposalRunning = ['queued', 'running'].includes(this.operations.proposal?.status);
       const scanRunning = ['queued', 'running'].includes(this.operations.scan?.status);
       if (!keepOpen && (proposalRunning || (this.proposal && !this.status.ready))) {
-        this.view = 'onboarding';
-        this.step = 5;
-        this.el('setup-overlay').classList.remove('hidden');
-        this.render();
+        this.resumeAt(5);
         return;
       }
       if (!keepOpen && scanRunning && !this.status.setupComplete) {
-        this.view = 'onboarding';
-        this.step = 6;
-        this.el('setup-overlay').classList.remove('hidden');
-        this.render();
+        this.resumeAt(6);
         return;
       }
       if (keepOpen && DISMISSIBLE_VIEWS.has(this.view)) {
@@ -284,10 +321,7 @@ const Setup = {
         return;
       }
       if (!keepOpen && this.status.setupComplete && !this.status.ready) {
-        this.view = 'onboarding';
-        this.step = 5;
-        this.el('setup-overlay').classList.remove('hidden');
-        this.render();
+        this.resumeAt(5);
         this.setMessage('Scout setup needs attention before another scan can run.', 'error');
         return;
       }
@@ -342,6 +376,8 @@ const Setup = {
     this.incrementalSection = null;
     this.preferenceStep = 0;
     this.preferenceDraft = null;
+    this.retuneEntryStep = null;
+    this.retuneSubtitle = null;
     // Provider checks can take several seconds. Open the dialog immediately so
     // the Settings button never appears unresponsive while status is refreshed.
     this.el('setup-overlay').classList.remove('hidden');
@@ -516,7 +552,8 @@ const Setup = {
       this.settingsOpen = true;
       this.el('setup-close').classList.remove('hidden');
       this.el('setup-title').textContent = 'Retune Scout';
-      this.el('setup-subtitle').textContent = 'Review staged changes before they affect your active search.';
+      this.el('setup-subtitle').textContent = this.retuneSubtitle
+        || 'Review staged changes before they affect your active search.';
     } else {
       this.settingsOpen = false;
       this.el('setup-close').classList.add('hidden');
@@ -525,9 +562,7 @@ const Setup = {
     if (this.incrementalSection) return this.renderIncrementalSection();
     this.renderProgress();
     this.el('setup-back').classList.toggle('hidden', this.step === 0);
-    this.el('setup-back').textContent = this.view === 'retune' && this.step === 1
-      ? 'Back to settings'
-      : 'Back';
+    this.el('setup-back').textContent = this.atRetuneEntry() ? 'Back to settings' : 'Back';
     // The optional hand-off uses the primary Finish for now action. Keep the
     // legacy footer control hidden so users are not offered duplicate exits.
     this.el('setup-skip').classList.add('hidden');
@@ -561,6 +596,8 @@ const Setup = {
     this.settingsSection = null;
     this.preferenceDraft = null;
     this.preferenceStep = 0;
+    this.retuneEntryStep = null;
+    this.retuneSubtitle = null;
     this.render();
     this.focusDialogTitle();
   },
@@ -609,11 +646,7 @@ const Setup = {
       <p><button id="settings-retune-search" class="act primary" type="button">Retune my search</button></p>
       <p class="meta">Retuning stages evidence-led changes for review. It does not reset tracker, application, report or chat history.</p>`;
     this.el('settings-retune-search').addEventListener('click', () => {
-      this.view = 'retune';
-      this.step = 1;
-      this.preferenceStep = 0;
-      this.preferenceDraft = null;
-      this.render();
+      this.enterRetune('search');
       this.focusDialogTitle();
     });
   },
@@ -659,11 +692,7 @@ const Setup = {
       <p>Saved credentials are never displayed. Use Retune my search to add or replace them.</p></div>
       <p><button id="settings-retune-sources" class="act" type="button">Retune search and sources</button></p>`;
     this.el('settings-retune-sources').addEventListener('click', () => {
-      this.view = 'retune';
-      this.step = 2;
-      this.preferenceStep = 0;
-      this.preferenceDraft = null;
-      this.render();
+      this.enterRetune('sources');
       this.focusDialogTitle();
     });
   },
@@ -1059,22 +1088,60 @@ const Setup = {
         ${git.installed && git.credentialManager ? '' : '<p><a href="https://git-scm.com/download/win" target="_blank" rel="noreferrer">Install Git for Windows</a> <button id="setup-check-git" class="act" type="button">Check again</button></p>'}
         <label class="setup-field">Private repository HTTPS URL<input id="setup-restore-url" type="url" placeholder="https://github.com/your-name/scout-workspace"></label>
         <label class="setup-field">Recovery passphrase or recovery key<input id="setup-restore-secret" type="password" autocomplete="off"></label>
-        <p><button id="setup-restore-workspace" class="act primary" type="button" ${git.installed && git.credentialManager ? '' : 'disabled'}>Restore securely</button></p>
+        <p><button id="setup-restore-workspace" class="act primary" type="button" ${git.installed && git.credentialManager ? '' : 'disabled'}>Restore securely</button> <button id="setup-cancel-restore" class="act" type="button">Cancel</button></p>
         <p class="meta">Restore requires an empty Scout workspace folder and never overwrites existing work.</p>
       </div></div></div>`;
     this.el('setup-create-workspace').addEventListener('click', () => this.createWorkspace());
-    this.el('setup-show-restore').addEventListener('click', () => this.el('setup-restore-form').classList.remove('hidden'));
+    // Revealing the restore form must be reversible; without a Cancel the two
+    // first-run choices become a one-way door into a credentials form.
+    this.el('setup-show-restore').addEventListener('click', () => {
+      this.el('setup-restore-form').classList.remove('hidden');
+      this.el('setup-show-restore').disabled = true;
+    });
+    this.el('setup-cancel-restore')?.addEventListener('click', () => {
+      this.el('setup-restore-form').classList.add('hidden');
+      this.el('setup-show-restore').disabled = false;
+      this.el('setup-restore-url').value = '';
+      this.el('setup-restore-secret').value = '';
+      this.setMessage();
+    });
     this.el('setup-check-git')?.addEventListener('click', () => location.reload());
     this.el('setup-restore-workspace')?.addEventListener('click', () => this.restoreWorkspace());
   },
 
+  // Creating the workspace is fast, but the status refresh behind it probes
+  // providers and Git and can take several seconds. Lock the two bootstrap
+  // choices and move to the first real step from the create response, so the
+  // welcome screen never sits unchanged under a frozen progress message while
+  // a second click returns "this workspace already exists".
+  setBootstrapChoicesBusy(busy) {
+    for (const id of ['setup-create-workspace', 'setup-show-restore', 'setup-restore-workspace', 'setup-cancel-restore']) {
+      const button = this.el(id);
+      if (button) button.disabled = busy;
+    }
+    // Re-enabling must not undo the open/closed state of the restore form.
+    const showRestore = this.el('setup-show-restore');
+    if (!busy && showRestore) {
+      showRestore.disabled = !this.el('setup-restore-form')?.classList.contains('hidden');
+    }
+  },
+
   async createWorkspace() {
+    this.setBootstrapChoicesBusy(true);
     this.setMessage('Creating your local private workspace…');
     try {
       await requestJson('/api/workspace/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      this.status = { ...this.status, bootstrap: false, trackerExists: true };
+      this.view = 'onboarding';
+      this.step = 0;
       this.el('setup-next').classList.remove('hidden');
-      await this.refreshStatus({ keepOpen: true });
-    } catch (error) { this.setMessage(error.message, 'error'); }
+      this.render();
+      this.setMessage('Your local workspace is ready. Continue to choose an AI provider.', 'good');
+      void this.refreshStatus({ keepOpen: true });
+    } catch (error) {
+      this.setBootstrapChoicesBusy(false);
+      this.setMessage(error.message, 'error');
+    }
   },
 
   async restoreWorkspace() {
@@ -1131,8 +1198,19 @@ const Setup = {
   },
 
   bindBackupPanel() {
-    this.el('setup-show-backup')?.addEventListener('click', () => this.el('setup-backup-form').classList.remove('hidden'));
-    this.el('setup-skip-backup')?.addEventListener('click', () => this.setMessage('Private backup skipped. You can enable it later in Settings.', 'good'));
+    // Both controls must visibly change the panel. "Not now" previously only
+    // printed a message and left the identical panel in place, so it read as a
+    // choice that did nothing.
+    this.el('setup-show-backup')?.addEventListener('click', () => {
+      this.el('setup-backup-form').classList.remove('hidden');
+      this.el('setup-show-backup').disabled = true;
+      this.setMessage('Follow the steps below to connect a private backup repository.');
+    });
+    this.el('setup-skip-backup')?.addEventListener('click', () => {
+      this.el('setup-backup-form').classList.add('hidden');
+      if (this.el('setup-show-backup')) this.el('setup-show-backup').disabled = false;
+      this.setMessage('Private backup skipped. You can enable it later in Settings.', 'good');
+    });
     this.el('setup-backup-check-git')?.addEventListener('click', () => location.reload());
     this.el('setup-prepare-deploy-key')?.addEventListener('click', () => this.prepareDeployKey());
     this.el('setup-connect-backup')?.addEventListener('click', () => this.connectBackup());
@@ -1309,7 +1387,7 @@ const Setup = {
 
   move(delta) {
     if (this.busy) return;
-    if (this.view === 'retune' && this.step === 1 && delta < 0) {
+    if (this.atRetuneEntry() && delta < 0) {
       this.showSettingsHub();
       return;
     }
@@ -1325,6 +1403,10 @@ const Setup = {
 
   selectedProvider() {
     return document.querySelector('input[name="setup-provider"]:checked:not(:disabled)')?.value || '';
+  },
+
+  selectableProviders() {
+    return [...document.querySelectorAll('input[name="setup-provider"]:not(:disabled)')].map((input) => input.value);
   },
 
   readPreferences() {
@@ -1350,7 +1432,11 @@ const Setup = {
       }
       if (this.step === 1) {
         const provider = this.selectedProvider();
-        if (!provider) throw new Error('Sign in to Codex or Claude, refresh the status, then choose it.');
+        // Blaming sign-in is wrong when a provider is already authenticated and
+        // the person simply has not picked one yet.
+        if (!provider) throw new Error(this.selectableProviders().length
+          ? 'Choose a provider to continue.'
+          : 'Sign in to Codex or Claude, refresh the status, then choose it.');
         const result = await requestJson('/api/setup/config', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ ai: { provider, model: null } }),

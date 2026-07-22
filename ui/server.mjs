@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { isMainModule } from './lib/mainModule.mjs';
 import { atomicWriteFile } from './lib/atomicWrite.mjs';
 import { triage } from './lib/derive.mjs';
-import { pipeline } from './lib/pipeline.mjs';
+import { emptyTrackerView, pipeline } from './lib/pipeline.mjs';
 import { cvPdfPath, listCvFiles, renderCvTarget, safeCvPath } from './lib/cv.mjs';
 import { cvDownloadDecision, overrideCvQuality, readCvQuality, runCvQuality } from './lib/cvQuality.mjs';
 import { parseScanRuns, scanHealthFromText } from './lib/scanHealth.mjs';
@@ -467,8 +467,8 @@ async function handleRead(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/opportunities') {
     if (!workspaceInitialised()) return sendJson(res, 200, {
-      updated: today(), opportunities: [], triage: { action: [], unlock: [], hold: [] },
-      pipeline: {}, scanHealth: { healthy: false, lastRunAt: null },
+      ...emptyTrackerView(today()),
+      scanHealth: { healthy: false, lastRunAt: null },
       schedule: { enabled: false, configured: false }, categories: JOB_CATEGORIES,
       workspaceConfig: null, bootstrap: true, trackerRevision: null,
     });
