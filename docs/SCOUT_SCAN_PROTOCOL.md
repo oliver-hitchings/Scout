@@ -4,7 +4,7 @@ This is the provider-neutral contract for manual and scheduled scans.
 
 ## Trusted runtime ownership
 
-Every run declares `agent=codex|claude` and `mode=primary|second-pass`. Scout's trusted runtime owns the private workspace lock, source collection, normalisation, deduplication, mandatory gates, score arithmetic, tracker merge, report generation and scan-run record. A live lock stops an overlapping run; the blocked run is recorded as skipped instead of running concurrently. Stale locks older than two hours may be recovered.
+Every run declares `agent=codex|claude` and `mode=primary|broadened|second-pass`. Scout's trusted runtime owns the private workspace lock, source collection, normalisation, deduplication, mandatory gates, score arithmetic, tracker merge, report generation and scan-run record. A live lock stops an overlapping run; the blocked run is recorded as skipped instead of running concurrently. Stale locks older than two hours may be recovered.
 
 The provider receives only the private scoring configuration, bounded profile/CV evidence and at most 40 normalised candidates with capped descriptions. It returns schema-constrained assessments from one non-resumable, no-tools turn. It never invokes Scout, browses independently, writes workspace files, applies for a role or sends outreach. When sources yield zero candidates, Scout skips the provider entirely and still writes a truthful healthy-empty or degraded run.
 
@@ -17,6 +17,10 @@ Interactive tracker changes use the same workspace lock as scans. Each browser r
 Scout runs configured ATS, Adzuna and hiring.cafe sources. Missing optional configuration is reported as not configured. A successful empty response is healthy; partial query/portal failure is degraded; a blocked or failed configured source is unavailable. Hiring.cafe retryable network/HTTP failures receive at most three bounded attempts, and Scout refreshes its build ID once after a 404 or endpoint-shape change.
 
 Only healthy completed coverage enables scheduling. A degraded run states that its results are not evidence that no suitable roles exist.
+
+If a supervised first/manual primary scan keeps no candidates, Scout automatically performs one broader discovery pass. It adds adjacent role aliases and broader role/sector/location query combinations, and removes the source-level location restriction where supported. It does not change the approved minimum salary, hard exclusions, location/commute policy, mandatory evidence or score gates. Scheduled scans and explicit second passes do not recursively broaden.
+
+Manual operations show phase, elapsed time and an approximate remaining range. The range comes from up to ten healthy, non-skipped runs using the same provider and mode; without history Scout displays a conservative 5–10 minute range. An overrun remains visibly active rather than becoming a false zero countdown.
 
 ## Mandatory requirements and scoring
 
@@ -41,6 +45,6 @@ Scout writes `reports/YYYY-MM-DD.md` with:
 7. `## Discarded`
 8. `## Verdicts`
 
-It appends one canonical JSON object to `data/scan-runs.jsonl` containing `schemaVersion`, timestamp/start time, agent, mode, `degraded`, `sources_checked`, `queries_checked`, candidate/keeper counts, discarded reasons, errors and `source_health`. Readers remain compatible with beta.9 aliases including nested `degradation`, `checked_sources`, `candidate_count`, `keeper_count` and `discarded_reasons`.
+It appends one canonical schema-version-3 JSON object to `data/scan-runs.jsonl` containing timestamp/start time, agent, mode, `degraded`, `sources_checked`, `queries_checked`, candidate/keeper counts, discarded reasons, errors, `source_health` and a bounded `reviewed` audit. Audit entries contain only company, role, source link, category, outcome, score and up to three concise reasons; they never contain prompts, profile evidence, provider transcripts or full advert descriptions. Readers remain compatible with older records and beta.9 aliases including nested `degradation`, `checked_sources`, `candidate_count`, `keeper_count` and `discarded_reasons`.
 
 Multiple runs on the same date are combined into one report with separate provider/mode summaries; the later run never erases the earlier run's presence. Before reporting success, Scout reads back and validates the tracker, required report sections and the matching final run record. The lock is released after completed, healthy-empty, degraded or failed runs.
