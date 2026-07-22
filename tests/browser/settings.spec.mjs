@@ -515,6 +515,8 @@ test('a service-worker or build upgrade waits for CV edits, operations, and sett
   await operationsReattached;
 
   const banner = page.locator('#ui-update-banner');
+  await expect(page.locator('#setup-overlay')).toHaveClass(/hidden/);
+  await expect.poll(() => banner.evaluate((element) => element.inert)).toBe(false);
   await expect(banner).toContainText('Scout has updated');
   await page.evaluate(() => {
     window.Scout.cvState.dirty = true;
