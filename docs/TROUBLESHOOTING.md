@@ -32,6 +32,8 @@ Scout serves the UI on loopback at `http://127.0.0.1:8459`. Close stale Scout pr
 
 If an already-open page still shows an older layout after Scout itself was upgraded, refresh it once. Current Scout builds compare the loaded interface with the serving process and display **Scout updated — Refresh Scout** when they differ. Scout never performs that refresh silently; save or close active CV edits, chats, scans and settings first.
 
+The same protection applies when a new service worker is ready: Scout keeps the refresh pending while CV edits, settings, chats, scans or setup operations are active. A remote restart requires explicit confirmation and is refused until active work has drained; retry after the operation finishes.
+
 The header backup status opens **Backup details**. Use **Advanced backup settings** from there for configuration. The main **Settings** button opens the sectioned settings hub; first-run onboarding appears automatically only for an unfinished workspace.
 
 If Setup temporarily cannot reach the local Scout server, select **Retry** after the server is available. Retry reconnects in place: it does not reload the page or discard answers you have entered in the current onboarding or retuning step.
@@ -57,6 +59,8 @@ Scout briefly waits when a scan is finishing, then refreshes and retries a stale
 ## Restore fails
 
 Restore requires an empty target folder, the private repository HTTPS URL, and either the passphrase or emergency recovery key. Scout rejects malformed/tampered recovery data, symlinks, unsupported workspace schemas and workspaces that fail `scout doctor`. Codex/Claude authentication is not restored; sign in to the provider separately. Startup and scheduled scans require explicit confirmation on the new computer.
+
+Scout validates the restored workspace both before and after activation. If the post-activation check fails, it removes the rejected restored data and returns the original empty target folder instead of leaving a partly activated workspace behind.
 
 ## SmartScreen or checksum mismatch
 

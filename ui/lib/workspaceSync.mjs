@@ -406,6 +406,7 @@ function assertNoSymlinks(root, current = root) {
 
 export async function restoreWorkspaceFromGithub({ remoteUrl: value, targetRoot, secret }, options = {}) {
   if (!emptyDirectory(targetRoot)) throw new Error('Restore requires an empty workspace folder');
+  const targetExisted = fs.existsSync(targetRoot);
   const git = detectGit(options);
   if (!git.installed) throw new Error('Install Git before restoring Scout');
   const verified = options.verifyRemote
@@ -417,6 +418,7 @@ export async function restoreWorkspaceFromGithub({ remoteUrl: value, targetRoot,
   const parent = path.dirname(path.resolve(targetRoot));
   fs.mkdirSync(parent, { recursive: true });
   const temp = path.join(parent, `.scout-restore-${crypto.randomUUID()}`);
+  let activated = false;
   try {
     const clone = runGit(parent, ['clone', verified.url, temp], { ...options, allowPrompt: true });
     if (!clone.ok) throw new Error(`Restore clone failed: ${clone.error}`);
@@ -425,6 +427,7 @@ export async function restoreWorkspaceFromGithub({ remoteUrl: value, targetRoot,
       if (!fs.existsSync(path.join(temp, ...relative.split('/')))) throw new Error('The repository is not a Scout workspace');
     }
     const restored = restoreRecoveryBackup(temp, temp, secret);
+    if (options.prepareWorkspace) await options.prepareWorkspace(temp);
     if (options.validateWorkspace) {
       const validation = await options.validateWorkspace(temp);
       if (!validation?.ok) throw new Error('The restored workspace did not pass Scout doctor');
@@ -433,9 +436,20 @@ export async function restoreWorkspaceFromGithub({ remoteUrl: value, targetRoot,
     saveSyncSettings(temp, settings);
     if (fs.existsSync(targetRoot)) fs.rmdirSync(targetRoot);
     fs.renameSync(temp, targetRoot);
+    activated = true;
+    let validation = null;
+    if (options.validateWorkspace) {
+      validation = await options.validateWorkspace(targetRoot);
+      if (!validation?.ok) throw new Error('The restored workspace failed validation after activation; Scout rolled it back');
+    }
     setState(targetRoot, 'synced', { enabled: true, pending: false });
-    return { ok: true, workspaceRoot: path.resolve(targetRoot), devicePreferences: restored.devicePreferences, files: restored.files };
+    return {
+      ok: true, workspaceRoot: path.resolve(targetRoot), devicePreferences: restored.devicePreferences,
+      files: restored.files, validation,
+    };
   } catch (error) {
+    if (activated && fs.existsSync(targetRoot)) fs.rmSync(targetRoot, { recursive: true, force: true });
+    if (activated && targetExisted && !fs.existsSync(targetRoot)) fs.mkdirSync(targetRoot, { recursive: true });
     fs.rmSync(temp, { recursive: true, force: true });
     throw error;
   }

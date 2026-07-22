@@ -18,10 +18,13 @@ test('operation manager reports phases, results, and terminal state', async () =
   await tick();
   assert.deepEqual(manager.get('op-1').progress, { current: 2, total: 4 });
   assert.equal(manager.get('op-1').phase, 'Scoring candidates');
+  assert.equal(manager.active().id, 'op-1');
+  assert.deepEqual(manager.activeList().map((operation) => operation.id), ['op-1']);
   assert.throws(() => manager.start('scan', async () => null), OperationConflictError);
   release();
   await tick();
   assert.equal(manager.get('op-1').status, 'succeeded');
+  assert.deepEqual(manager.activeList(), []);
   assert.deepEqual(manager.get('op-1').result, { reviewed: 40, kept: 0 });
   assert.equal(operationIsTerminal(manager.get('op-1')), true);
 });

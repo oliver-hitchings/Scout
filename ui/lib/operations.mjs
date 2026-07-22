@@ -42,8 +42,10 @@ export class OperationManager {
   }
 
   active(type) {
-    return clone([...this.records.values()].findLast((record) => record.type === type && ACTIVE.has(record.status)));
+    return clone([...this.records.values()].findLast((record) => (!type || record.type === type) && ACTIVE.has(record.status)));
   }
+
+  activeList() { return [...this.records.values()].filter((record) => ACTIVE.has(record.status)).map(clone); }
 
   start(type, executor, { phase = 'Queued', total = 1 } = {}) {
     const active = this.active(type);

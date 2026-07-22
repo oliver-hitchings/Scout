@@ -23,6 +23,8 @@ export const ENGINES = {
 };
 
 const running = new Map(); // opportunity id -> { stop() }
+
+export function activeChatTurnCount() { return running.size; }
 export const ONBOARDING_CHAT_ID = 'setup-onboarding';
 
 const FIT_SCHEMA = Object.freeze({

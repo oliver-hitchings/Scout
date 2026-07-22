@@ -66,7 +66,7 @@ const WORKSPACE = workspacePaths(WORKSPACE_ROOT);
 const TRACKER = WORKSPACE.tracker;
 const REPORTS_DIR = WORKSPACE.reports;
 const SCAN_RUNS = WORKSPACE.scanRuns;
-const operations = new OperationManager();
+export const operations = new OperationManager();
 
 // Fresh installations remain uninitialised until the person chooses either a
 // new local workspace or Restore. Existing workspaces keep the legacy fast path.
@@ -263,7 +263,7 @@ export function requestAccess(req, url, settings = loadDeviceSettings()) {
     || url.pathname.startsWith('/api/sync/')
     || url.pathname.startsWith('/api/workspace/')
     || url.pathname.startsWith('/api/remote-access/')
-    || ['POST /api/setup/proposal', 'POST /api/setup/activate', 'POST /api/setup/recovery', 'DELETE /api/setup/proposal'].includes(`${req.method} ${url.pathname}`);
+    || ['POST /api/restart', 'POST /api/setup/proposal', 'POST /api/setup/activate', 'POST /api/setup/recovery', 'DELETE /api/setup/proposal'].includes(`${req.method} ${url.pathname}`);
   if (mutatingApi && requiresJson) {
     const mediaType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
     if (mediaType !== 'application/json') {
@@ -622,11 +622,12 @@ routes['POST /api/workspace/restore'] = async (req, res, body) => {
   try {
     const result = await restoreWorkspaceFromGithub({
       remoteUrl: b.remoteUrl, targetRoot: WORKSPACE_ROOT, secret: b.secret,
-    }, { validateWorkspace: (root) => doctor(root, { requireProvider: false, appRoot: APP_ROOT }) });
-    syncManagedInstructions(APP_ROOT, WORKSPACE_ROOT);
-    const health = doctor(WORKSPACE_ROOT, { requireProvider: false, appRoot: APP_ROOT });
-    if (!health.ok) return replyJson(res, 409, { error: 'The restored workspace did not pass Scout doctor', doctor: health });
-    return replyJson(res, 200, { ...result, doctor: health });
+    }, {
+      prepareWorkspace: (root) => syncManagedInstructions(APP_ROOT, root),
+      validateWorkspace: (root) => doctor(root, { requireProvider: false, appRoot: APP_ROOT }),
+    });
+    const { validation, ...restored } = result;
+    return replyJson(res, 200, { ...restored, doctor: validation });
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
 };
 
@@ -835,7 +836,7 @@ routes['POST /api/cv/quality/override'] = (req, res, body) => {
   catch (e) { return replyJson(res, 409, { error: e.message }); }
 };
 
-import { registerChatRoutes } from './lib/chatService.mjs';
+import { activeChatTurnCount, registerChatRoutes } from './lib/chatService.mjs';
 import { registerCompanyRoutes } from './lib/companyService.mjs';
 routes['POST /api/setup/proposal'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
@@ -1164,7 +1165,19 @@ export const shutdownControl = {
   exit() { process.exit(0); },
 };
 
-routes['POST /api/restart'] = (req, res) => {
+routes['POST /api/restart'] = (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  if (req.scoutAccess === 'remote-owner' && b.confirmed !== true) {
+    return replyJson(res, 409, { error: 'Confirm the remote restart explicitly before Scout stops remote access.' });
+  }
+  const activeOperations = operations.activeList();
+  const activeChats = activeChatTurnCount();
+  if (activeOperations.length || activeChats) {
+    return replyJson(res, 409, {
+      error: 'Wait for active Scout work to finish before restarting.',
+      active: { operations: activeOperations.map(({ id, type, status, phase }) => ({ id, type, status, phase })), chats: activeChats },
+    });
+  }
   replyJson(res, 200, { ok: true, restarting: true });
   setTimeout(() => restartControl.respawn(), 200);
 };

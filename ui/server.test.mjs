@@ -10,7 +10,7 @@ const previousDeviceSettings = process.env.SCOUT_DEVICE_SETTINGS;
 const testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-server-test-'));
 process.env.SCOUT_WORKSPACE = testWorkspace;
 process.env.SCOUT_DEVICE_SETTINGS = path.join(testWorkspace, 'device-settings.json');
-const { APP_ROOT, APP_VERSION, UI_BUILD_ID, WORKSPACE_ROOT, createServer, providerDetection, restartControl, shutdownControl } = await import('./server.mjs');
+const { APP_ROOT, APP_VERSION, UI_BUILD_ID, WORKSPACE_ROOT, createServer, operations, providerDetection, restartControl, shutdownControl } = await import('./server.mjs');
 const { seedWorkspace } = await import('./lib/workspace.mjs');
 const { acquireScanLock, releaseScanLock } = await import('../tools/scan-lock.mjs');
 
@@ -263,7 +263,8 @@ test('restart responds first, then schedules the respawn', async () => {
     const response = await request({
       method: 'POST',
       path: '/api/restart',
-      headers: { host, origin: `http://${host}` },
+      headers: { host, origin: `http://${host}`, 'content-type': 'application/json' },
+      body: '{}',
     });
     assert.equal(response.status, 200);
     assert.deepEqual(JSON.parse(response.text), { ok: true, restarting: true });
@@ -279,9 +280,43 @@ test('restart rejects a cross-origin browser request', async () => {
   const response = await request({
     method: 'POST',
     path: '/api/restart',
-    headers: { host: `127.0.0.1:${port}`, origin: 'https://attacker.example' },
+    headers: { host: `127.0.0.1:${port}`, origin: 'https://attacker.example', 'content-type': 'application/json' }, body: '{}',
   });
   assert.equal(response.status, 403);
+});
+
+test('restart waits for active operations and remote restart requires confirmation', async () => {
+  let release;
+  const blocker = new Promise((resolve) => { release = resolve; });
+  const operation = operations.start('restart-test', async () => blocker, { phase: 'Saving protected work' });
+  const host = `127.0.0.1:${port}`;
+  const blocked = await request({
+    method: 'POST', path: '/api/restart',
+    headers: { host, origin: `http://${host}`, 'content-type': 'application/json' }, body: '{}',
+  });
+  assert.equal(blocked.status, 409);
+  const active = JSON.parse(blocked.text).active.operations;
+  assert.equal(active.length, 1);
+  assert.equal(active[0].id, operation.id);
+  assert.equal(active[0].type, 'restart-test');
+  assert.match(active[0].status, /^(queued|running)$/);
+  assert.equal(active[0].phase, 'Saving protected work');
+  release();
+  const deadline = Date.now() + 500;
+  while (operations.active('restart-test') && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(operations.active('restart-test'), null);
+
+  fs.writeFileSync(process.env.SCOUT_DEVICE_SETTINGS, JSON.stringify({
+    schemaVersion: 2,
+    remoteAccess: { enabled: true, ownerLogin: 'owner@example.com', origin: 'https://scout-host.example.ts.net' },
+  }));
+  const remoteHeaders = {
+    host: 'scout-host.example.ts.net', origin: 'https://scout-host.example.ts.net',
+    'tailscale-user-login': 'owner@example.com', 'content-type': 'application/json',
+  };
+  const unconfirmed = await request({ method: 'POST', path: '/api/restart', headers: remoteHeaders, body: '{}' });
+  assert.equal(unconfirmed.status, 409);
+  assert.match(JSON.parse(unconfirmed.text).error, /Confirm the remote restart/);
 });
 
 test('bounded setup mutations require same-origin JSON requests', async () => {
