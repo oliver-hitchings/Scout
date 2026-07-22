@@ -194,6 +194,7 @@ const Scout = {
   discoveryTimer: null,
   scanRunning: false,
   scanOperationTimer: null,
+  latestScan: null,
   lastSyncPullAt: null,
   companyHistory: null,
   uiBuildId: SCOUT_UI_BUILD,
@@ -307,15 +308,26 @@ const Scout = {
   },
 
   async loadOpportunities() {
-    [this.state.data, this.state.cvFiles] = await Promise.all([
+    const [data, cvFiles, latest] = await Promise.all([
       this.api('/api/opportunities'),
       this.api('/api/cv'),
+      this.api('/api/scans/latest').catch(() => ({ scan: null })),
     ]);
+    this.state.data = data;
+    this.state.cvFiles = cvFiles;
+    this.latestScan = latest?.scan || null;
     this.applyWorkspaceConfig(this.state.data.workspaceConfig, { render: false });
     this.setupCategoryUi();
     const h = this.state.data.scanHealth;
-    const health = h ? (h.healthy ? 'healthy' : (h.stale ? 'stale' : 'degraded')) : 'unknown';
-    document.getElementById('scan-status').textContent = `last scan: ${this.state.data.updated} - ${health}`;
+    const status = document.getElementById('scan-status');
+    if (status) {
+      status.textContent = h?.lastRunAt
+        ? `Last scan: ${Number(h.candidatesFound || 0)} reviewed · ${Number(h.keepersAdded || 0)} kept`
+        : 'No scan completed yet';
+      status.dataset.action = h?.lastRunAt ? 'open-scan-result' : '';
+      status.tabIndex = h?.lastRunAt ? 0 : -1;
+      status.setAttribute('role', h?.lastRunAt ? 'button' : 'status');
+    }
     this.categoryIds().forEach((category) => this.renderCategory(category));
     this.renderPipeline();
     this.renderAll();
@@ -354,10 +366,40 @@ const Scout = {
     const seconds = Number.isFinite(started) ? Math.max(0, Math.floor((end - started) / 1000)) : 0;
     const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
     const step = operation.progress ? `step ${operation.progress.current}/${operation.progress.total}` : '';
+    const estimate = operation.estimate;
+    let remaining = '';
+    if (estimate && !['failed', 'succeeded'].includes(operation.status)) {
+      const low = Number(estimate.totalSecondsLow || 0);
+      const high = Number(estimate.totalSecondsHigh || 0);
+      if (seconds > high) remaining = `taking longer than the recent ${Math.max(1, Math.ceil(low / 60))}–${Math.max(1, Math.ceil(high / 60))} min range; still working`;
+      else {
+        const lowMinutes = Math.max(0, Math.floor((low - seconds) / 60));
+        const highMinutes = Math.max(1, Math.ceil((high - seconds) / 60));
+        remaining = lowMinutes < 1 ? `about ${highMinutes} min or less remaining` : `about ${lowMinutes}–${highMinutes} min remaining`;
+      }
+    }
     status.textContent = operation.status === 'failed'
       ? `Scan needs attention: ${operation.error || 'unknown error'}`
       : operation.status === 'succeeded' ? 'Scan completed — refreshing results…'
-        : `${operation.phase || 'Scout is searching'} · ${step} · ${elapsed}`;
+        : `${operation.phase || 'Scout is searching'} · ${step} · ${elapsed}${remaining ? ` · ${remaining}` : ''}`;
+  },
+
+  discardBreakdown(scan = this.latestScan || this.state.data?.scanHealth) {
+    const labels = { hard_exclusion: 'hard exclusions', mandatory_unmet: 'mandatory gates', below_threshold: 'below threshold', provider_discarded: 'assessment discards' };
+    return Object.entries(scan?.discarded || {}).filter(([, count]) => Number(count) > 0)
+      .map(([key, count]) => `${count} ${labels[key] || key.replaceAll('_', ' ')}`).join(', ');
+  },
+
+  latestScanCard() {
+    const scan = this.latestScan;
+    if (!scan?.runAt) return '';
+    const broadened = scan.automaticBroadened ? ' after an automatic broader discovery pass' : '';
+    return `<div class="card scan-result-card">
+      <div class="top"><b>Latest scan result</b><span class="chip">${this.esc(scan.degraded ? 'degraded' : 'complete')}</span></div>
+      <p><strong>${this.esc(scan.candidatesFound)} reviewed, ${this.esc(scan.keepersAdded)} kept</strong>${this.discardBreakdown(scan) ? ` — ${this.esc(this.discardBreakdown(scan))}` : ''}${this.esc(broadened)}.</p>
+      <p class="meta">Zero keepers can be a valid result: Scout keeps approved gates in force even when it broadens discovery.</p>
+      <div class="controls"><button class="act" data-action="open-scan-result">Review this scan</button>${scan.reportDate ? `<button class="act" data-action="open-scan-report" data-date="${this.esc(scan.reportDate)}">Open dated report</button>` : ''}</div>
+    </div>`;
   },
 
   async watchScanOperation(id) {
@@ -674,7 +716,7 @@ const Scout = {
     target.innerHTML =
       this.filterBar()
       + `<div class="label">${this.esc(label)} lane (${entries.length})</div>`
-      + (sec('Action today', action, 'action') || '<p>Nothing new over the bar in this lane.</p>')
+      + (sec('Action today', action, 'action') || (entries.length ? '<p>Nothing new over the bar in this lane.</p>' : this.latestScanCard() || '<p>No scan result is available yet.</p>'))
       + sec('One check from unlocking', unlock)
       + fu
       + sec('Remaining new', remainingNew)
@@ -727,7 +769,7 @@ const Scout = {
         <p><strong>${this.esc(reviewed)} reviewed, ${this.esc(kept)} kept</strong>${discardBreakdown ? ` — ${this.esc(discardBreakdown)}` : ''}. Zero keepers can be a valid result when strict gates exclude every candidate.</p>
         <div class="meta">last run: ${this.esc(h && h.lastRunAt ? h.lastRunAt : 'never')}</div>
         ${sourceHealth}
-        ${/^\d{4}-\d{2}-\d{2}$/.test(reportDate) ? `<p><button class="act" data-action="open-scan-report" data-date="${this.esc(reportDate)}">Review dated report</button></p>` : ''}
+        <p><button class="act" data-action="open-scan-result">Review this scan</button> ${/^\d{4}-\d{2}-\d{2}$/.test(reportDate) ? `<button class="act" data-action="open-scan-report" data-date="${this.esc(reportDate)}">Review dated report</button>` : ''}</p>
       </div>
       ${flags}
       <div class="split">
@@ -737,6 +779,28 @@ const Scout = {
         ${list('Closed / ignored', p.recentlyClosed)}
       </div>`;
   },
+
+  async openScanResult() {
+    if (!this.latestScan) this.latestScan = (await this.api('/api/scans/latest')).scan;
+    const scan = this.latestScan;
+    if (!scan) return;
+    const labels = { kept: 'Kept', hard_exclusion: 'Hard exclusions', mandatory_unmet: 'Mandatory gates', below_threshold: 'Below threshold', provider_discarded: 'Assessment discards' };
+    const groups = Object.entries(labels).map(([outcome, label]) => {
+      const items = (scan.reviewed || []).filter((item) => item.outcome === outcome).sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+      if (!items.length) return '';
+      return `<details ${outcome !== 'kept' ? 'open' : ''}><summary>${this.esc(label)} (${items.length})</summary><div class="scan-review-list">${items.map((item) => `<article class="scan-review-item"><div><b>${this.esc(item.company)} — ${this.esc(item.role)}</b><span class="chip">${this.esc(item.score ?? '—')}</span></div><p>${this.esc((item.reasons || []).join('; ') || label)}</p>${item.sourceUrl ? `<a href="${this.safeHref(item.sourceUrl)}" target="_blank" rel="noopener">View source ↗</a>` : ''}</article>`).join('')}</div></details>`;
+    }).join('');
+    const overlay = document.getElementById('scan-result-overlay');
+    document.getElementById('scan-result-body').innerHTML = `
+      <p><strong>${this.esc(scan.candidatesFound)} reviewed, ${this.esc(scan.keepersAdded)} kept</strong>${this.discardBreakdown(scan) ? ` — ${this.esc(this.discardBreakdown(scan))}` : ''}.</p>
+      ${scan.automaticBroadened ? '<div class="setup-callout"><strong>Discovery widened automatically</strong><p>Scout ran one broader query pass but kept every approved salary, location, commute, exclusion and evidence gate.</p></div>' : ''}
+      ${groups || '<p class="meta">This older scan contains aggregate totals only. Run a new scan for candidate-level explanations.</p>'}
+      <div class="controls">${scan.reportDate ? `<button class="act" data-action="open-scan-report" data-date="${this.esc(scan.reportDate)}">Open dated report</button>` : ''}<button class="act" data-action="close-scan-result">Close</button></div>`;
+    overlay.classList.remove('hidden');
+    ScoutModal.focus(overlay, '#scan-result-title');
+  },
+
+  closeScanResult() { document.getElementById('scan-result-overlay')?.classList.add('hidden'); },
 
   pipelineCard(item) {
     const entry = this.state.data.opportunities.find((o) => o.id === item.id) || item;
@@ -2012,6 +2076,8 @@ const Scout = {
       case 'open-entry': return this.openEntry(tab, id);
       case 'open-report': return this.openReport(date);
       case 'open-scan-report': return this.openScanReport(date);
+      case 'open-scan-result': return this.openScanResult();
+      case 'close-scan-result': return this.closeScanResult();
       case 'complete-stage': return this.completeStage(id, Number(index));
       case 'toggle-source': return this.toggleSourcePanel(id, element);
       case 'mark-applied': return this.markApplied(id);
@@ -2151,6 +2217,9 @@ const Scout = {
     });
     ScoutModal.register(document.getElementById?.('company-drawer'), {
       initialFocus: '[data-action="close-company-history"]', onEscape: () => this.closeCompanyHistory(),
+    });
+    ScoutModal.register(document.getElementById?.('scan-result-overlay'), {
+      initialFocus: '#scan-result-title', onEscape: () => this.closeScanResult(),
     });
     this.registerServiceWorker();
     window.addEventListener?.('offline', () => this.setHostAvailable(false));

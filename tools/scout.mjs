@@ -37,7 +37,31 @@ function selectedWorkspace(argv = process.argv.slice(2)) {
   return resolveWorkspaceRoot({ appRoot: APP_ROOT, argv, env: process.env });
 }
 
-function workspaceQueries(root) {
+const ROLE_ALIASES = [
+  [/\baccount manager\b/i, ['key account manager', 'strategic account manager', 'client account manager', 'partner manager']],
+  [/\bcustomer success\b/i, ['client success manager', 'customer success manager', 'customer experience manager']],
+  [/\bsoftware engineer\b/i, ['software developer', 'platform engineer', 'application developer']],
+  [/\bproduct manager\b/i, ['product owner', 'technical product manager', 'product lead']],
+  [/\boperations\b/i, ['operations manager', 'programme manager', 'delivery manager']],
+];
+
+export function broadenSearchQueries(config, baseQueries = []) {
+  const queries = new Set(baseQueries.map((query) => String(query).trim()).filter(Boolean));
+  const roles = (config.search?.roleFamilies || []).map((value) => String(value).trim()).filter(Boolean);
+  const sectors = (config.search?.sectors || []).map((value) => String(value).trim()).filter(Boolean);
+  const locations = (config.search?.locations || []).map((value) => String(value).trim()).filter(Boolean);
+  for (const role of roles) {
+    for (const [pattern, aliases] of ROLE_ALIASES) if (pattern.test(role)) aliases.forEach((alias) => queries.add(alias));
+    for (const sector of sectors.slice(0, 6)) queries.add(`${role} ${sector}`);
+  }
+  for (const sector of sectors.slice(0, 8)) {
+    queries.add(sector);
+    for (const location of locations.slice(0, 2)) queries.add(`${sector} ${location}`);
+  }
+  return [...queries].slice(0, 30);
+}
+
+function workspaceQueries(root, { broadened = false } = {}) {
   const config = loadWorkspaceConfig(root);
   const queries = new Set((config.search?.roleFamilies || []).map((q) => String(q).trim()).filter(Boolean));
   const file = workspacePaths(root).categories;
@@ -47,7 +71,7 @@ function workspaceQueries(root) {
       for (const category of parsed.categories || []) for (const query of category.queries || []) if (String(query).trim()) queries.add(String(query).trim());
     } catch { /* doctor reports malformed configuration separately */ }
   }
-  return [...queries];
+  return broadened ? broadenSearchQueries(config, [...queries]) : [...queries];
 }
 
 function copyIfPresent(source, target) {
@@ -129,10 +153,31 @@ export function assertScanReady(root, provider, { providerStatusFn = providerSta
   return readiness;
 }
 
-export async function runScan(root, provider, mode, { onProgress = () => {}, model } = {}) {
+export async function runScan(root, provider, mode, {
+  onProgress = () => {}, model, autoBroaden = false, estimate = null,
+} = {}) {
   onProgress({ phase: 'Validating approved evidence', current: 1, total: 5 });
   assertScanReady(root, provider);
-  const result = await runScanWith(root, provider, mode, { onProgress, model });
+  const initial = await runScanWith(root, provider, mode, { onProgress, model });
+  let result = initial;
+  const kept = (initial.scan?.reviewed || []).some((item) => item.outcome === 'kept');
+  if (autoBroaden && mode === 'primary' && initial.ok && !kept) {
+    const broadenedEstimate = estimate ? {
+      ...estimate,
+      totalSecondsLow: Number(estimate.totalSecondsLow || 0) * 2,
+      totalSecondsHigh: Number(estimate.totalSecondsHigh || 0) * 2,
+    } : null;
+    onProgress({
+      phase: 'No keepers — widening discovery safely', current: 6, total: 10,
+      ...(broadenedEstimate ? { estimate: broadenedEstimate } : {}),
+    });
+    const retryProgress = (progress = {}) => onProgress({
+      ...progress, total: 10,
+      current: Number.isFinite(progress.current) ? Math.min(10, 5 + progress.current) : 6,
+    });
+    const broadened = await runScanWith(root, provider, 'broadened', { onProgress: retryProgress, model });
+    result = { ...broadened, automaticBroadened: true, initialScan: initial.scan };
+  }
   await queueWorkspaceSync(root, `complete ${mode || 'primary'} scan`).catch(() => {});
   return result;
 }
@@ -147,9 +192,9 @@ function compactSource(result, configured = true) {
 }
 
 export async function collectScanSources(root, config, {
-  fetchAts = fetchConfiguredPortals, fetchCafe = fetchHiringCafe, fetchAdzunaFn = fetchAdzuna,
+  fetchAts = fetchConfiguredPortals, fetchCafe = fetchHiringCafe, fetchAdzunaFn = fetchAdzuna, broadened = false,
 } = {}) {
-  const queries = workspaceQueries(root);
+  const queries = workspaceQueries(root, { broadened });
   const env = { ...loadEnv(root), ...process.env };
   const credentials = resolveAdzunaCredentials(env);
   const adzuna = config.sources?.adzuna || {};
@@ -163,7 +208,7 @@ export async function collectScanSources(root, config, {
   const [hiringCafe, adzunaResult] = await Promise.all([
     capture(() => fetchCafe(queries, globalThis.fetch, { ...config.sources?.hiringCafe, locale: config.locale }), queries.length > 0),
     capture(() => fetchAdzunaFn({
-      ...(credentials || {}), ...adzuna, queries, where: adzuna.where || config.search?.locations?.[0] || '',
+      ...(credentials || {}), ...adzuna, queries, where: broadened ? '' : (adzuna.where || config.search?.locations?.[0] || ''),
       salaryMin: config.search?.salaryMinimum, locale: config.locale, currency: config.currency,
     }), Boolean(credentials)),
   ]);
@@ -198,7 +243,7 @@ export async function runScanWith(root, provider, mode, {
   onProgress = () => {}, model,
 } = {}) {
   if (!['codex', 'claude'].includes(provider)) throw new Error('provider must be codex or claude');
-  if (!['primary', 'second-pass'].includes(mode)) throw new Error('mode must be primary or second-pass');
+  if (!['primary', 'second-pass', 'broadened'].includes(mode)) throw new Error('mode must be primary, broadened or second-pass');
   const status = providerStatusFn(provider);
   if (!status.installed || !status.authenticated) throw new Error(`${provider} is not installed and authenticated; run scout doctor`);
   syncManagedInstructions(APP_ROOT, root);
@@ -220,7 +265,7 @@ export async function runScanWith(root, provider, mode, {
   let candidates = [];
   try {
     onProgress({ phase: 'Collecting current opportunities', current: 2, total: 5 });
-    collected = await collectSourcesFn(root, config);
+    collected = await collectSourcesFn(root, config, { broadened: mode === 'broadened' });
     candidates = compactCandidates(collected.sources, 40);
     const bundleDir = path.join(root, '.scout', 'scan-input');
     fs.mkdirSync(bundleDir, { recursive: true });

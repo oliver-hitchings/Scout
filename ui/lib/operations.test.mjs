@@ -12,9 +12,10 @@ test('operation manager reports phases, results, and terminal state', async () =
     update({ phase: 'Scoring candidates', current: 2, total: 4 });
     await blocker;
     return { reviewed: 40, kept: 0 };
-  }, { phase: 'Validating evidence', total: 4 });
+  }, { phase: 'Validating evidence', total: 4, estimate: { basis: 'history', sampleSize: 3, totalSecondsLow: 300, totalSecondsHigh: 540 } });
 
   assert.equal(started.status, 'queued');
+  assert.equal(started.estimate.totalSecondsHigh, 540);
   await tick();
   assert.deepEqual(manager.get('op-1').progress, { current: 2, total: 4 });
   assert.equal(manager.get('op-1').phase, 'Scoring candidates');

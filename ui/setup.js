@@ -104,6 +104,21 @@ export function operationElapsed(operation, now = Date.now()) {
   return seconds < 60 ? `${seconds}s elapsed` : `${Math.floor(seconds / 60)}m ${seconds % 60}s elapsed`;
 }
 
+export function operationRemaining(operation, now = Date.now()) {
+  const estimate = operation?.estimate;
+  const started = Date.parse(operation?.startedAt || '');
+  if (!estimate || !Number.isFinite(started)) return '';
+  const elapsed = Math.max(0, Math.floor((now - started) / 1000));
+  const lower = Number(estimate.totalSecondsLow || 0);
+  const upper = Number(estimate.totalSecondsHigh || 0);
+  if (elapsed > upper) {
+    return `Taking longer than the recent ${Math.max(1, Math.ceil(lower / 60))}–${Math.max(1, Math.ceil(upper / 60))} min range — Scout is still working`;
+  }
+  const lowMinutes = Math.max(0, Math.floor((lower - elapsed) / 60));
+  const highMinutes = Math.max(1, Math.ceil((upper - elapsed) / 60));
+  return lowMinutes < 1 ? `About ${highMinutes} min or less remaining` : `About ${lowMinutes}–${highMinutes} min remaining`;
+}
+
 async function requestJson(pathname, options) {
   const response = await fetch(pathname, options);
   const body = await response.json().catch(() => ({}));
@@ -408,7 +423,7 @@ const Setup = {
     return `<div class="setup-callout setup-operation" data-operation-id="${this.escape(operation.id)}" role="status">
       <strong>${this.escape(terminal)}: ${this.escape(operation.phase || type)}</strong>
       <progress max="${this.escape(progress.total || 1)}" value="${this.escape(progress.current || 0)}"></progress>
-      <p class="meta">Step ${this.escape(progress.current || 0)} of ${this.escape(progress.total || 1)} · ${this.escape(operationElapsed(operation))}</p>
+      <p class="meta">Step ${this.escape(progress.current || 0)} of ${this.escape(progress.total || 1)} · ${this.escape(operationElapsed(operation))}${running && operationRemaining(operation) ? ` · ${this.escape(operationRemaining(operation))}` : ''}</p>
       ${operation.error ? `<p class="bad">${this.escape(operation.error)}</p>` : ''}
       ${running ? '<p class="meta">You can close setup or this browser safely. Quitting Scout interrupts local work.</p>' : ''}
       ${type === 'proposal' && running ? '<p><button id="setup-continue-background" class="act" type="button">Continue in background</button></p>' : ''}

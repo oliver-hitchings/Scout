@@ -47,13 +47,14 @@ export class OperationManager {
 
   activeList() { return [...this.records.values()].filter((record) => ACTIVE.has(record.status)).map(clone); }
 
-  start(type, executor, { phase = 'Queued', total = 1 } = {}) {
+  start(type, executor, { phase = 'Queued', total = 1, estimate = null } = {}) {
     const active = this.active(type);
     if (active) throw new OperationConflictError(type, active);
     const timestamp = this.now().toISOString();
     const record = {
       id: this.id(), type, status: 'queued', phase,
       progress: { current: 0, total: Math.max(1, Number(total) || 1) },
+      estimate: estimate ? clone(estimate) : null,
       startedAt: timestamp, updatedAt: timestamp, finishedAt: null,
       result: null, error: null,
     };
@@ -62,10 +63,11 @@ export class OperationManager {
     setImmediate(async () => {
       record.status = 'running';
       record.updatedAt = this.now().toISOString();
-      const update = ({ phase: nextPhase, current, total: nextTotal } = {}) => {
+      const update = ({ phase: nextPhase, current, total: nextTotal, estimate: nextEstimate } = {}) => {
         if (nextPhase) record.phase = String(nextPhase);
         if (Number.isFinite(nextTotal) && nextTotal > 0) record.progress.total = nextTotal;
         if (Number.isFinite(current)) record.progress.current = Math.max(0, Math.min(current, record.progress.total));
+        if (nextEstimate) record.estimate = clone(nextEstimate);
         record.updatedAt = this.now().toISOString();
       };
       try {

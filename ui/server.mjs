@@ -10,7 +10,8 @@ import { triage } from './lib/derive.mjs';
 import { pipeline } from './lib/pipeline.mjs';
 import { listCvFiles, safeCvPath } from './lib/cv.mjs';
 import { cvDownloadDecision, overrideCvQuality, readCvQuality, runCvQuality } from './lib/cvQuality.mjs';
-import { scanHealthFromText } from './lib/scanHealth.mjs';
+import { parseScanRuns, scanHealthFromText } from './lib/scanHealth.mjs';
+import { scanEstimate } from './lib/scanEstimate.mjs';
 import { scheduleStatus, scheduleSummary } from './lib/scheduler.mjs';
 import { loadPortals, portalSummary } from './lib/ats.mjs';
 import { JOB_CATEGORIES } from './lib/filters.mjs';
@@ -146,6 +147,33 @@ function reportDates() {
 function readScanHealth() {
   const text = fs.existsSync(SCAN_RUNS) ? fs.readFileSync(SCAN_RUNS, 'utf8') : '';
   return scanHealthFromText(text, today());
+}
+
+function readScanRecords() {
+  const text = fs.existsSync(SCAN_RUNS) ? fs.readFileSync(SCAN_RUNS, 'utf8') : '';
+  return parseScanRuns(text).runs;
+}
+
+function publicLatestScan() {
+  const run = readScanRecords().at(-1);
+  if (!run) return null;
+  const reviewed = Array.isArray(run.reviewed) ? run.reviewed.map((item) => ({
+    company: String(item?.company || '').slice(0, 120), role: String(item?.role || '').slice(0, 160),
+    source: String(item?.source || '').slice(0, 80),
+    sourceUrl: /^https?:\/\//i.test(String(item?.sourceUrl || '')) ? String(item.sourceUrl) : null,
+    categoryId: item?.categoryId ? String(item.categoryId).slice(0, 80) : null,
+    outcome: ['kept', 'hard_exclusion', 'mandatory_unmet', 'below_threshold', 'provider_discarded'].includes(item?.outcome) ? item.outcome : 'provider_discarded',
+    score: Number.isFinite(Number(item?.score)) ? Number(item.score) : null,
+    reasons: (Array.isArray(item?.reasons) ? item.reasons : []).map((reason) => String(reason).slice(0, 220)).slice(0, 3),
+  })).slice(0, 80) : [];
+  return {
+    schemaVersion: Number(run.schemaVersion || 1), runAt: run.timestamp || null,
+    provider: run.agent || null, mode: run.mode || null, degraded: Boolean(run.degraded),
+    candidatesFound: Number(run.candidates_found || 0), keepersAdded: Number(run.keepers_added || 0),
+    keepersUpdated: Number(run.keepers_updated || 0), discarded: run.discarded || {},
+    sourceHealth: run.source_health || {}, reportDate: String(run.timestamp || '').slice(0, 10) || null,
+    automaticBroadened: run.mode === 'broadened', reviewed,
+  };
 }
 
 function readScheduleSummary(config = loadWorkspaceConfig(WORKSPACE_ROOT), health = readScanHealth()) {
@@ -465,6 +493,9 @@ async function handleRead(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/scan-health') {
     return sendJson(res, 200, readScanHealth());
+  }
+  if (req.method === 'GET' && url.pathname === '/api/scans/latest') {
+    return sendJson(res, 200, { scan: publicLatestScan() });
   }
   if (req.method === 'GET' && url.pathname === '/api/sync/status') {
     return sendJson(res, 200, syncStatus(WORKSPACE_ROOT));
@@ -1104,8 +1135,9 @@ routes['POST /api/scan'] = (req, res, body) => {
   try { model = assertSafeModel(b.model); } catch (e) { return replyJson(res, 400, { error: e.message }); }
   if (!['codex', 'claude'].includes(provider)) return replyJson(res, 400, { error: 'choose an authenticated AI provider first' });
   try {
+    const estimate = scanEstimate(readScanRecords(), provider, 'primary');
     const operation = operations.start('scan', async (update) => {
-      const result = await runScan(WORKSPACE_ROOT, provider, 'primary', { onProgress: update, model });
+      const result = await runScan(WORKSPACE_ROOT, provider, 'primary', { onProgress: update, model, autoBroaden: true, estimate });
       if (!result.ok) throw new Error(result.error || `scan ended with ${result.status}`);
       const scanHealth = readScanHealth();
       return {
@@ -1116,7 +1148,7 @@ routes['POST /api/scan'] = (req, res, body) => {
           discarded: scanHealth.discarded, reportDate: String(scanHealth.lastRunAt || '').slice(0, 10) || null,
         },
       };
-    }, { phase: 'Validating approved evidence', total: 5 });
+    }, { phase: 'Validating approved evidence', total: 5, estimate });
     return replyJson(res, 202, { operation });
   } catch (e) {
     if (e instanceof OperationConflictError) return replyJson(res, 409, { error: e.message, operation: e.operation });
