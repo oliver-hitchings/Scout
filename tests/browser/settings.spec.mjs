@@ -265,6 +265,45 @@ test('a slow initial setup response cannot replace an explicit Settings view', a
   await expect(dialog.getByRole('heading', { name: 'Scout setup update' })).toHaveCount(0);
 });
 
+test('setup retry recovers in place without losing an unsaved onboarding answer', async ({ page }) => {
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await page.unroute('**/api/setup/status');
+  let statusAvailable = false;
+  await page.route('**/api/setup/status', async (route) => {
+    if (!statusAvailable) {
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Scout is restarting' }) });
+      return;
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(establishedStatus) });
+  });
+
+  await page.evaluate((status) => {
+    const setup = window.ScoutSetup;
+    setup.status = status;
+    setup.view = 'retune';
+    setup.step = 2;
+    setup.preferenceStep = 1;
+    setup.preferenceDraft = null;
+    document.getElementById('setup-overlay').classList.remove('hidden');
+    setup.render();
+  }, establishedStatus);
+  const dialog = page.getByRole('dialog');
+  await dialog.locator('#setup-roles').fill('Product engineer, Systems lead');
+
+  await page.evaluate(() => window.ScoutSetup.refreshStatus({ keepOpen: true }));
+  await expect(dialog.getByRole('heading', { name: 'Scout setup could not be loaded' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Retry' })).toBeVisible();
+
+  statusAvailable = true;
+  await dialog.getByRole('button', { name: 'Retry' }).click();
+  await expect(dialog.getByRole('heading', { name: 'What kind of work should I look for?' })).toBeVisible();
+  await expect(dialog.locator('#setup-roles')).toHaveValue('Product engineer, Systems lead');
+  await expect(dialog.getByRole('button', { name: 'Answer' })).toBeVisible();
+
+  await dialog.getByRole('button', { name: 'Answer' }).click();
+  await expect(dialog.getByRole('heading', { name: 'Where can the right role be?' })).toBeVisible();
+});
+
 test('settings close remains reachable on a phone viewport', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 740 });
   await page.getByRole('button', { name: 'Settings' }).click();

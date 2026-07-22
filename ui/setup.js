@@ -131,6 +131,7 @@ const Setup = {
   view: 'closed',
   settingsSection: null,
   refreshSequence: 0,
+  statusRetry: null,
   operations: { proposal: null, scan: null },
   operationTimers: {},
   backgroundOperations: new Set(),
@@ -158,11 +159,20 @@ const Setup = {
 
   async refreshStatus({ keepOpen = false } = {}) {
     const sequence = ++this.refreshSequence;
+    const retryContext = this.statusRetry?.context || {
+      view: this.view,
+      step: this.step,
+      preferenceStep: this.preferenceStep,
+      settingsSection: this.settingsSection,
+      incrementalSection: this.incrementalSection,
+    };
+    if (this.step === 2 && this.preferenceDraft) this.capturePreferenceQuestion();
     try {
       const status = await requestJson('/api/setup/status');
       if (sequence !== this.refreshSequence) return;
       this.status = status;
       if (status.bootstrap) {
+        this.statusRetry = null;
         this.view = 'onboarding';
         this.proposal = null;
         this.el('setup-overlay').classList.remove('hidden');
@@ -181,6 +191,7 @@ const Setup = {
       this.proposal = proposal.proposal;
       await this.reattachOperations();
       if (sequence !== this.refreshSequence) return;
+      this.statusRetry = null;
       window.Scout?.applyWorkspaceConfig?.(status.config);
       this.el('setup-title').textContent = status.established ? 'Scout settings' : 'Set up Scout';
       this.el('setup-subtitle').textContent = status.established
@@ -240,12 +251,37 @@ const Setup = {
       this.render();
     } catch (error) {
       if (sequence !== this.refreshSequence) return;
+      this.statusRetry = { keepOpen, context: retryContext };
       this.el('setup-overlay').classList.remove('hidden');
+      this.el('setup-progress').innerHTML = '';
       this.el('setup-body').innerHTML = '<h2>Scout setup could not be loaded</h2><p>Check that the local Scout server is running, then retry.</p>';
       this.setMessage(error.message, 'error');
       this.el('setup-back').classList.add('hidden');
+      this.el('setup-skip').classList.add('hidden');
+      this.el('setup-next').classList.remove('hidden');
       this.el('setup-next').textContent = 'Retry';
-      this.el('setup-next').onclick = () => location.reload();
+    }
+  },
+
+  async retryStatus() {
+    const retry = this.statusRetry;
+    if (!retry) return;
+    this.setBusy(true);
+    try {
+      await this.refreshStatus({ keepOpen: retry.keepOpen });
+      if (this.statusRetry) return;
+      if (retry.context.view !== 'closed') {
+        this.view = retry.context.view;
+        this.step = retry.context.step;
+        this.preferenceStep = retry.context.preferenceStep;
+        this.settingsSection = retry.context.settingsSection;
+        this.incrementalSection = retry.context.incrementalSection;
+        this.el('setup-overlay').classList.remove('hidden');
+        this.render();
+      }
+      this.setMessage('Scout setup reconnected.', 'good');
+    } finally {
+      this.setBusy(false);
     }
   },
 
@@ -1195,6 +1231,7 @@ const Setup = {
 
   async next() {
     if (this.busy) return;
+    if (this.statusRetry) return this.retryStatus();
     try {
       this.setBusy(true);
       if (this.incrementalSection) {

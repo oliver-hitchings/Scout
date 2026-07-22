@@ -109,4 +109,5 @@ test('first-run setup offers optional local create, private backup guidance, and
   assert.match(source, /setup-backup-check-git/);
   assert.match(source, />Retry</);
   assert.match(source, /api\/sync\/recovery-key\/confirm/);
+  assert.doesNotMatch(source, /setup-next'\)\.onclick/);
 });
