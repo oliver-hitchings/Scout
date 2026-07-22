@@ -433,6 +433,9 @@ const Scout = {
     if (this.cvState.dirty) return 'Save or discard the open CV changes first.';
     if (this.chat?.streaming) return 'Wait for the current Scout response to finish first.';
     if (this.scanRunning) return 'Wait for the current scan to finish first.';
+    if (Object.values(window.ScoutSetup?.operations || {}).some((operation) => ['queued', 'running'].includes(operation?.status))) {
+      return 'Wait for the current Scout operation to finish first.';
+    }
     if (window.ScoutSetup?.busy) return 'Wait for the current settings action to finish first.';
     if (document.getElementById('setup-overlay') && !document.getElementById('setup-overlay').classList.contains('hidden')) {
       return 'Close or finish the open Scout settings first.';

@@ -278,6 +278,31 @@ test('restore validation fails before installing the target workspace', async ()
   fs.rmSync(f.base, { recursive: true, force: true });
 });
 
+test('restore rolls back an empty target when validation fails after activation', async () => {
+  const f = fixture();
+  const spawn = (command, args, options) => {
+    if (args[0] === 'credential-manager') return { status: 0, stdout: 'test-gcm', stderr: '' };
+    return spawnSync(command, args, options);
+  };
+  const connected = await connectWorkspaceSync(f.root, {
+    remoteUrl: 'https://github.com/example/repo', passphrase: 'correct horse battery staple',
+  }, { verifyRemote: async () => ({ url: f.remote, empty: true }), spawn });
+  const target = path.join(f.base, 'post-activation-rejected');
+  fs.mkdirSync(target);
+  let validations = 0;
+  await assert.rejects(() => restoreWorkspaceFromGithub({
+    remoteUrl: 'https://github.com/example/repo', targetRoot: target, secret: connected.recoveryKey,
+  }, {
+    verifyRemote: async () => ({ url: f.remote, empty: false }), spawn,
+    validateWorkspace: () => ({ ok: ++validations === 1 }),
+  }), /failed validation after activation; Scout rolled it back/);
+  assert.equal(validations, 2);
+  assert.equal(fs.existsSync(target), true);
+  assert.deepEqual(fs.readdirSync(target), []);
+  assert.equal(fs.readdirSync(f.base).some((name) => name.startsWith('.scout-restore-')), false);
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
 test('legacy private workspace adoption keeps a rollback copy and enables encrypted sync', async () => {
   const f = fixture();
   const source = path.join(f.base, 'legacy-source');

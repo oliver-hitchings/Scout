@@ -375,6 +375,29 @@ test('setup retry recovers in place without losing an unsaved onboarding answer'
   await expect(dialog.getByRole('heading', { name: 'Where can the right role be?' })).toBeVisible();
 });
 
+test('remote restart asks explicitly and does not interrupt active work', async ({ page }) => {
+  let restartRequests = 0;
+  await page.route('**/api/restart', async (route) => {
+    restartRequests += 1;
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, restarting: true }) });
+  });
+  await page.evaluate(() => { window.ScoutSetup.status.requestAccess = 'remote-owner'; });
+  page.once('dialog', async (dialog) => {
+    expect(dialog.type()).toBe('confirm');
+    expect(dialog.message()).toContain('Remote access will disconnect briefly');
+    await dialog.dismiss();
+  });
+  await page.evaluate(() => window.ScoutSetup.restartServer());
+  expect(restartRequests).toBe(0);
+
+  await page.evaluate(() => {
+    window.ScoutSetup.operations.proposal = { id: 'active-proposal', status: 'running', phase: 'Saving work' };
+    return window.ScoutSetup.restartServer();
+  });
+  await expect(page.locator('#setup-status')).toHaveText('Wait for the current Scout operation to finish before restarting.');
+  expect(restartRequests).toBe(0);
+});
+
 test('settings close remains reachable on a phone viewport', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 740 });
   await page.getByRole('button', { name: 'Settings' }).click();
@@ -480,7 +503,7 @@ test('mandatory first-run setup cannot be dismissed', async ({ page }) => {
   await expect(dialog).toBeVisible();
 });
 
-test('a stale UI prompts for a safe refresh and protects dirty work', async ({ page }) => {
+test('a service-worker or build upgrade waits for CV edits, operations, and settings', async ({ page }) => {
   await page.route('**/api/app-info', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
@@ -491,11 +514,18 @@ test('a stale UI prompts for a safe refresh and protects dirty work', async ({ p
 
   const banner = page.locator('#ui-update-banner');
   await expect(banner).toContainText('Scout has updated');
-  await page.evaluate(() => { window.Scout.cvState.dirty = true; });
+  await page.evaluate(() => {
+    window.Scout.cvState.dirty = true;
+    window.ScoutSetup.operations.proposal = { id: 'upgrade-proposal', type: 'proposal', status: 'running', phase: 'Writing staged files' };
+  });
   await banner.getByRole('button', { name: 'Refresh Scout' }).click();
   await expect(banner).toContainText('Save or discard the open CV changes first');
 
   await page.evaluate(() => { window.Scout.cvState.dirty = false; });
+  await banner.getByRole('button', { name: 'Refresh Scout' }).click();
+  await expect(banner).toContainText('Wait for the current Scout operation to finish first');
+
+  await page.evaluate(() => { window.ScoutSetup.operations.proposal.status = 'succeeded'; });
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect.poll(() => banner.evaluate((element) => element.inert)).toBe(true);

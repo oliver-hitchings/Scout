@@ -331,14 +331,32 @@ const Setup = {
   },
 
   async restartServer() {
-    if (window.Scout?.chat?.streaming) {
-      this.setMessage('Wait for the current AI response to finish before restarting.', 'error');
+    const activeOperation = Object.values(this.operations || {}).some((operation) => ['queued', 'running'].includes(operation?.status));
+    if (window.Scout?.chat?.streaming || window.Scout?.scanRunning || activeOperation) {
+      this.setMessage('Wait for the current Scout operation to finish before restarting.', 'error');
       return;
     }
+    const remote = this.status?.requestAccess === 'remote-owner';
+    if (remote && !confirm('Restart Scout on its host? Remote access will disconnect briefly, and the restart will proceed only after active work has finished.')) return;
     this.setBusy(true);
     this.setMessage('Restarting Scout…');
-    try { await fetch('/api/restart', { method: 'POST' }); }
-    catch { /* the server may drop the connection while going down */ }
+    try {
+      const response = await fetch('/api/restart', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirmed: remote }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || `Restart failed (${response.status})`);
+    } catch (error) {
+      // The accepted restart can close the connection before the small JSON
+      // response reaches the browser. Continue with the bounded health poll.
+      if (error?.name === 'TypeError') {
+        this.setMessage('Scout is restarting…');
+      } else {
+        this.setBusy(false);
+        this.setMessage(error.message || 'Scout could not start the restart.', 'error');
+        return;
+      }
+    }
     const deadline = Date.now() + 20000;
     const poll = () => {
       fetch('/', { cache: 'no-store' })
