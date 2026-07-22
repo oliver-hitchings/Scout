@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteFile } from './atomicWrite.mjs';
 import { renderCv } from './cv.mjs';
 
 const SLUG = /^[a-z0-9-]+$/;
@@ -189,8 +190,7 @@ export function runCvQuality(root, slug, {
     render,
     override: previous?.override?.cvSha256 === hash ? previous.override : null,
   };
-  fs.mkdirSync(paths.directory, { recursive: true });
-  fs.writeFileSync(paths.quality, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  atomicWriteFile(paths.quality, `${JSON.stringify(report, null, 2)}\n`);
   return report;
 }
 
@@ -229,7 +229,7 @@ export function overrideCvQuality(root, slug, expectedHash, { now = () => new Da
     };
   }
   report.override = { cvSha256: hash, acceptedAt: now() };
-  fs.writeFileSync(paths.quality, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  atomicWriteFile(paths.quality, `${JSON.stringify(report, null, 2)}\n`);
   return readCvQuality(root, slug);
 }
 

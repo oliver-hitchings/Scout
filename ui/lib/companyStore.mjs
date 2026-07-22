@@ -1,6 +1,6 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteFile } from './atomicWrite.mjs';
 import { companyId, normalizeCompanyTimeline } from './companyTimeline.mjs';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9-]*$/;
@@ -19,9 +19,6 @@ export function loadCompanyTimeline(repoRoot, company) {
 
 export function saveCompanyTimeline(repoRoot, company, record) {
   const file = companyTimelinePath(repoRoot, company);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(normalizeCompanyTimeline(record, company), null, 2)}\n`);
-  fs.renameSync(temporary, file);
+  atomicWriteFile(file, `${JSON.stringify(normalizeCompanyTimeline(record, company), null, 2)}\n`);
   return file;
 }

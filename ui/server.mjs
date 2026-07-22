@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMainModule } from './lib/mainModule.mjs';
+import { atomicWriteFile } from './lib/atomicWrite.mjs';
 import { triage } from './lib/derive.mjs';
 import { pipeline } from './lib/pipeline.mjs';
 import { listCvFiles, safeCvPath } from './lib/cv.mjs';
@@ -804,7 +805,7 @@ routes['POST /api/cv/save'] = (req, res, body) => {
   if (path.resolve(abs) === path.resolve(WORKSPACE.cv, 'master-cv.md') && Buffer.byteLength(b.content.trim(), 'utf8') < 500) {
     return replyJson(res, 409, { error: 'The master CV is empty or incomplete. Scout kept the existing file; restore the reviewed proposal or enter at least 500 bytes before saving.' });
   }
-  try { fs.writeFileSync(abs, b.content); } catch (e) { return replyJson(res, 500, { error: e.message }); }
+  try { atomicWriteFile(abs, b.content); } catch (e) { return replyJson(res, 500, { error: e.message }); }
   void queueCheckpoint(`edit cv - ${b.path}`);
   replyJson(res, 200, { ok: true, savedLocally: true, syncQueued: true });
 };
@@ -1080,10 +1081,10 @@ routes['POST /api/setup/import-cv'] = (req, res, body) => {
   if (!bytes.length || bytes.length > 10 * 1024 * 1024) return replyJson(res, 400, { error: 'CV must be between 1 byte and 10 MB' });
   fs.mkdirSync(WORKSPACE.imports, { recursive: true });
   const imported = path.join(WORKSPACE.imports, name);
-  fs.writeFileSync(imported, bytes);
+  atomicWriteFile(imported, bytes, { mode: 0o600 });
   extractCvText(imported).then((text) => {
     const extracted = path.join(WORKSPACE.imports, `${name}.txt`);
-    fs.writeFileSync(extracted, `${text}\n`, 'utf8');
+    atomicWriteFile(extracted, `${text}\n`, { mode: 0o600 });
     void queueCheckpoint(`import cv - ${name}`);
     replyJson(res, 200, { ok: true, source: `imports/${name}`, extracted: `imports/${path.basename(extracted)}`, text });
   }).catch((e) => {

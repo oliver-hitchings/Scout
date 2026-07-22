@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { atomicWriteFile } from './atomicWrite.mjs';
 
 export const CURRENT_WORKSPACE_SCHEMA = 2;
 
@@ -203,8 +204,7 @@ export function loadWorkspaceConfig(root, { allowMissing = true } = {}) {
 
 export function writeWorkspaceConfig(root, config) {
   const checked = validateWorkspaceConfig(config);
-  fs.mkdirSync(root, { recursive: true });
-  fs.writeFileSync(workspacePaths(root).config, `${JSON.stringify(checked, null, 2)}\n`, 'utf8');
+  atomicWriteFile(workspacePaths(root).config, `${JSON.stringify(checked, null, 2)}\n`);
 }
 
 export function ensureWorkspaceDirectories(root) {

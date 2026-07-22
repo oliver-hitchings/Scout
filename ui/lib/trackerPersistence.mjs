@@ -1,7 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import path from 'node:path';
 import { acquireScanLock, releaseScanLock } from '../../tools/scan-lock.mjs';
+import { atomicWriteFile } from './atomicWrite.mjs';
 
 export class TrackerRevisionConflictError extends Error {
   constructor(currentRevision) {
@@ -21,20 +21,7 @@ export function readTrackerSnapshot(file) {
 }
 
 export function atomicReplaceTracker(file, content) {
-  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}-${randomUUID()}`);
-  let descriptor;
-  try {
-    descriptor = fs.openSync(temporary, 'wx');
-    fs.writeFileSync(descriptor, content, 'utf8');
-    fs.fsyncSync(descriptor);
-    fs.closeSync(descriptor);
-    descriptor = undefined;
-    fs.renameSync(temporary, file);
-  } catch (error) {
-    if (descriptor !== undefined) fs.closeSync(descriptor);
-    fs.rmSync(temporary, { force: true });
-    throw error;
-  }
+  atomicWriteFile(file, content);
 }
 
 export async function acquireTrackerMutationLock(workspaceRoot, {

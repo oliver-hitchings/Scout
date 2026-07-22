@@ -37,7 +37,20 @@ jobs:
           SCOUT_RELEASE_MARKERS: ${{ secrets.SCOUT_RELEASE_MARKERS }}
 
   browser-acceptance:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            browser: chromium
+            install: --with-deps chromium
+          - os: ubuntu-22.04
+            browser: firefox
+            install: --with-deps firefox
+          - os: windows-2022
+            browser: chromium
+            install: chromium
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -47,5 +60,5 @@ jobs:
       - run: npm ci
       - run: node tools/typst-runtime.mjs install
       - run: node tools/typst-runtime.mjs verify --compile
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:browser
+      - run: npx playwright install ${{ matrix.install }}
+      - run: npm run test:browser -- --project=${{ matrix.browser }}

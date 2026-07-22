@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { atomicWriteFile } from './atomicWrite.mjs';
 
 export const DEVICE_SETUP_SECTIONS = Object.freeze({ 'windows-startup': 1 });
 export const WINDOWS_STARTUP_TASK = '\\Scout\\Scout Host';
@@ -45,8 +46,7 @@ export function loadDeviceSettings(options = {}) {
 
 export function saveDeviceSettings(value, options = {}) {
   const file = options.file || deviceSettingsPath(options.env, options.platform);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  atomicWriteFile(file, `${JSON.stringify(value, null, 2)}\n`);
   return value;
 }
 

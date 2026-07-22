@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteFile } from './atomicWrite.mjs';
 
 export const RECOVERY_FORMAT = 1;
 export const RECOVERY_DIR = '.scout-backup/v1';
@@ -18,10 +19,7 @@ function unb64(value) { return Buffer.from(String(value || ''), 'base64url'); }
 function sha256(buffer) { return crypto.createHash('sha256').update(buffer).digest('hex'); }
 
 function atomicWrite(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(temp, value, { mode: 0o600 });
-  fs.renameSync(temp, file);
+  atomicWriteFile(file, value, { mode: 0o600 });
 }
 
 function aesEncrypt(key, plaintext, aad = Buffer.alloc(0)) {

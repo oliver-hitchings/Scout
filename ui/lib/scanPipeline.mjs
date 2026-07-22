@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteFile } from './atomicWrite.mjs';
 import { serializeTracker } from './tracker.mjs';
 import { workspacePaths } from './workspace.mjs';
 import {
@@ -211,10 +212,7 @@ function reportText({ date, degraded, source_health, kept, discarded, errors }) 
 }
 
 function atomicWrite(file, content) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.scout-${process.pid}.tmp`;
-  fs.writeFileSync(temporary, content, 'utf8');
-  fs.renameSync(temporary, file);
+  atomicWriteFile(file, content);
 }
 
 export function validateWrittenScanArtifacts(root, expectedRun) {
