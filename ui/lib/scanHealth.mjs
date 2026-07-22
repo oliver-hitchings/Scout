@@ -82,11 +82,10 @@ export function scanHealthFromText(text, today) {
     candidatesFound: last.candidates_found ?? last.candidatesFound ?? last.candidate_count ?? null,
     keepersAdded: last.keepers_added ?? last.keepersAdded ?? last.keeper_count ?? null,
     discarded: last.discarded || last.discarded_reasons || {},
+    reviewedAvailable: Array.isArray(last.reviewed) && last.reviewed.length > 0,
     errors: runErrors,
     sourceHealth: normaliseSourceHealth(last),
     runs: parsed.runs.length,
     parseErrors: parsed.errors,
-    raw: last,
   };
 }
-

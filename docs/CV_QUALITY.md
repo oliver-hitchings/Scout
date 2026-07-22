@@ -39,10 +39,14 @@ Every visible Typst bullet must have an exact record and at least one evidence s
 
 ## Quality and downloads
 
+The CV library can render both `cv/master-cv.md` and tailored `applications/<slug>/cv.typ` files. The master output is explicitly labelled a **reference PDF**: it is useful for reviewing approved evidence but is not presented as an application-ready tailored CV. Scout converts its supported Markdown structure to temporary Typst while omitting evidence comments; the approved Markdown source is not rewritten.
+
+Rendering runs as a background operation with visible progress and a 60-second limit. Scout compiles to a temporary file, validates the PDF, then atomically replaces the prior output. `.scout/cv-renders.json` binds each output to its source hash. Editing the source immediately marks the previous PDF stale and disables preview/download until a new render succeeds. A failed render preserves the previous file but never labels it current.
+
 Run `scout cv quality <slug>` to compile the PDF and write `cv-quality.json`. The report contains the CV source hash, enabled options, issues and any explicit draft override. Editing the source invalidates both the report and override.
 
 Scout packages and supported VPS deployments include a pinned, checksum-verified Typst runtime. `scout doctor` reports whether rendering uses that managed runtime, a packaged runtime or an explicit developer override. If the managed runtime is missing or damaged, repair or reinstall Scout; no separate `winget`, Homebrew or system package is required.
 
-Compilation failures, visible placeholders and unsupported bullets block download. Natural-voice and XYZ findings keep the CV labelled Draft but can be explicitly accepted. Existing CVs without these records are treated as legacy drafts and are not modified automatically.
+Compilation failures, visible placeholders and unsupported bullets block tailored download. Natural-voice and XYZ findings keep a tailored CV labelled Draft but can be explicitly accepted. Existing CVs without these records are treated as legacy drafts and are not modified automatically. The same-origin preview endpoint permits Scout's own PDF frame while retaining no-store, nosniff and third-party framing protection.
 
 Natural-voice review improves authenticity and readability. It is not designed to evade AI-detection systems.

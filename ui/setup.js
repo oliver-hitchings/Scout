@@ -104,6 +104,21 @@ export function operationElapsed(operation, now = Date.now()) {
   return seconds < 60 ? `${seconds}s elapsed` : `${Math.floor(seconds / 60)}m ${seconds % 60}s elapsed`;
 }
 
+export function operationRemaining(operation, now = Date.now()) {
+  const estimate = operation?.estimate;
+  const started = Date.parse(operation?.startedAt || '');
+  if (!estimate || !Number.isFinite(started)) return '';
+  const elapsed = Math.max(0, Math.floor((now - started) / 1000));
+  const lower = Number(estimate.totalSecondsLow || 0);
+  const upper = Number(estimate.totalSecondsHigh || 0);
+  if (elapsed > upper) {
+    return `Taking longer than the recent ${Math.max(1, Math.ceil(lower / 60))}–${Math.max(1, Math.ceil(upper / 60))} min range — Scout is still working`;
+  }
+  const lowMinutes = Math.max(0, Math.floor((lower - elapsed) / 60));
+  const highMinutes = Math.max(1, Math.ceil((upper - elapsed) / 60));
+  return lowMinutes < 1 ? `About ${highMinutes} min or less remaining` : `About ${lowMinutes}–${highMinutes} min remaining`;
+}
+
 async function requestJson(pathname, options) {
   const response = await fetch(pathname, options);
   const body = await response.json().catch(() => ({}));
@@ -408,7 +423,7 @@ const Setup = {
     return `<div class="setup-callout setup-operation" data-operation-id="${this.escape(operation.id)}" role="status">
       <strong>${this.escape(terminal)}: ${this.escape(operation.phase || type)}</strong>
       <progress max="${this.escape(progress.total || 1)}" value="${this.escape(progress.current || 0)}"></progress>
-      <p class="meta">Step ${this.escape(progress.current || 0)} of ${this.escape(progress.total || 1)} · ${this.escape(operationElapsed(operation))}</p>
+      <p class="meta">Step ${this.escape(progress.current || 0)} of ${this.escape(progress.total || 1)} · ${this.escape(operationElapsed(operation))}${running && operationRemaining(operation) ? ` · ${this.escape(operationRemaining(operation))}` : ''}</p>
       ${operation.error ? `<p class="bad">${this.escape(operation.error)}</p>` : ''}
       ${running ? '<p class="meta">You can close setup or this browser safely. Quitting Scout interrupts local work.</p>' : ''}
       ${type === 'proposal' && running ? '<p><button id="setup-continue-background" class="act" type="button">Continue in background</button></p>' : ''}
@@ -578,8 +593,8 @@ const Setup = {
       <div class="setup-callout"><strong>Models for individual job work</strong>
       <p>Choose an optional model for each provider when asking about a specific job, tailoring a CV or preparing for an interview. Leave blank to use that provider's default.</p>
       <div class="setup-grid">
-        <label class="setup-field">Codex model<input id="setup-chat-model-codex" type="text" value="${this.escape(models.codex || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:-]+"></label>
-        <label class="setup-field">Claude model<input id="setup-chat-model-claude" type="text" value="${this.escape(models.claude || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:-]+"></label>
+        <label class="setup-field">Codex model<input id="setup-chat-model-codex" type="text" value="${this.escape(models.codex || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:\\-]+"></label>
+        <label class="setup-field">Claude model<input id="setup-chat-model-claude" type="text" value="${this.escape(models.claude || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:\\-]+"></label>
       </div></div>
       <p><button id="settings-save-provider" class="act primary" type="button">Save AI settings</button>
       <button id="settings-refresh-providers" class="act" type="button">Refresh status</button></p>`;
@@ -923,7 +938,7 @@ const Setup = {
     const showSecond = this.view === 'section' && (this.showVerificationPass || secondRun);
     const scheduleRow = (id, name, mode, run, defaultTime) => `<div class="setup-schedule-row" data-schedule-row="${this.escape(id)}">
       <label class="setup-field">${this.escape(name[0].toUpperCase() + name.slice(1))} ${mode === 'primary' ? 'daily scan' : 'verification pass'} time<input data-schedule-time type="time" value="${this.escape(run?.time || defaultTime)}"></label>
-      <label class="setup-field">Scan model <span>Optional; used for this scan job. Blank uses the provider default</span><input data-schedule-model type="text" value="${this.escape(run?.model || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:-]+"></label>
+      <label class="setup-field">Scan model <span>Optional; used for this scan job. Blank uses the provider default</span><input data-schedule-model type="text" value="${this.escape(run?.model || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:\\-]+"></label>
       <p><button class="act" data-schedule-enable="${this.escape(id)}" data-provider="${this.escape(name)}" data-mode="${this.escape(mode)}" type="button" ${healthy ? '' : 'disabled'}>${run?.configured ? 'Save scan settings' : `Enable ${name} ${mode === 'primary' ? 'daily scan' : 'verification pass'}`}</button>${run?.configured ? ` <button class="act" data-schedule-disable="${this.escape(id)}" type="button">Disable</button>` : ''}</p>
     </div>`;
     this.el('setup-body').innerHTML = `

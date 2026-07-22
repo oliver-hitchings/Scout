@@ -80,6 +80,8 @@ With XYZ enabled, Scout compares the role with confirmed evidence and asks only 
 
 Scout stores the selected options, confirmed answers and bullet provenance in the private application folder. The quality panel shows blocking evidence/rendering failures separately from overridable writing warnings. A CV remains labelled **Draft** until enabled checks pass or you explicitly choose **Use draft anyway**. Any later edit invalidates the prior review or override.
 
+The CV library also renders the approved master Markdown as a clearly labelled reference PDF. Master and tailored renders run in the background, show progress and use source hashes so an old PDF cannot appear current after an edit.
+
 From a source checkout, rerun the same review with:
 
 ```powershell
@@ -92,7 +94,7 @@ Public/ATS sources work without Adzuna. Adzuna is optional and uses `ADZUNA_APP_
 
 ## 6. Run and review the first scan
 
-Scout starts the first supervised scan automatically when the required setup answers have been saved. Keep Scout open while it searches, then review the dashboard and dated report. Use **Scan now** in the dashboard header for another scan. The command-line equivalent is:
+Scout starts the first supervised scan automatically when the required setup answers have been saved. Keep Scout open while it searches; setup and the dashboard show the current phase, elapsed time and an approximate remaining range. Use **Scan now** in the dashboard header for another scan. The command-line equivalent is:
 
 ```powershell
 & $ScoutNode $ScoutCli doctor
@@ -100,6 +102,8 @@ Scout starts the first supervised scan automatically when the required setup ans
 ```
 
 Use `claude` instead if selected. Review the dated report and tracker changes. Confirm that exclusions, salary handling and locations behave as intended before relying on results.
+
+If the supervised primary scan keeps zero roles, Scout automatically performs one broader discovery pass. It widens source queries, not your approved gates: salary, hard exclusions, location/commute, mandatory evidence and scoring remain in force. The completed result stays visible as “reviewed / kept”; **Review this scan** shows concise reasons for every discarded candidate without adding weak roles to the tracker.
 
 The **All** tab is a searchable table. On a phone, swipe the labelled table region horizontally to reach commute, stage, status and last-checked columns; filtering keeps the text cursor and in-progress keyboard composition in place.
 

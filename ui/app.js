@@ -187,6 +187,7 @@ const Scout = {
   cvState: { path: null, slug: null, opportunityId: null, content: null, dirty: false },
   cvOptionsOpportunityId: null,
   cvPreviewZoom: 'page-width',
+  cvRenderTimer: null,
   chat: null,
   chatOpenSeq: 0,
   workspaceConfig: null,
@@ -194,6 +195,7 @@ const Scout = {
   discoveryTimer: null,
   scanRunning: false,
   scanOperationTimer: null,
+  latestScan: null,
   lastSyncPullAt: null,
   companyHistory: null,
   uiBuildId: SCOUT_UI_BUILD,
@@ -307,15 +309,26 @@ const Scout = {
   },
 
   async loadOpportunities() {
-    [this.state.data, this.state.cvFiles] = await Promise.all([
+    const [data, cvFiles, latest] = await Promise.all([
       this.api('/api/opportunities'),
       this.api('/api/cv'),
+      this.api('/api/scans/latest').catch(() => ({ scan: null })),
     ]);
+    this.state.data = data;
+    this.state.cvFiles = cvFiles;
+    this.latestScan = latest?.scan || null;
     this.applyWorkspaceConfig(this.state.data.workspaceConfig, { render: false });
     this.setupCategoryUi();
     const h = this.state.data.scanHealth;
-    const health = h ? (h.healthy ? 'healthy' : (h.stale ? 'stale' : 'degraded')) : 'unknown';
-    document.getElementById('scan-status').textContent = `last scan: ${this.state.data.updated} - ${health}`;
+    const status = document.getElementById('scan-status');
+    if (status) {
+      status.textContent = h?.lastRunAt
+        ? `Last scan: ${Number(h.candidatesFound || 0)} reviewed · ${Number(h.keepersAdded || 0)} kept`
+        : 'No scan completed yet';
+      status.dataset.action = h?.lastRunAt ? 'open-scan-result' : '';
+      status.tabIndex = h?.lastRunAt ? 0 : -1;
+      status.setAttribute('role', h?.lastRunAt ? 'button' : 'status');
+    }
     this.categoryIds().forEach((category) => this.renderCategory(category));
     this.renderPipeline();
     this.renderAll();
@@ -354,10 +367,40 @@ const Scout = {
     const seconds = Number.isFinite(started) ? Math.max(0, Math.floor((end - started) / 1000)) : 0;
     const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
     const step = operation.progress ? `step ${operation.progress.current}/${operation.progress.total}` : '';
+    const estimate = operation.estimate;
+    let remaining = '';
+    if (estimate && !['failed', 'succeeded'].includes(operation.status)) {
+      const low = Number(estimate.totalSecondsLow || 0);
+      const high = Number(estimate.totalSecondsHigh || 0);
+      if (seconds > high) remaining = `taking longer than the recent ${Math.max(1, Math.ceil(low / 60))}–${Math.max(1, Math.ceil(high / 60))} min range; still working`;
+      else {
+        const lowMinutes = Math.max(0, Math.floor((low - seconds) / 60));
+        const highMinutes = Math.max(1, Math.ceil((high - seconds) / 60));
+        remaining = lowMinutes < 1 ? `about ${highMinutes} min or less remaining` : `about ${lowMinutes}–${highMinutes} min remaining`;
+      }
+    }
     status.textContent = operation.status === 'failed'
       ? `Scan needs attention: ${operation.error || 'unknown error'}`
       : operation.status === 'succeeded' ? 'Scan completed — refreshing results…'
-        : `${operation.phase || 'Scout is searching'} · ${step} · ${elapsed}`;
+        : `${operation.phase || 'Scout is searching'} · ${step} · ${elapsed}${remaining ? ` · ${remaining}` : ''}`;
+  },
+
+  discardBreakdown(scan = this.latestScan || this.state.data?.scanHealth) {
+    const labels = { hard_exclusion: 'hard exclusions', mandatory_unmet: 'mandatory gates', below_threshold: 'below threshold', provider_discarded: 'assessment discards' };
+    return Object.entries(scan?.discarded || {}).filter(([, count]) => Number(count) > 0)
+      .map(([key, count]) => `${count} ${labels[key] || key.replaceAll('_', ' ')}`).join(', ');
+  },
+
+  latestScanCard() {
+    const scan = this.latestScan;
+    if (!scan?.runAt) return '';
+    const broadened = scan.automaticBroadened ? ' after an automatic broader discovery pass' : '';
+    return `<div class="card scan-result-card">
+      <div class="top"><b>Latest scan result</b><span class="chip">${this.esc(scan.degraded ? 'degraded' : 'complete')}</span></div>
+      <p><strong>${this.esc(scan.candidatesFound)} reviewed, ${this.esc(scan.keepersAdded)} kept</strong>${this.discardBreakdown(scan) ? ` — ${this.esc(this.discardBreakdown(scan))}` : ''}${this.esc(broadened)}.</p>
+      <p class="meta">Zero keepers can be a valid result: Scout keeps approved gates in force even when it broadens discovery.</p>
+      <div class="controls"><button class="act" data-action="open-scan-result">Review this scan</button>${scan.reportDate ? `<button class="act" data-action="open-scan-report" data-date="${this.esc(scan.reportDate)}">Open dated report</button>` : ''}</div>
+    </div>`;
   },
 
   async watchScanOperation(id) {
@@ -674,7 +717,7 @@ const Scout = {
     target.innerHTML =
       this.filterBar()
       + `<div class="label">${this.esc(label)} lane (${entries.length})</div>`
-      + (sec('Action today', action, 'action') || '<p>Nothing new over the bar in this lane.</p>')
+      + (sec('Action today', action, 'action') || (entries.length ? '<p>Nothing new over the bar in this lane.</p>' : this.latestScanCard() || '<p>No scan result is available yet.</p>'))
       + sec('One check from unlocking', unlock)
       + fu
       + sec('Remaining new', remainingNew)
@@ -727,7 +770,7 @@ const Scout = {
         <p><strong>${this.esc(reviewed)} reviewed, ${this.esc(kept)} kept</strong>${discardBreakdown ? ` — ${this.esc(discardBreakdown)}` : ''}. Zero keepers can be a valid result when strict gates exclude every candidate.</p>
         <div class="meta">last run: ${this.esc(h && h.lastRunAt ? h.lastRunAt : 'never')}</div>
         ${sourceHealth}
-        ${/^\d{4}-\d{2}-\d{2}$/.test(reportDate) ? `<p><button class="act" data-action="open-scan-report" data-date="${this.esc(reportDate)}">Review dated report</button></p>` : ''}
+        <p><button class="act" data-action="open-scan-result">Review this scan</button> ${/^\d{4}-\d{2}-\d{2}$/.test(reportDate) ? `<button class="act" data-action="open-scan-report" data-date="${this.esc(reportDate)}">Review dated report</button>` : ''}</p>
       </div>
       ${flags}
       <div class="split">
@@ -737,6 +780,28 @@ const Scout = {
         ${list('Closed / ignored', p.recentlyClosed)}
       </div>`;
   },
+
+  async openScanResult() {
+    if (!this.latestScan) this.latestScan = (await this.api('/api/scans/latest')).scan;
+    const scan = this.latestScan;
+    if (!scan) return;
+    const labels = { kept: 'Kept', hard_exclusion: 'Hard exclusions', mandatory_unmet: 'Mandatory gates', below_threshold: 'Below threshold', provider_discarded: 'Assessment discards' };
+    const groups = Object.entries(labels).map(([outcome, label]) => {
+      const items = (scan.reviewed || []).filter((item) => item.outcome === outcome).sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+      if (!items.length) return '';
+      return `<details ${outcome !== 'kept' ? 'open' : ''}><summary>${this.esc(label)} (${items.length})</summary><div class="scan-review-list">${items.map((item) => `<article class="scan-review-item"><div><b>${this.esc(item.company)} — ${this.esc(item.role)}</b><span class="chip">${this.esc(item.score ?? '—')}</span></div><p>${this.esc((item.reasons || []).join('; ') || label)}</p>${item.sourceUrl ? `<a href="${this.safeHref(item.sourceUrl)}" target="_blank" rel="noopener">View source ↗</a>` : ''}</article>`).join('')}</div></details>`;
+    }).join('');
+    const overlay = document.getElementById('scan-result-overlay');
+    document.getElementById('scan-result-body').innerHTML = `
+      <p><strong>${this.esc(scan.candidatesFound)} reviewed, ${this.esc(scan.keepersAdded)} kept</strong>${this.discardBreakdown(scan) ? ` — ${this.esc(this.discardBreakdown(scan))}` : ''}.</p>
+      ${scan.automaticBroadened ? '<div class="setup-callout"><strong>Discovery widened automatically</strong><p>Scout ran one broader query pass but kept every approved salary, location, commute, exclusion and evidence gate.</p></div>' : ''}
+      ${groups || '<p class="meta">This older scan contains aggregate totals only. Run a new scan for candidate-level explanations.</p>'}
+      <div class="controls">${scan.reportDate ? `<button class="act" data-action="open-scan-report" data-date="${this.esc(scan.reportDate)}">Open dated report</button>` : ''}<button class="act" data-action="close-scan-result">Close</button></div>`;
+    overlay.classList.remove('hidden');
+    ScoutModal.focus(overlay, '#scan-result-title');
+  },
+
+  closeScanResult() { document.getElementById('scan-result-overlay')?.classList.add('hidden'); },
 
   pipelineCard(item) {
     const entry = this.state.data.opportunities.find((o) => o.id === item.id) || item;
@@ -1222,7 +1287,8 @@ const Scout = {
       const label = matches.length === 1
         ? `${matches[0].company} — ${matches[0].role}`
         : matches.length > 1 ? `${matches[0].company} — ${matches.length} tracked roles` : entry.slug;
-      const states = [entry.pdf ? 'PDF ready' : 'PDF missing', entry.quality ? 'quality recorded' : 'legacy', matches.length ? null : 'unmatched']
+      const pdfState = entry.pdfCurrent ? 'PDF ready' : entry.pdfStale ? 'PDF stale' : 'PDF missing';
+      const states = [pdfState, entry.quality ? 'quality recorded' : 'legacy', matches.length ? null : 'unmatched']
         .filter(Boolean).map((value) => `<span class="chip">${this.esc(value)}</span>`).join('');
       return `<button class="act cv-entry" data-action="open-cv" data-cv-path="${this.esc(cvPath)}" data-slug="${this.esc(entry.slug)}" data-opportunity-id="${this.esc(opportunityId || '')}"><span class="cv-entry-label">${this.esc(label)}</span><span class="cv-entry-state">${states}</span></button>`;
     }).join('') || '<div class="meta">No tailored CVs yet. Create one from a tracked opportunity.</div>';
@@ -1246,8 +1312,8 @@ const Scout = {
           <div class="label"><span id="cv-editing">select a file</span> <span id="cv-dirty" style="color:var(--warn)"></span></div>
           <textarea id="cv-text" class="cv-source" data-input-action="cv-dirty"></textarea>
            <div class="controls" style="flex-wrap:wrap;margin-top:6px">
-             <button class="act" data-action="save-cv">save + render</button>
-             <button class="act" data-action="download-cv">download PDF</button>
+             <button id="cv-save-render" class="act" data-action="save-cv">save + render</button>
+             <button id="cv-download" class="act" data-action="download-cv" disabled>download PDF</button>
            </div>
            <div id="cv-quality" class="cv-quality"><div class="meta">Select a tailored CV to see its quality review.</div></div>
           <div class="cv-chat-request">
@@ -1271,8 +1337,8 @@ const Scout = {
                 <option value="150">150%</option>
               </select>
             </label>
-            <button class="act" data-action="fullscreen-cv">full screen</button>
-            <button class="act" data-action="open-cv-pdf">open PDF</button>
+            <button id="cv-fullscreen" class="act" data-action="fullscreen-cv" disabled>full screen</button>
+            <button id="cv-open-pdf" class="act" data-action="open-cv-pdf" disabled>open PDF</button>
           </div>
           <div id="cv-preview-shell">
             <div id="cv-preview">Select a tailored CV to render its PDF.</div>
@@ -1284,8 +1350,9 @@ const Scout = {
       document.getElementById('cv-editing').textContent = `editing: ${this.cvState.path}`;
       document.getElementById('cv-dirty').textContent = this.cvState.dirty ? 'unsaved' : '';
       document.querySelectorAll('[data-cv-path]').forEach((button) => button.classList.toggle('active', button.dataset.cvPath === this.cvState.path));
-      if (this.cvState.slug) await this.renderCvPreview(this.cvState.slug);
-      else document.getElementById('cv-preview').textContent = 'The master CV is source material only and has no PDF preview. Open or create a tailored CV to render a PDF.';
+      this.updateCvControls();
+      await this.showStoredCv();
+      await this.reattachCvRender();
     }
   },
 
@@ -1330,8 +1397,42 @@ const Scout = {
     document.getElementById('cv-dirty').textContent = '';
     document.querySelectorAll('[data-cv-path]').forEach((b) =>
       b.classList.toggle('active', b.dataset.cvPath === pathRel));
-    if (slug) await this.renderCvPreview(slug);
-    else document.getElementById('cv-preview').textContent = 'The master CV is source material only and has no PDF preview. Open or create a tailored CV to render a PDF.';
+    this.updateCvControls();
+    await this.showStoredCv();
+    if (slug) await this.refreshCvQuality(slug);
+    else {
+      const quality = document.getElementById('cv-quality');
+      if (quality) quality.innerHTML = '<div class="label">Master reference</div><b>Evidence source</b><div class="meta">The reference PDF is for reviewing the approved master evidence. Tailored application PDFs keep their separate quality gate.</div>';
+    }
+  },
+
+  currentCvRequest() {
+    if (!this.cvState.path) return null;
+    return this.cvState.slug ? { target: 'application', slug: this.cvState.slug } : { target: 'master' };
+  },
+
+  currentCvRenderState() {
+    if (!this.cvState.path) return { pdf: false, current: false, stale: false };
+    if (!this.cvState.slug) return this.state.cvFiles?.masterRender || { pdf: false, current: false, stale: false };
+    return this.state.cvFiles?.entries?.find((entry) => entry.slug === this.cvState.slug) || { pdf: false, current: false, stale: false };
+  },
+
+  updateCvControls() {
+    const master = Boolean(this.cvState.path && !this.cvState.slug);
+    const current = this.currentCvRenderState().current === true;
+    const save = document.getElementById('cv-save-render');
+    if (save) save.textContent = master ? 'save + render reference PDF' : 'save + render tailored PDF';
+    for (const id of ['cv-download', 'cv-fullscreen', 'cv-open-pdf']) {
+      const button = document.getElementById(id); if (button) button.disabled = !current;
+    }
+  },
+
+  async showStoredCv() {
+    const preview = document.getElementById('cv-preview');
+    if (!preview || !this.cvState.path) return;
+    const state = this.currentCvRenderState();
+    if (state.current) this.showPdf();
+    else preview.innerHTML = `<div class="cv-preview-status">${state.stale ? 'This PDF is stale because the source changed. Save and render again.' : this.cvState.slug ? 'No tailored PDF yet. Save and render to create it.' : 'No master reference PDF yet. Save and render to create it.'}</div>`;
   },
 
   async saveCv() {
@@ -1342,26 +1443,66 @@ const Scout = {
     this.cvState.dirty = false;
     this.cvState.content = content;
     document.getElementById('cv-dirty').textContent = '';
-    if (!this.cvState.slug) return;
-    await this.renderCvPreview(this.cvState.slug);
+    await this.renderCvPreview();
   },
 
-  async renderCvPreview(slug) {
+  async renderCvPreview() {
     const preview = document.getElementById('cv-preview');
-    if (!preview) return;
+    const request = this.currentCvRequest();
+    if (!preview || !request) return;
     preview.innerHTML = '<div class="cv-preview-status">rendering PDF...</div>';
     try {
-      const rendered = await this.api('/api/cv/render', {
+      const response = await fetch('/api/cv/render', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ slug }),
+        body: JSON.stringify(request),
       });
-      if (rendered.ok) this.showPdf(slug);
-      else preview.innerHTML = `<div class="cv-preview-error">Render failed:\n${this.esc(rendered.stderr || rendered.stdout || 'unknown error')}</div>`;
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Render could not start (${response.status})`);
+      await this.watchCvRender(body.operation.id);
     } catch (e) {
       preview.innerHTML = `<div class="cv-preview-error">Preview could not load: ${this.esc(e.message)}</div>`;
     }
-    await this.refreshCvQuality(slug);
+  },
+
+  async watchCvRender(id) {
+    if (!id) return;
+    if (this.cvRenderTimer) clearTimeout(this.cvRenderTimer);
+    const poll = async (resolve) => {
+      const preview = document.getElementById('cv-preview');
+      try {
+        const response = await fetch(`/api/operations/${encodeURIComponent(id)}`);
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || 'PDF render status unavailable');
+        const operation = body.operation;
+        if (preview && ['queued', 'running'].includes(operation.status)) preview.innerHTML = `<div class="cv-preview-status">${this.esc(operation.phase || 'Rendering PDF')} · step ${this.esc(operation.progress?.current || 0)}/${this.esc(operation.progress?.total || 3)}</div>`;
+        if (['queued', 'running'].includes(operation.status)) {
+          this.cvRenderTimer = setTimeout(() => poll(resolve), 250);
+          return;
+        }
+        this.cvRenderTimer = null;
+        if (operation.status === 'failed') {
+          if (preview) preview.innerHTML = `<div class="cv-preview-error">Render failed: ${this.esc(operation.error || 'unknown error')}</div>`;
+        } else {
+          this.state.cvFiles = await this.api('/api/cv');
+          this.updateCvControls();
+          await this.showStoredCv();
+          if (this.cvState.slug) await this.refreshCvQuality(this.cvState.slug);
+        }
+      } catch (error) {
+        this.cvRenderTimer = null;
+        if (preview) preview.innerHTML = `<div class="cv-preview-error">Render status unavailable: ${this.esc(error.message)}</div>`;
+      }
+      resolve?.();
+    };
+    return new Promise((resolve) => poll(resolve));
+  },
+
+  async reattachCvRender() {
+    try {
+      const body = await this.api('/api/operations?type=cv-render');
+      if (body.operation && ['queued', 'running'].includes(body.operation.status)) this.watchCvRender(body.operation.id);
+    } catch { /* no active render */ }
   },
 
   async refreshCvQuality(slug) {
@@ -1405,15 +1546,22 @@ const Scout = {
     this.openChat(this.cvState.opportunityId, 'reuseEvidence');
   },
 
-  showPdf(slug) {
-    const url = `/api/cv/pdf?slug=${encodeURIComponent(slug)}&t=${Date.now()}#zoom=${encodeURIComponent(this.cvPreviewZoom)}`;
+  pdfUrl({ download = false } = {}) {
+    const request = this.currentCvRequest();
+    if (!request) return '';
+    const query = request.target === 'master' ? 'target=master' : `slug=${encodeURIComponent(request.slug)}`;
+    return `/api/cv/pdf?${query}${download ? '&download=1' : ''}&t=${Date.now()}#zoom=${encodeURIComponent(this.cvPreviewZoom)}`;
+  },
+
+  showPdf() {
+    const url = this.pdfUrl();
     document.getElementById('cv-preview').innerHTML =
       `<iframe class="cv-preview-frame" title="CV PDF preview" src="${url}"></iframe>`;
   },
 
   setCvZoom(zoom) {
     this.cvPreviewZoom = zoom;
-    if (this.cvState.slug) this.showPdf(this.cvState.slug);
+    if (this.currentCvRenderState().current) this.showPdf();
   },
 
   async fullscreenCv() {
@@ -1428,13 +1576,17 @@ const Scout = {
   },
 
   openCvPdf() {
-    if (!this.cvState.slug) return alert('Open a tailored CV first.');
-    const url = `/api/cv/pdf?slug=${encodeURIComponent(this.cvState.slug)}&t=${Date.now()}#zoom=${encodeURIComponent(this.cvPreviewZoom)}`;
-    window.open(url, '_blank', 'noopener');
+    if (!this.currentCvRenderState().current) return alert('Save and render a current PDF first.');
+    window.open(this.pdfUrl(), '_blank', 'noopener');
   },
 
   async downloadCv() {
-    if (!this.cvState.slug) return alert('Open a tailored (application) CV, then save + render first.');
+    if (!this.currentCvRenderState().current) return alert('Save and render a current PDF first.');
+    if (!this.cvState.slug) {
+      const a = document.createElement('a');
+      a.href = this.pdfUrl({ download: true }); a.download = 'master-cv-reference.pdf';
+      document.body.appendChild(a); a.click(); a.remove(); return;
+    }
     let quality = await this.api(`/api/cv/quality?slug=${encodeURIComponent(this.cvState.slug)}`);
     if (quality.error) return alert(`Could not check CV quality: ${quality.error}`);
     if (!['ready', 'overridden'].includes(quality.status)) {
@@ -1449,7 +1601,7 @@ const Scout = {
       await this.refreshCvQuality(this.cvState.slug);
     }
     const a = document.createElement('a');
-    a.href = `/api/cv/pdf?slug=${encodeURIComponent(this.cvState.slug)}&download=1&t=${Date.now()}`;
+    a.href = this.pdfUrl({ download: true });
     a.download = `${this.cvState.slug}-cv.pdf`;
     document.body.appendChild(a);
     a.click();
@@ -2012,6 +2164,8 @@ const Scout = {
       case 'open-entry': return this.openEntry(tab, id);
       case 'open-report': return this.openReport(date);
       case 'open-scan-report': return this.openScanReport(date);
+      case 'open-scan-result': return this.openScanResult();
+      case 'close-scan-result': return this.closeScanResult();
       case 'complete-stage': return this.completeStage(id, Number(index));
       case 'toggle-source': return this.toggleSourcePanel(id, element);
       case 'mark-applied': return this.markApplied(id);
@@ -2151,6 +2305,9 @@ const Scout = {
     });
     ScoutModal.register(document.getElementById?.('company-drawer'), {
       initialFocus: '[data-action="close-company-history"]', onEscape: () => this.closeCompanyHistory(),
+    });
+    ScoutModal.register(document.getElementById?.('scan-result-overlay'), {
+      initialFocus: '#scan-result-title', onEscape: () => this.closeScanResult(),
     });
     this.registerServiceWorker();
     window.addEventListener?.('offline', () => this.setHostAvailable(false));

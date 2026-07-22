@@ -8,9 +8,10 @@ import { isMainModule } from './lib/mainModule.mjs';
 import { atomicWriteFile } from './lib/atomicWrite.mjs';
 import { triage } from './lib/derive.mjs';
 import { pipeline } from './lib/pipeline.mjs';
-import { listCvFiles, safeCvPath } from './lib/cv.mjs';
+import { cvPdfPath, listCvFiles, renderCvTarget, safeCvPath } from './lib/cv.mjs';
 import { cvDownloadDecision, overrideCvQuality, readCvQuality, runCvQuality } from './lib/cvQuality.mjs';
-import { scanHealthFromText } from './lib/scanHealth.mjs';
+import { parseScanRuns, scanHealthFromText } from './lib/scanHealth.mjs';
+import { scanEstimate } from './lib/scanEstimate.mjs';
 import { scheduleStatus, scheduleSummary } from './lib/scheduler.mjs';
 import { loadPortals, portalSummary } from './lib/ats.mjs';
 import { JOB_CATEGORIES } from './lib/filters.mjs';
@@ -146,6 +147,33 @@ function reportDates() {
 function readScanHealth() {
   const text = fs.existsSync(SCAN_RUNS) ? fs.readFileSync(SCAN_RUNS, 'utf8') : '';
   return scanHealthFromText(text, today());
+}
+
+function readScanRecords() {
+  const text = fs.existsSync(SCAN_RUNS) ? fs.readFileSync(SCAN_RUNS, 'utf8') : '';
+  return parseScanRuns(text).runs;
+}
+
+function publicLatestScan() {
+  const run = readScanRecords().at(-1);
+  if (!run) return null;
+  const reviewed = Array.isArray(run.reviewed) ? run.reviewed.map((item) => ({
+    company: String(item?.company || '').slice(0, 120), role: String(item?.role || '').slice(0, 160),
+    source: String(item?.source || '').slice(0, 80),
+    sourceUrl: /^https?:\/\//i.test(String(item?.sourceUrl || '')) ? String(item.sourceUrl) : null,
+    categoryId: item?.categoryId ? String(item.categoryId).slice(0, 80) : null,
+    outcome: ['kept', 'hard_exclusion', 'mandatory_unmet', 'below_threshold', 'provider_discarded'].includes(item?.outcome) ? item.outcome : 'provider_discarded',
+    score: Number.isFinite(Number(item?.score)) ? Number(item.score) : null,
+    reasons: (Array.isArray(item?.reasons) ? item.reasons : []).map((reason) => String(reason).slice(0, 220)).slice(0, 3),
+  })).slice(0, 80) : [];
+  return {
+    schemaVersion: Number(run.schemaVersion || 1), runAt: run.timestamp || null,
+    provider: run.agent || null, mode: run.mode || null, degraded: Boolean(run.degraded),
+    candidatesFound: Number(run.candidates_found || 0), keepersAdded: Number(run.keepers_added || 0),
+    keepersUpdated: Number(run.keepers_updated || 0), discarded: run.discarded || {},
+    sourceHealth: run.source_health || {}, reportDate: String(run.timestamp || '').slice(0, 10) || null,
+    automaticBroadened: run.mode === 'broadened', reviewed,
+  };
 }
 
 function readScheduleSummary(config = loadWorkspaceConfig(WORKSPACE_ROOT), health = readScanHealth()) {
@@ -356,7 +384,7 @@ async function handleRead(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/operations') {
     const type = url.searchParams.get('type');
-    if (type && !['proposal', 'scan'].includes(type)) return sendJson(res, 400, { error: 'operation type must be proposal or scan' });
+    if (type && !['proposal', 'scan', 'cv-render'].includes(type)) return sendJson(res, 400, { error: 'operation type must be proposal, scan or cv-render' });
     return sendJson(res, 200, { operation: operations.latest(type), operations: operations.list(type) });
   }
   if (req.method === 'GET' && url.pathname.startsWith('/api/operations/')) {
@@ -466,6 +494,9 @@ async function handleRead(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/scan-health') {
     return sendJson(res, 200, readScanHealth());
   }
+  if (req.method === 'GET' && url.pathname === '/api/scans/latest') {
+    return sendJson(res, 200, { scan: publicLatestScan() });
+  }
   if (req.method === 'GET' && url.pathname === '/api/sync/status') {
     return sendJson(res, 200, syncStatus(WORKSPACE_ROOT));
   }
@@ -497,11 +528,12 @@ async function handleRead(req, res, url) {
     catch (e) { return sendJson(res, 400, { error: e.message }); }
   }
   if (req.method === 'GET' && url.pathname === '/api/cv/pdf') {
+    const target = url.searchParams.get('target') === 'master' ? 'master' : 'application';
     const slug = url.searchParams.get('slug') || '';
-    if (!/^[a-z0-9-]+$/.test(slug)) return sendJson(res, 400, { error: 'bad slug' });
-    const pdf = path.join(WORKSPACE_ROOT, 'applications', slug, 'cv.pdf');
-    if (!fs.existsSync(pdf)) return sendJson(res, 404, { error: 'no pdf - render first' });
-    if (url.searchParams.get('download') === '1') {
+    let pdf;
+    try { pdf = cvPdfPath(WORKSPACE_ROOT, { target, slug }); }
+    catch (e) { return sendJson(res, /stale/i.test(e.message) ? 409 : 404, { error: e.message }); }
+    if (target === 'application' && url.searchParams.get('download') === '1') {
       let decision;
       try { decision = cvDownloadDecision(WORKSPACE_ROOT, slug); }
       catch (e) { return sendJson(res, 400, { error: e.message }); }
@@ -509,7 +541,9 @@ async function handleRead(req, res, url) {
     }
     const buf = fs.readFileSync(pdf);
     const headers = { 'Content-Type': 'application/pdf', 'Content-Length': buf.length };
-    if (url.searchParams.get('download') === '1') headers['Content-Disposition'] = `attachment; filename="${slug}-cv.pdf"`;
+    if (url.searchParams.get('download') === '1') headers['Content-Disposition'] = `attachment; filename="${target === 'master' ? 'master-cv-reference' : `${slug}-cv`}.pdf"`;
+    res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'self'");
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.writeHead(200, headers);
     return res.end(buf);
   }
@@ -812,16 +846,29 @@ routes['POST /api/cv/save'] = (req, res, body) => {
 
 routes['POST /api/cv/render'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  const r = renderCv(WORKSPACE_ROOT, b.slug || '', { appRoot: APP_ROOT });
-  if (r.ok) void queueCheckpoint(`render cv - ${b.slug || 'application'}`);
-  replyJson(res, 200, r);
+  const target = b.target === 'master' ? 'master' : 'application';
+  const slug = target === 'application' ? String(b.slug || '') : '';
+  try {
+    const operation = operations.start('cv-render', async (update) => {
+      update({ phase: target === 'master' ? 'Preparing master reference PDF' : 'Preparing tailored PDF', current: 1, total: 3 });
+      const result = await renderCvTarget(WORKSPACE_ROOT, { target, slug }, { appRoot: APP_ROOT });
+      update({ phase: 'Validating PDF', current: 2, total: 3 });
+      if (target === 'application') void queueCheckpoint(`render cv - ${slug}`);
+      update({ phase: 'PDF ready', current: 3, total: 3 });
+      return result;
+    }, { phase: 'Queued for rendering', total: 3 });
+    return replyJson(res, 202, { operation });
+  } catch (e) {
+    if (e instanceof OperationConflictError) return replyJson(res, 409, { error: e.message, operation: e.operation });
+    return replyJson(res, 400, { error: e.message });
+  }
 };
 
 routes['POST /api/cv/quality'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try {
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
-    const result = runCvQuality(WORKSPACE_ROOT, b.slug || '', { locale: config.locale, appRoot: APP_ROOT });
+    const result = runCvQuality(WORKSPACE_ROOT, b.slug || '', { locale: config.locale, appRoot: APP_ROOT, compile: false });
     void queueCheckpoint(`review cv quality - ${b.slug || 'application'}`);
     return replyJson(res, 200, result);
   } catch (e) { return replyJson(res, 400, { error: e.message }); }
@@ -1104,8 +1151,9 @@ routes['POST /api/scan'] = (req, res, body) => {
   try { model = assertSafeModel(b.model); } catch (e) { return replyJson(res, 400, { error: e.message }); }
   if (!['codex', 'claude'].includes(provider)) return replyJson(res, 400, { error: 'choose an authenticated AI provider first' });
   try {
+    const estimate = scanEstimate(readScanRecords(), provider, 'primary');
     const operation = operations.start('scan', async (update) => {
-      const result = await runScan(WORKSPACE_ROOT, provider, 'primary', { onProgress: update, model });
+      const result = await runScan(WORKSPACE_ROOT, provider, 'primary', { onProgress: update, model, autoBroaden: true, estimate });
       if (!result.ok) throw new Error(result.error || `scan ended with ${result.status}`);
       const scanHealth = readScanHealth();
       return {
@@ -1116,7 +1164,7 @@ routes['POST /api/scan'] = (req, res, body) => {
           discarded: scanHealth.discarded, reportDate: String(scanHealth.lastRunAt || '').slice(0, 10) || null,
         },
       };
-    }, { phase: 'Validating approved evidence', total: 5 });
+    }, { phase: 'Validating approved evidence', total: 5, estimate });
     return replyJson(res, 202, { operation });
   } catch (e) {
     if (e instanceof OperationConflictError) return replyJson(res, 409, { error: e.message, operation: e.operation });

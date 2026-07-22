@@ -99,7 +99,7 @@ test('runtime writes canonical scan records and preserves user tracker state', (
     sources: { hiring_cafe: { configured: true, status: 'healthy', count: 1, jobs: [] } },
     assessmentResult: { assessments: [assessment('met')] }, policy: { actionScore: 70, checkScore: 55 },
   });
-  assert.equal(artifacts.run.schemaVersion, 2);
+  assert.equal(artifacts.run.schemaVersion, 3);
   assert.deepEqual(artifacts.run.sources_checked, ['hiring_cafe']);
   assert.deepEqual(artifacts.run.queries_checked, ['engineer']);
   assert.equal(artifacts.run.candidates_found, 1);
@@ -111,6 +111,32 @@ test('runtime writes canonical scan records and preserves user tracker state', (
   assert.deepEqual(saved.log, [{ date: '2026-07-01', event: 'replied', note: '' }]);
   assert.equal(saved.eligibility.status, 'eligible');
   assert.equal(validateWrittenScanArtifacts(root, artifacts.run).run.agent, 'codex');
+});
+
+test('forty zero-keeper candidates produce a bounded sanitised audit without tracker padding', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-zero-keeper-audit-'));
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'data', 'opportunities.json'), '{"updated":"2026-07-01","opportunities":[]}\n');
+  const candidates = Array.from({ length: 40 }, (_, index) => ({
+    candidateId: `candidate-${String(index + 1).padStart(3, '0')}`,
+    company: `Synthetic Company ${index + 1}`, role: `Synthetic Role ${index + 1}`,
+    url: `https://example.test/jobs/${index + 1}`, source: 'synthetic',
+    description: 'This full advert text must not be retained in the audit.',
+  }));
+  const assessments = candidates.map((candidate, index) => ({
+    ...assessment(index < 16 ? 'unmet' : 'met'), candidateId: candidate.candidateId,
+    recommendation: index < 16 ? 'keep' : 'discard', summary: `Concise synthetic reason ${index + 1}`,
+  }));
+  const artifacts = writeScanArtifacts(root, {
+    provider: 'codex', mode: 'primary', sources: { synthetic: { configured: true, status: 'healthy', count: 40 } },
+    candidates, assessmentResult: { assessments }, policy: { actionScore: 70, checkScore: 55 },
+    startedAt: '2026-07-14T10:00:00Z',
+  });
+  assert.equal(artifacts.tracker.opportunities.length, 0);
+  assert.deepEqual(artifacts.run.discarded, { hard_exclusion: 0, mandatory_unmet: 16, below_threshold: 0, provider_discarded: 24 });
+  assert.equal(artifacts.run.reviewed.length, 40);
+  assert.deepEqual(Object.keys(artifacts.run.reviewed[0]).sort(), ['categoryId', 'company', 'outcome', 'reasons', 'role', 'score', 'source', 'sourceUrl'].sort());
+  assert.doesNotMatch(JSON.stringify(artifacts.run.reviewed), /full advert|profileEvidence|Built systems/);
 });
 
 test('two same-day providers remain visible in one combined report', () => {

@@ -20,10 +20,6 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('CV library exposes legacy sources whose PDF and quality files are absent', async ({ page }) => {
-  await page.route('**/api/cv/render', (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ ok: false, stderr: "Scout's managed Typst runtime is missing. Repair or reinstall Scout." }),
-  }));
   await page.getByRole('button', { name: 'CV' }).click();
   await expect(page.getByRole('heading', { name: 'CV library' })).toBeVisible();
   const legacy = page.locator('[data-cv-path="applications/legacy-systems/cv.typ"]');
@@ -32,7 +28,20 @@ test('CV library exposes legacy sources whose PDF and quality files are absent',
   await expect(legacy).toContainText('legacy');
   await legacy.click();
   await expect(page.locator('#cv-text')).toHaveValue(/Existing source remains editable/);
-  await expect(page.locator('#cv-preview')).toContainText('Repair or reinstall Scout');
+  await expect(page.locator('#cv-preview')).toContainText('No tailored PDF yet');
+});
+
+test('master reference PDF uses the real same-origin preview endpoint', async ({ page, request }) => {
+  await page.getByRole('button', { name: 'CV' }).click();
+  await page.locator('[data-cv-path="cv/master-cv.md"]').click();
+  await expect(page.getByRole('button', { name: 'save + render reference PDF' })).toBeVisible();
+  await expect(page.locator('#cv-preview iframe')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'download PDF' })).toBeEnabled();
+  const response = await request.get('/api/cv/pdf?target=master');
+  expect(response.status()).toBe(200);
+  expect(response.headers()['x-frame-options']).toBe('SAMEORIGIN');
+  expect(response.headers()['content-security-policy']).toContain("frame-ancestors 'self'");
+  expect(response.headers()['content-type']).toBe('application/pdf');
 });
 
 test('CV creation is available from the library and opportunity card', async ({ page }) => {

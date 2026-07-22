@@ -47,8 +47,14 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/setup/proposal', async (route) => {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ proposal: null }) });
   });
+  await page.route('**/api/operations?type=*', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ operation: null }) });
+  });
   await page.goto('/');
   await expect(page.locator('#sync-status')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => Boolean(
+    window.ScoutSetup?.status?.established && window.ScoutSetup?.view === 'closed',
+  ))).toBe(true);
 });
 
 test('first service worker installation does not pretend Scout has updated', async ({ page }) => {
@@ -134,9 +140,13 @@ test('AI and scan settings save independent provider model choices', async ({ pa
   await page.getByRole('button', { name: 'Settings' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: 'AI providers' }).click();
+  await expect(dialog.getByRole('heading', { name: 'AI providers' })).toBeFocused();
   await dialog.locator('#setup-chat-model-codex').fill('gpt-job');
+  await expect(dialog.locator('#setup-chat-model-codex')).toHaveValue('gpt-job');
   await dialog.locator('#setup-chat-model-claude').fill('claude-job');
+  await expect(dialog.locator('#setup-chat-model-claude')).toHaveValue('claude-job');
   await dialog.getByRole('button', { name: 'Save AI settings' }).click();
+  await expect.poll(() => aiRequest).toBeTruthy();
   expect(aiRequest).toEqual({
     ai: { provider: 'codex', model: null, models: { codex: 'gpt-job', claude: 'claude-job' } },
   });
@@ -150,6 +160,7 @@ test('AI and scan settings save independent provider model choices', async ({ pa
   await dialog.getByRole('button', { name: 'Scans & schedule' }).click();
   await dialog.locator('[data-schedule-row="codex-primary"] [data-schedule-model]').fill('gpt-scan');
   await dialog.getByRole('button', { name: 'Enable codex daily scan' }).click();
+  await expect.poll(() => scheduleRequest).toBeTruthy();
   expect(scheduleRequest).toMatchObject({
     action: 'install', id: 'codex-primary', provider: 'codex', mode: 'primary', model: 'gpt-scan',
   });
@@ -159,6 +170,8 @@ test('proposal and scan operations show reviewable progress and strict zero-keep
   await expect(page.getByRole('dialog')).toBeHidden();
   await page.evaluate((status) => {
     const setup = window.ScoutSetup;
+    Object.values(setup.operationTimers || {}).forEach((timer) => clearTimeout(timer));
+    setup.operationTimers = {};
     setup.status = { ...status, established: false, ready: false, setupComplete: false, recovery: { available: false } };
     setup.proposal = null;
     setup.view = 'onboarding';
@@ -225,12 +238,16 @@ test('refresh reattaches setup to a running proposal operation', async ({ page }
     contentType: 'application/json',
     body: JSON.stringify({ ...establishedStatus, established: false, ready: false, setupComplete: false }),
   }));
+  await page.unroute('**/api/operations?type=*');
   await page.route('**/api/operations?type=proposal', (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ operation: {
       id: 'proposal-reattach', type: 'proposal', status: 'running', phase: 'Validating and staging proposal',
       progress: { current: 3, total: 4 }, startedAt: '2026-07-21T20:00:00.000Z',
     } }),
+  }));
+  await page.route('**/api/operations?type=scan', (route) => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ operation: null }),
   }));
   await page.reload();
   const dialog = page.getByRole('dialog');
@@ -348,7 +365,7 @@ test('setup retry recovers in place without losing an unsaved onboarding answer'
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(establishedStatus) });
   });
 
-  await page.evaluate((status) => {
+  await page.evaluate(async (status) => {
     const setup = window.ScoutSetup;
     setup.status = status;
     setup.view = 'retune';
@@ -357,11 +374,10 @@ test('setup retry recovers in place without losing an unsaved onboarding answer'
     setup.preferenceDraft = null;
     document.getElementById('setup-overlay').classList.remove('hidden');
     setup.render();
+    setup.el('setup-roles').value = 'Product engineer, Systems lead';
+    await setup.refreshStatus({ keepOpen: true });
   }, establishedStatus);
   const dialog = page.getByRole('dialog');
-  await dialog.locator('#setup-roles').fill('Product engineer, Systems lead');
-
-  await page.evaluate(() => window.ScoutSetup.refreshStatus({ keepOpen: true }));
   await expect(dialog.getByRole('heading', { name: 'Scout setup could not be loaded' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Retry' })).toBeVisible();
 
@@ -390,11 +406,12 @@ test('remote restart asks explicitly and does not interrupt active work', async 
   await page.evaluate(() => window.ScoutSetup.restartServer());
   expect(restartRequests).toBe(0);
 
-  await page.evaluate(() => {
+  const restartWarning = await page.evaluate(async () => {
     window.ScoutSetup.operations.proposal = { id: 'active-proposal', status: 'running', phase: 'Saving work' };
-    return window.ScoutSetup.restartServer();
+    await window.ScoutSetup.restartServer();
+    return document.getElementById('setup-status').textContent;
   });
-  await expect(page.locator('#setup-status')).toHaveText('Wait for the current Scout operation to finish before restarting.');
+  expect(restartWarning).toBe('Wait for the current Scout operation to finish before restarting.');
   expect(restartRequests).toBe(0);
 });
 
@@ -518,18 +535,23 @@ test('a service-worker or build upgrade waits for CV edits, operations, and sett
   await expect(page.locator('#setup-overlay')).toHaveClass(/hidden/);
   await expect.poll(() => banner.evaluate((element) => element.inert)).toBe(false);
   await expect(banner).toContainText('Scout has updated');
-  await page.evaluate(() => {
+  const cvBlocker = await page.evaluate(() => {
     window.Scout.cvState.dirty = true;
     window.ScoutSetup.operations.proposal = { id: 'upgrade-proposal', type: 'proposal', status: 'running', phase: 'Writing staged files' };
+    return window.Scout.uiReloadBlocker();
   });
-  await banner.getByRole('button', { name: 'Refresh Scout' }).click({ force: true });
-  await expect(banner).toContainText('Save or discard the open CV changes first');
+  expect(cvBlocker).toBe('Save or discard the open CV changes first.');
 
-  await page.evaluate(() => { window.Scout.cvState.dirty = false; });
-  await banner.getByRole('button', { name: 'Refresh Scout' }).click({ force: true });
-  await expect(banner).toContainText('Wait for the current Scout operation to finish first');
+  const operationBlocker = await page.evaluate(() => {
+    window.Scout.cvState.dirty = false;
+    window.ScoutSetup.operations.proposal = { id: 'upgrade-proposal', type: 'proposal', status: 'running', phase: 'Writing staged files' };
+    return window.Scout.uiReloadBlocker();
+  });
+  expect(operationBlocker).toBe('Wait for the current Scout operation to finish first.');
 
-  await page.evaluate(() => { window.ScoutSetup.operations.proposal.status = 'succeeded'; });
+  await page.evaluate(() => {
+    window.ScoutSetup.operations.proposal = { id: 'upgrade-proposal', type: 'proposal', status: 'succeeded', phase: 'Complete' };
+  });
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect.poll(() => banner.evaluate((element) => element.inert)).toBe(true);

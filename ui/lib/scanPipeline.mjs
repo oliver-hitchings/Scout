@@ -8,6 +8,18 @@ import {
 } from './jobIdentity.mjs';
 
 const EMPTY_DISCARDED = Object.freeze({ hard_exclusion: 0, mandatory_unmet: 0, below_threshold: 0, provider_discarded: 0 });
+const REVIEW_REASON_LIMIT = 3;
+
+function boundedText(value, maximum = 220) {
+  return String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, maximum);
+}
+
+function safeSourceUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : null;
+  } catch { return null; }
+}
 
 export const SCAN_ASSESSMENT_SCHEMA = Object.freeze({
   type: 'object', additionalProperties: false,
@@ -149,17 +161,33 @@ function sourceHealth(sources) {
 function mergeTracker(existing, candidates, assessments, policy, date) {
   const byId = new Map(existing.opportunities.map((entry) => [entry.id, entry]));
   const discarded = { ...EMPTY_DISCARDED };
+  const reviewed = [];
   let keepersAdded = 0;
   let keepersUpdated = 0;
   for (const assessment of assessments) {
     const candidate = candidates.find((item) => item.candidateId === assessment.candidateId);
     if (!candidate) continue;
     const gate = gateAssessment(assessment, policy);
+    let outcome = 'kept';
     if (!gate.keep) {
-      if ((assessment.hardExclusionMatches || []).length) discarded.hard_exclusion += 1;
-      else if ((assessment.mandatoryRequirements || []).some((item) => item.status === 'unmet')) discarded.mandatory_unmet += 1;
-      else if (assessment.recommendation === 'discard') discarded.provider_discarded += 1;
-      else discarded.below_threshold += 1;
+      if ((assessment.hardExclusionMatches || []).length) outcome = 'hard_exclusion';
+      else if ((assessment.mandatoryRequirements || []).some((item) => item.status === 'unmet')) outcome = 'mandatory_unmet';
+      else if (assessment.recommendation === 'discard') outcome = 'provider_discarded';
+      else outcome = 'below_threshold';
+      discarded[outcome] += 1;
+    }
+    const reasons = gate.reasons.length
+      ? gate.reasons
+      : outcome === 'provider_discarded' ? [assessment.summary]
+        : outcome === 'below_threshold' ? ['Below the configured check threshold'] : [];
+    reviewed.push({
+      company: boundedText(candidate.company, 120), role: boundedText(candidate.role, 160),
+      source: boundedText(candidate.source, 80), sourceUrl: safeSourceUrl(candidate.url),
+      categoryId: boundedText(assessment.categoryId, 80) || null,
+      outcome, score: gate.score,
+      reasons: reasons.map((reason) => boundedText(reason)).filter(Boolean).slice(0, REVIEW_REASON_LIMIT),
+    });
+    if (!gate.keep) {
       continue;
     }
     const baseId = `${slug(candidate.company)}-${slug(candidate.role)}-${date.slice(0, 7)}`;
@@ -186,7 +214,7 @@ function mergeTracker(existing, candidates, assessments, policy, date) {
     else { existing.opportunities.push(generated); byId.set(generated.id, generated); keepersAdded += 1; }
   }
   existing.updated = date;
-  return { tracker: existing, keepersAdded, keepersUpdated, discarded };
+  return { tracker: existing, keepersAdded, keepersUpdated, discarded, reviewed };
 }
 
 function applyTrustedExclusions(candidates, assessmentResult, exclusions = []) {
@@ -204,11 +232,14 @@ function applyTrustedExclusions(candidates, assessmentResult, exclusions = []) {
   };
 }
 
-function reportText({ date, degraded, source_health, kept, discarded, errors }) {
+function reportText({ date, degraded, source_health, kept, discarded, reviewed, errors }) {
   const coverage = Object.entries(source_health).map(([name, value]) => `- ${name}: ${value.configured === false ? 'not configured' : value.status} (${value.count ?? 'unknown'})${value.reason ? ` — ${value.reason}` : ''}`).join('\n');
   const actions = kept.filter((item) => item.eligibility?.status === 'eligible').map((item) => `- **${item.company} — ${item.role}** (${item.score}) — ${item.sources?.[0] || ''}`).join('\n') || '- None.';
   const checks = kept.filter((item) => item.eligibility?.status === 'check').map((item) => `- **${item.company} — ${item.role}** (${item.score}) — ${(item.eligibility.reasons || []).join('; ')}`).join('\n') || '- None.';
-  return `# Scout report — ${date}\n\n## Headline\n\n${degraded ? 'Coverage was degraded; this is not evidence that no suitable roles exist.' : 'Configured sources completed successfully.'}\n\n${coverage}\n\n## Action today\n\n${actions}\n\n## One check from unlocking\n\n${checks}\n\n## Follow-ups due\n\n- Review existing tracker follow-ups in Scout.\n\n## Changes since last scan\n\n- ${kept.length} current keeper(s) in the tracker.\n\n## Discarded\n\n${Object.entries(discarded).map(([name, count]) => `- ${name}: ${count}`).join('\n')}\n\n## Verdicts\n\n${errors.length ? errors.map((error) => `- Error: ${error}`).join('\n') : '- No applications or outreach were sent.'}\n`;
+  const nearMisses = (reviewed || []).filter((item) => item.outcome !== 'kept' && item.outcome !== 'hard_exclusion')
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0)).slice(0, 5)
+    .map((item) => `- **${item.company} — ${item.role}** (${item.score}) — ${item.reasons.join('; ') || item.outcome}${item.sourceUrl ? ` — ${item.sourceUrl}` : ''}`).join('\n') || '- None.';
+  return `# Scout report — ${date}\n\n## Headline\n\n${degraded ? 'Coverage was degraded; this is not evidence that no suitable roles exist.' : 'Configured sources completed successfully.'}\n\n${coverage}\n\n## Action today\n\n${actions}\n\n## One check from unlocking\n\n${checks}\n\n## Follow-ups due\n\n- Review existing tracker follow-ups in Scout.\n\n## Changes since last scan\n\n- ${kept.length} current keeper(s) in the tracker.\n\n## Discarded\n\n${Object.entries(discarded).map(([name, count]) => `- ${name}: ${count}`).join('\n')}\n\n### Closest reviewed roles not kept\n\n${nearMisses}\n\nThe full sanitised review is available from Scout's latest scan result.\n\n## Verdicts\n\n${errors.length ? errors.map((error) => `- Error: ${error}`).join('\n') : '- No applications or outreach were sent.'}\n`;
 }
 
 function atomicWrite(file, content) {
@@ -228,6 +259,7 @@ export function validateWrittenScanArtifacts(root, expectedRun) {
   for (const field of ['schemaVersion', 'timestamp', 'agent', 'mode', 'degraded', 'sources_checked', 'candidates_found', 'keepers_added', 'discarded', 'errors', 'source_health']) {
     if (!Object.hasOwn(run, field)) throw new Error(`scan run is missing ${field}`);
   }
+  if (Number(run.schemaVersion) >= 3 && !Array.isArray(run.reviewed)) throw new Error('scan run is missing reviewed audit data');
   if (run.timestamp !== expectedRun.timestamp || run.agent !== expectedRun.agent || run.mode !== expectedRun.mode) throw new Error('scan run record does not match the completed request');
   return { tracker, report, run };
 }
@@ -245,14 +277,14 @@ export function writeScanArtifacts(root, { provider, mode, sources, queries = []
   const trustedAssessments = applyTrustedExclusions(candidates, assessmentResult, exclusions);
   const merged = trustedAssessments
     ? mergeTracker(existing, candidates, trustedAssessments.assessments, policy, date)
-    : { tracker: existing, keepersAdded: 0, keepersUpdated: 0, discarded: { ...EMPTY_DISCARDED } };
+    : { tracker: existing, keepersAdded: 0, keepersUpdated: 0, discarded: { ...EMPTY_DISCARDED }, reviewed: [] };
   const run = {
-    schemaVersion: 2, timestamp, started_at: startedAt, agent: provider, mode, degraded, skipped,
+    schemaVersion: 3, timestamp, started_at: startedAt, agent: provider, mode, degraded, skipped,
     sources_checked: Object.entries(health).filter(([, item]) => item.configured !== false).map(([name]) => name),
     queries_checked: [...queries], candidates_found: candidates.length, keepers_added: merged.keepersAdded,
     duplicates_collapsed: candidates.reduce((total, candidate) => total + Math.max(0, Number(candidate.duplicateCount || 1) - 1), 0),
     keepers_updated: merged.keepersUpdated,
-    discarded: merged.discarded, errors, source_health: health,
+    discarded: merged.discarded, reviewed: merged.reviewed, errors, source_health: health,
   };
   const earlierRuns = fs.existsSync(paths.scanRuns)
     ? fs.readFileSync(paths.scanRuns, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => {
@@ -267,6 +299,7 @@ export function writeScanArtifacts(root, { provider, mode, sources, queries = []
     source_health: health,
     kept: merged.tracker.opportunities,
     discarded: merged.discarded,
+    reviewed: merged.reviewed,
     errors: dayErrors,
   });
   const runLines = dayRuns.map((item) => {

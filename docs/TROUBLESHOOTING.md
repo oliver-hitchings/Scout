@@ -36,6 +36,8 @@ The same protection applies when a new service worker is ready: Scout keeps the 
 
 The header backup status opens **Backup details**. Use **Advanced backup settings** from there for configuration. The main **Settings** button opens the sectioned settings hub; first-run onboarding appears automatically only for an unfinished workspace.
 
+On macOS, use the Scout menu's **Open Scout** and **Show diagnostic log** actions. A packaged startup failure should display an alert naming the log. If Finder still does nothing, verify the DMG checksum, move Scout into Applications, use Control-click → Open once, and inspect `~/Documents/Scout Workspace/logs/ui-stdout.log` before reporting a synthetic error summary.
+
 If Setup temporarily cannot reach the local Scout server, select **Retry** after the server is available. Retry reconnects in place: it does not reload the page or discard answers you have entered in the current onboarding or retuning step.
 
 ## Private backup cannot be enabled
@@ -48,7 +50,11 @@ Backup is optional. Confirm Git and Git Credential Manager are installed, restar
 
 ## A scan reviewed candidates but kept zero
 
-This is not automatically a failed scan. Scout shows the number reviewed, number kept and the discard breakdown (hard exclusions, mandatory gates, below-threshold results and provider assessment discards), with a link to the dated report. Check source health first. If sources were healthy, zero keepers can be the correct result for strict salary, location, commute or evidence gates. Do not weaken a genuine hard gate merely to produce results.
+This is not automatically a failed scan. Scout shows the number reviewed, number kept and the discard breakdown (hard exclusions, mandatory gates, below-threshold results and provider assessment discards), with links to the bounded candidate audit and dated report. Check source health first. If a first/manual primary scan keeps zero, Scout automatically runs one broader discovery pass while retaining every approved gate. If both passes keep zero, use **Review this scan** to inspect concise role-level reasons. Do not weaken a genuine hard gate merely to produce results.
+
+## A PDF is missing, stale or blank
+
+Select the master or tailored source and choose its explicit save-and-render action. Keep Scout open while the background operation runs. A source edit makes the previous PDF stale immediately; render again. If rendering fails, Scout preserves the old file but will not preview or download it as current. Run `scout doctor` and repair/reinstall Scout when the managed Typst runtime is missing. Do not install an unrelated system Typst merely to mask a damaged package.
 
 Scout refuses to start a scan when the approved profile, calibration or master CV is incomplete. If Setup reports an empty activated master CV and offers the validated recovery control, use it there; Scout backs up the current file and restores only the hash-checked reviewed staging copy. If the control is unavailable, preserve the workspace and inspect the reported mismatch.
 

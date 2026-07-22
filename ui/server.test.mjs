@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -389,12 +390,40 @@ test('daily schedule is blocked before a healthy supervised scan', async () => {
   assert.match(JSON.parse(response.text).error, /healthy supervised scan/i);
 });
 
+test('latest scan API exposes only bounded review fields and scan health omits raw queries', async () => {
+  fs.mkdirSync(path.join(testWorkspace, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(testWorkspace, 'data', 'scan-runs.jsonl'), `${JSON.stringify({
+    schemaVersion: 3, timestamp: '2026-07-22T10:00:00.000Z', started_at: '2026-07-22T09:53:00.000Z',
+    agent: 'codex', mode: 'primary', degraded: false, skipped: false, candidates_found: 1, keepers_added: 0, keepers_updated: 0,
+    discarded: { provider_discarded: 1 }, errors: [], source_health: {}, queries_checked: ['private query'],
+    reviewed: [{
+      company: 'Synthetic Company', role: 'Synthetic Role', source: 'synthetic', sourceUrl: 'https://example.test/job',
+      outcome: 'provider_discarded', score: 45, reasons: ['Concise reason'], description: 'full advert',
+      profileEvidence: 'private evidence', prompt: 'provider prompt',
+    }],
+  })}\n`);
+  const latest = await request({ path: '/api/scans/latest' });
+  assert.equal(latest.status, 200);
+  const text = latest.text;
+  assert.match(text, /Synthetic Company/);
+  assert.doesNotMatch(text, /private query|full advert|private evidence|provider prompt/);
+  const health = await request({ path: '/api/scan-health' });
+  assert.doesNotMatch(health.text, /private query/);
+});
+
 test('legacy CV downloads require a hash-bound explicit override', async () => {
   const slug = 'synthetic-quality';
   const app = path.join(testWorkspace, 'applications', slug);
   fs.mkdirSync(app, { recursive: true });
-  fs.writeFileSync(path.join(app, 'cv.typ'), '#show: cv.with(name: "Example")\n');
-  fs.writeFileSync(path.join(app, 'cv.pdf'), 'synthetic-pdf');
+  const source = '#show: cv.with(name: "Example")\n';
+  const pdf = '%PDF-1.7\nsynthetic valid pdf body';
+  fs.writeFileSync(path.join(app, 'cv.typ'), source);
+  fs.writeFileSync(path.join(app, 'cv.pdf'), pdf);
+  fs.mkdirSync(path.join(testWorkspace, '.scout'), { recursive: true });
+  fs.writeFileSync(path.join(testWorkspace, '.scout', 'cv-renders.json'), JSON.stringify({
+    schemaVersion: 1,
+    renders: { [`application:${slug}`]: { sourceSha256: crypto.createHash('sha256').update(source).digest('hex'), renderedAt: '2026-07-22T10:00:00.000Z' } },
+  }));
 
   const qualityResponse = await request({ path: `/api/cv/quality?slug=${slug}` });
   assert.equal(qualityResponse.status, 200);
@@ -416,7 +445,17 @@ test('legacy CV downloads require a hash-bound explicit override', async () => {
 
   const downloaded = await request({ path: `/api/cv/pdf?slug=${slug}&download=1` });
   assert.equal(downloaded.status, 200);
-  assert.equal(downloaded.text, 'synthetic-pdf');
+  assert.equal(downloaded.text, pdf);
+  assert.equal(downloaded.headers['x-frame-options'], 'SAMEORIGIN');
+  assert.match(downloaded.headers['content-security-policy'], /frame-ancestors 'self'/);
+});
+
+test('stale CV PDFs are not served after their source changes', async () => {
+  const slug = 'synthetic-quality';
+  fs.appendFileSync(path.join(testWorkspace, 'applications', slug, 'cv.typ'), '\n= Changed\n');
+  const response = await request({ path: `/api/cv/pdf?slug=${slug}` });
+  assert.equal(response.status, 409);
+  assert.match(JSON.parse(response.text).error, /stale/i);
 });
 
 test('CV index keeps legacy sources visible and describes missing derived files', async () => {
@@ -429,7 +468,8 @@ test('CV index keeps legacy sources visible and describes missing derived files'
   const index = JSON.parse(response.text);
   assert.ok(index.applications.includes(slug));
   assert.deepEqual(index.entries.find((entry) => entry.slug === slug), {
-    slug, source: true, pdf: false, outreach: false, evidence: false, quality: false,
+    slug, source: true, pdf: false, pdfCurrent: false, pdfStale: false, renderedAt: null,
+    outreach: false, evidence: false, quality: false,
   });
 });
 

@@ -8,6 +8,7 @@ import {
   formatLocalDateTime,
   handoffAction,
   operationElapsed,
+  operationRemaining,
   scanOutcomeSummary,
   shouldAutoRunFirstScan,
   splitList,
@@ -93,6 +94,12 @@ test('scan outcome explains strict zero-keeper results', () => {
     breakdown: ['19 mandatory gates', '21 assessment discards'],
   });
   assert.equal(operationElapsed({ startedAt: '2026-07-21T20:00:00.000Z' }, Date.parse('2026-07-21T20:02:05.000Z')), '2m 5s elapsed');
+  assert.equal(operationRemaining({
+    startedAt: '2026-07-21T20:00:00.000Z', estimate: { totalSecondsLow: 300, totalSecondsHigh: 600 },
+  }, Date.parse('2026-07-21T20:02:00.000Z')), 'About 3–8 min remaining');
+  assert.match(operationRemaining({
+    startedAt: '2026-07-21T20:00:00.000Z', estimate: { totalSecondsLow: 300, totalSecondsHigh: 600 },
+  }, Date.parse('2026-07-21T20:11:00.000Z')), /Taking longer/);
 });
 
 test('first-run setup offers optional local create, private backup guidance, and restore', () => {

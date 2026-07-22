@@ -10,6 +10,8 @@ Private Remote Access is optional. After normal setup, install [Tailscale](https
 4. On first launch, Control-click Scout and choose **Open**. If macOS still blocks it, use **System Settings → Privacy & Security → Open Anyway** after confirming the checksum. Do not disable Gatekeeper globally.
 5. Complete provider setup, onboarding and the supervised first scan in the browser window Scout opens.
 
+The packaged app keeps a small native launcher running while Scout is open. Use its **Scout** menu to reopen the dashboard, reveal the diagnostic log or quit the local server. Opening Scout again from Finder reopens the dashboard. If startup fails, Scout displays a macOS alert with the log location instead of failing silently.
+
 Scout stores private data in `~/Documents/Scout Workspace` unless `SCOUT_WORKSPACE` is set. Removing Scout from Applications does not delete that workspace. Disable its daily scan in Settings before uninstalling.
 
 ## Optional login startup
@@ -34,4 +36,4 @@ The packaged macOS app does not install login startup automatically. For a sourc
 </dict></plist>
 ```
 
-Validate and start it with `plutil -lint ~/Library/LaunchAgents/dev.scout.host.plist` and `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.scout.host.plist`. Remove it with `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.scout.host.plist`. This starts only after that user signs in and stores no password. Packaged macOS supervision remains manual.
+Validate and start it with `plutil -lint ~/Library/LaunchAgents/dev.scout.host.plist` and `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.scout.host.plist`. Remove it with `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.scout.host.plist`. This starts only after that user signs in and stores no password. The packaged app supervises the server while its native launcher is running; login startup remains optional and manual.
