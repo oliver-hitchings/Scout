@@ -36,9 +36,18 @@ test('CV creation is available from the library and opportunity card', async ({ 
   await page.getByRole('button', { name: 'CV' }).click();
   await page.getByRole('button', { name: 'Create tailored CV' }).click();
   await page.locator('#cv-create-opportunity').selectOption({ label: 'New Systems — Product Engineer' });
-  await page.getByRole('button', { name: 'Continue' }).click();
+  const continueFromLibrary = page.getByRole('button', { name: 'Continue' });
+  await continueFromLibrary.click();
   await expect(page.getByRole('heading', { name: 'Build this custom CV' })).toBeVisible();
-  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('heading', { name: 'Build this custom CV' })).toBeFocused();
+  await expect.poll(() => page.locator('main').evaluate((element) => element.inert)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByRole('button', { name: 'Continue to job chat' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.locator('#cv-option-xyz')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#cv-options-overlay')).toBeHidden();
+  await expect(continueFromLibrary).toBeFocused();
 
   await page.getByRole('button', { name: 'Priority' }).click();
   const card = page.locator('#tab-startup .card[data-id="new-systems-product-2026-07"]');

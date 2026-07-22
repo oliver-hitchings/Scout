@@ -846,7 +846,7 @@
     <div class="setup-dialog">
       <div class="setup-head">
         <button id="setup-close" class="act setup-close hidden" type="button" aria-label="Close settings">&times;</button>
-        <h1 id="setup-title">Set up Scout</h1>
+        <h1 id="setup-title" tabindex="-1">Set up Scout</h1>
         <div id="setup-subtitle" class="meta">A private workspace, tuned to your search.</div>
         <div id="setup-progress" class="setup-progress" aria-label="Setup progress"></div>
       </div>
@@ -859,11 +859,11 @@
       </div>
     </div>
   </div>
-  <div id="chat-drawer" class="chat-drawer hidden"></div>
-  <div id="company-drawer" class="chat-drawer company-drawer hidden"></div>
+  <div id="chat-drawer" class="chat-drawer hidden" role="dialog" aria-modal="true" aria-label="Scout job conversation"></div>
+  <div id="company-drawer" class="chat-drawer company-drawer hidden" role="dialog" aria-modal="true" aria-label="Company relationship history"></div>
   <div id="cv-options-overlay" class="cv-options-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="cv-options-title">
     <div class="cv-options-dialog">
-      <h2 id="cv-options-title">Build this custom CV</h2>
+      <h2 id="cv-options-title" tabindex="-1">Build this custom CV</h2>
       <p class="meta">Scout recommends both options, but they are optional and can be switched off for this CV.</p>
       <label class="cv-option"><input id="cv-option-xyz" type="checkbox" checked><span><b>Google XYZ <span class="chip">Recommended</span></b><span class="meta">Strengthen genuine achievement bullets with what you accomplished, the confirmed outcome, and how you did it. Scout asks only for missing evidence, one question at a time.</span></span></label>
       <label class="cv-option"><input id="cv-option-humanize" type="checkbox" checked><span><b>Natural-voice review <span class="chip">Recommended</span></b><span class="meta">Run a separate evidence-preserving rewrite and checks for generic phrasing, repetition, long bullets and locale mismatches.</span></span></label>

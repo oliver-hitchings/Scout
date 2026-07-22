@@ -60,6 +60,122 @@ function codexTaskUrl(sessionId) {
   return `codex://threads/${encodeURIComponent(value)}`;
 }
 
+const ScoutModal = (() => {
+  const stack = [];
+  const registrations = new WeakMap();
+  const originalInert = new Map();
+  const focusableSelector = [
+    'a[href]', 'button:not([disabled])', 'input:not([disabled])', 'select:not([disabled])',
+    'textarea:not([disabled])', '[tabindex]:not([tabindex="-1"])',
+  ].join(',');
+
+  const isVisible = (element) => Boolean(element && !element.classList.contains('hidden'));
+  const focusableElements = (element) => [...element.querySelectorAll(focusableSelector)]
+    .filter((candidate) => candidate.getClientRects().length && candidate.getAttribute('aria-hidden') !== 'true');
+  const top = () => stack[stack.length - 1] || null;
+
+  function syncBackground() {
+    const active = top()?.element || null;
+    if (!active) {
+      originalInert.forEach((value, element) => { element.inert = value; });
+      originalInert.clear();
+      return;
+    }
+    [...document.body.children].forEach((element) => {
+      if (!originalInert.has(element)) originalInert.set(element, Boolean(element.inert));
+      element.inert = element !== active && !element.contains(active);
+    });
+  }
+
+  function focusInitial(entry) {
+    requestAnimationFrame(() => {
+      if (top() !== entry || !isVisible(entry.element)) return;
+      const requested = typeof entry.options.initialFocus === 'function'
+        ? entry.options.initialFocus(entry.element)
+        : entry.options.initialFocus;
+      const target = typeof requested === 'string'
+        ? entry.element.querySelector(requested)
+        : requested || focusableElements(entry.element)[0];
+      const focusTarget = target || entry.element;
+      if (!target && !focusTarget.hasAttribute('tabindex')) focusTarget.setAttribute('tabindex', '-1');
+      focusTarget.focus({ preventScroll: true });
+    });
+  }
+
+  function activate(element, options = {}) {
+    const existing = stack.findIndex((entry) => entry.element === element);
+    if (existing >= 0) {
+      stack[existing].options = options;
+      return;
+    }
+    const entry = { element, options, returnFocus: document.activeElement };
+    stack.push(entry);
+    syncBackground();
+    focusInitial(entry);
+  }
+
+  function deactivate(element) {
+    const index = stack.findIndex((entry) => entry.element === element);
+    if (index < 0) return;
+    const [entry] = stack.splice(index, 1);
+    syncBackground();
+    if (index === stack.length && entry.returnFocus?.isConnected) {
+      entry.returnFocus.focus({ preventScroll: true });
+    }
+  }
+
+  function register(element, options = {}) {
+    if (!element || registrations.has(element)) return;
+    const sync = () => {
+      if (isVisible(element)) activate(element, options);
+      else deactivate(element);
+    };
+    registrations.set(element, new MutationObserver(sync));
+    registrations.get(element).observe(element, { attributes: true, attributeFilter: ['class'] });
+    sync();
+  }
+
+  function focus(element, requested) {
+    requestAnimationFrame(() => {
+      if (top()?.element !== element || !isVisible(element)) return;
+      const target = typeof requested === 'string' ? element.querySelector(requested) : requested;
+      target?.focus({ preventScroll: true });
+    });
+  }
+
+  document.addEventListener?.('keydown', (event) => {
+    const entry = top();
+    if (!entry) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      entry.options.onEscape?.();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = focusableElements(entry.element);
+    if (!focusable.length) {
+      event.preventDefault();
+      entry.element.focus({ preventScroll: true });
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    const activeIndex = focusable.indexOf(active);
+    if (event.shiftKey && activeIndex <= 0) {
+      event.preventDefault();
+      last.focus({ preventScroll: true });
+    } else if (!event.shiftKey && (activeIndex < 0 || active === last)) {
+      event.preventDefault();
+      first.focus({ preventScroll: true });
+    }
+  }, true);
+
+  return { focus, register };
+})();
+window.ScoutModal = ScoutModal;
+
 const Scout = {
   state: {
     data: null,
@@ -2008,6 +2124,15 @@ const Scout = {
   },
 
   init() {
+    ScoutModal.register(document.getElementById?.('cv-options-overlay'), {
+      initialFocus: '#cv-options-title', onEscape: () => this.closeCvOptions(),
+    });
+    ScoutModal.register(document.getElementById?.('chat-drawer'), {
+      initialFocus: '[data-action="close-chat"]', onEscape: () => this.closeChat(),
+    });
+    ScoutModal.register(document.getElementById?.('company-drawer'), {
+      initialFocus: '[data-action="close-company-history"]', onEscape: () => this.closeCompanyHistory(),
+    });
     this.registerServiceWorker();
     window.addEventListener?.('offline', () => this.setHostAvailable(false));
     window.addEventListener?.('online', () => this.loadOpportunities().catch(() => this.setHostAvailable(false)));
