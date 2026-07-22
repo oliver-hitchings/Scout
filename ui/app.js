@@ -956,12 +956,23 @@ const Scout = {
       </div>`;
   },
 
-  async post(pathname, payload) {
+  async post(pathname, payload, { retryTrackerConflict = true } = {}) {
+    const trackerMutation = new Set([
+      '/api/status', '/api/note', '/api/log', '/api/contact', '/api/category',
+      '/api/commute', '/api/applied', '/api/rejected', '/api/stage', '/api/stage/complete',
+    ]).has(pathname);
+    const requestPayload = trackerMutation
+      ? { ...payload, trackerRevision: this.state.data?.trackerRevision }
+      : payload;
     const r = await this.api(pathname, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(requestPayload),
     });
+    if (trackerMutation && r?.conflict && retryTrackerConflict) {
+      await this.loadOpportunities();
+      return this.post(pathname, payload, { retryTrackerConflict: false });
+    }
     if (r && r.ok) {
       const activeTab = this.state.tab;
       await this.loadOpportunities();

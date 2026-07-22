@@ -1,0 +1,67 @@
+import { createHash, randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { acquireScanLock, releaseScanLock } from '../../tools/scan-lock.mjs';
+
+export class TrackerRevisionConflictError extends Error {
+  constructor(currentRevision) {
+    super('The tracker changed since this page was loaded');
+    this.name = 'TrackerRevisionConflictError';
+    this.currentRevision = currentRevision;
+  }
+}
+
+export function trackerRevision(content) {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+export function readTrackerSnapshot(file) {
+  const content = fs.readFileSync(file, 'utf8');
+  return { data: JSON.parse(content), revision: trackerRevision(content) };
+}
+
+export function atomicReplaceTracker(file, content) {
+  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}-${randomUUID()}`);
+  let descriptor;
+  try {
+    descriptor = fs.openSync(temporary, 'wx');
+    fs.writeFileSync(descriptor, content, 'utf8');
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporary, file);
+  } catch (error) {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    fs.rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+export async function acquireTrackerMutationLock(workspaceRoot, {
+  timeoutMs = 5000,
+  pollMs = 25,
+  token = randomUUID(),
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const result = acquireScanLock(workspaceRoot, { agent: 'scout-ui', mode: 'tracker-mutation', token });
+    if (result.ok) return result.lock;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+export function releaseTrackerMutationLock(workspaceRoot, token) {
+  return releaseScanLock(workspaceRoot, token);
+}
+
+export function mutateTrackerSnapshot(file, mutate, serialize, { expectedRevision } = {}) {
+  const current = readTrackerSnapshot(file);
+  if (expectedRevision && expectedRevision !== current.revision) {
+    throw new TrackerRevisionConflictError(current.revision);
+  }
+  const next = mutate(current.data);
+  const content = serialize(next);
+  atomicReplaceTracker(file, content);
+  return { data: next, revision: trackerRevision(content) };
+}
