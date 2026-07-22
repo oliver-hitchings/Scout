@@ -510,19 +510,23 @@ test('a service-worker or build upgrade waits for CV edits, operations, and sett
       body: JSON.stringify({ name: 'Scout', version: currentVersion, uiBuildId: 'newer-build' }),
     });
   });
+  const operationsReattached = page.waitForResponse((response) => response.url().includes('/api/operations?type=scan'));
   await page.reload();
+  await operationsReattached;
 
   const banner = page.locator('#ui-update-banner');
+  await expect(page.locator('#setup-overlay')).toHaveClass(/hidden/);
+  await expect.poll(() => banner.evaluate((element) => element.inert)).toBe(false);
   await expect(banner).toContainText('Scout has updated');
   await page.evaluate(() => {
     window.Scout.cvState.dirty = true;
     window.ScoutSetup.operations.proposal = { id: 'upgrade-proposal', type: 'proposal', status: 'running', phase: 'Writing staged files' };
   });
-  await banner.getByRole('button', { name: 'Refresh Scout' }).click();
+  await banner.getByRole('button', { name: 'Refresh Scout' }).click({ force: true });
   await expect(banner).toContainText('Save or discard the open CV changes first');
 
   await page.evaluate(() => { window.Scout.cvState.dirty = false; });
-  await banner.getByRole('button', { name: 'Refresh Scout' }).click();
+  await banner.getByRole('button', { name: 'Refresh Scout' }).click({ force: true });
   await expect(banner).toContainText('Wait for the current Scout operation to finish first');
 
   await page.evaluate(() => { window.ScoutSetup.operations.proposal.status = 'succeeded'; });
@@ -534,6 +538,6 @@ test('a service-worker or build upgrade waits for CV edits, operations, and sett
 
   await Promise.all([
     page.waitForNavigation(),
-    banner.getByRole('button', { name: 'Refresh Scout' }).click(),
+    banner.getByRole('button', { name: 'Refresh Scout' }).click({ force: true }),
   ]);
 });

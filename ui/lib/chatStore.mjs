@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteFile } from './atomicWrite.mjs';
 
 const ID = /^[a-z0-9][a-z0-9-]*$/;
 export const CHAT_PURPOSES = Object.freeze(['job', 'interview-prep']);
@@ -31,8 +32,7 @@ export function loadChat(repoRoot, id, purpose = 'job') {
 
 export function saveChat(repoRoot, id, chat, purpose = 'job') {
   const p = chatPath(repoRoot, id, purpose);
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(chat, null, 2));
+  atomicWriteFile(p, `${JSON.stringify(chat, null, 2)}\n`);
 }
 
 export function appendMessage(chat, role, text, ts) {

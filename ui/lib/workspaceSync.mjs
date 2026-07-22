@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { atomicWriteFile } from './atomicWrite.mjs';
 import {
   initializeRecoveryBackup, loadRecoveryHeader, RECOVERY_DIR, restoreRecoveryBackup, restoreRecoveryBackupWithKey,
   rotateRecoveryPassphrase, writeRecoveryBackup,
@@ -26,10 +27,7 @@ function runGit(cwd, args, options = {}) {
 }
 
 function atomicJson(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  fs.renameSync(temp, file);
+  atomicWriteFile(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 }
 
 function settingsPath(root) { return path.join(root, ...SETTINGS.split('/')); }

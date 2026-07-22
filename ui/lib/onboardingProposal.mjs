@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteFile } from './atomicWrite.mjs';
 import { doctor } from './doctor.mjs';
 import { loadWorkspaceConfig, validateWorkspaceConfig, workspacePaths } from './workspace.mjs';
 import { providerStatus } from './providers.mjs';
@@ -236,12 +237,12 @@ function writeStaged(root, files) {
   fs.rmSync(staging, { recursive: true, force: true });
   if (marker) {
     fs.mkdirSync(staging, { recursive: true });
-    fs.writeFileSync(markerFile, marker);
+    atomicWriteFile(markerFile, marker);
   }
   for (const [relative, content] of Object.entries(files)) {
     const target = stagePath(root, relative);
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, content, 'utf8');
+    atomicWriteFile(target, content);
   }
 }
 
@@ -277,7 +278,7 @@ export async function createOnboardingProposal(root, provider, {
     targetHashes: Object.fromEntries(ONBOARDING_FILES.map((relative) => [relative, sha256(targetPath(root, relative))])),
     stagedHashes: Object.fromEntries(ONBOARDING_FILES.map((relative) => [relative, sha256(stagePath(root, relative))])),
   };
-  fs.writeFileSync(path.join(root, '.scout', 'onboarding', 'proposal.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  atomicWriteFile(path.join(root, '.scout', 'onboarding', 'proposal.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   onProgress({ phase: 'Proposal ready to review', current: 4, total: 4 });
   return { ...manifest, files: ONBOARDING_FILES, valid: true };
 }
@@ -296,10 +297,7 @@ export function readOnboardingProposal(root) {
 }
 
 function atomicWrite(file, content) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.scout-${process.pid}.tmp`;
-  fs.writeFileSync(temporary, content, 'utf8');
-  fs.renameSync(temporary, file);
+  atomicWriteFile(file, content);
 }
 
 function activeMatchesReviewedStage(root, relative) {
@@ -346,7 +344,7 @@ export function activateOnboardingProposal(root, proposalId, confirmed, {
     if (content != null) {
       const backup = path.join(backupDir, ...relative.split('/'));
       fs.mkdirSync(path.dirname(backup), { recursive: true });
-      fs.writeFileSync(backup, content);
+      atomicWriteFile(backup, content);
     }
   }
   try {
@@ -369,7 +367,7 @@ export function activateOnboardingProposal(root, proposalId, confirmed, {
       stagedHashes: proposal.stagedHashes,
       activatedHashes: Object.fromEntries(ONBOARDING_FILES.map((relative) => [relative, sha256(targetPath(root, relative))])),
     };
-    fs.writeFileSync(path.join(root, '.scout', 'onboarding', 'activated.json'), `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
+    atomicWriteFile(path.join(root, '.scout', 'onboarding', 'activated.json'), `${JSON.stringify(marker, null, 2)}\n`);
     fs.rmSync(path.join(root, '.scout', 'onboarding', 'proposal.json'), { force: true });
     return { ok: true, activatedAt, backupDir, files: ONBOARDING_FILES };
   } catch (error) {
@@ -423,7 +421,7 @@ export function recoverActivatedProposal(root, confirmed, { now = () => new Date
   const backupDir = path.join(root, '.scout', 'backups', `${recoveredAt.replace(/[:.]/g, '-')}-recovery`);
   const backup = path.join(backupDir, ...relative.split('/'));
   fs.mkdirSync(path.dirname(backup), { recursive: true });
-  fs.writeFileSync(backup, previous || Buffer.alloc(0));
+  atomicWriteFile(backup, previous || Buffer.alloc(0));
   try {
     atomicWrite(active, fs.readFileSync(staged, 'utf8'));
     if (!meaningfulContent(relative, fs.readFileSync(active, 'utf8')) || sha256(active) !== sha256(staged)) {
@@ -446,7 +444,7 @@ export function discardOnboardingProposal(root) {
   fs.rmSync(staging, { recursive: true, force: true });
   if (marker) {
     fs.mkdirSync(staging, { recursive: true });
-    fs.writeFileSync(markerFile, marker);
+    atomicWriteFile(markerFile, marker);
   }
   return { ok: true };
 }

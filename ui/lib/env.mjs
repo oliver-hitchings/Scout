@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteFile } from './atomicWrite.mjs';
 
 export function loadEnv(repoRoot) {
   const file = path.join(repoRoot, '.env');
@@ -26,6 +27,5 @@ export function saveEnv(repoRoot, values) {
     wanted.delete(match[1]);
   }
   for (const [key, raw] of wanted) out.push(`${key}=${String(raw || '').replace(/[\r\n]/g, '')}`);
-  fs.mkdirSync(repoRoot, { recursive: true });
-  fs.writeFileSync(file, `${out.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
+  atomicWriteFile(file, `${out.join('\n')}\n`, { mode: 0o600 });
 }
