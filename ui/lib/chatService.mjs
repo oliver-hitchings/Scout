@@ -10,6 +10,7 @@ import { runTurn } from './chatRun.mjs';
 import { buildPrefills, HANDOFF_SUMMARY_PROMPT, handoffOpening, slugOf } from './chatPrompts.mjs';
 import { runCvQuality } from './cvQuality.mjs';
 import { readUsage } from './usage.mjs';
+import { detectedModels, isSafeModelId, providerModels } from './providerModels.mjs';
 import { loadWorkspaceConfig, modelForProvider } from './workspace.mjs';
 import { providerStatus } from './providers.mjs';
 import { runStructuredTurn } from './structuredTurn.mjs';
@@ -88,15 +89,17 @@ export function registerChatRoutes({
   runCvQualityFn = runCvQuality, runStructuredTurnFn = runStructuredTurn, onCheckpoint = () => {},
 }) {
   function checkpoint(reason) { Promise.resolve(onCheckpoint(reason)).catch(() => {}); }
-  function engineStatus(engine) {
+  // A conversation may pin its own model. Without one it follows the provider
+  // default from settings, so existing chats keep working unchanged.
+  function engineStatus(engine, modelOverride = null) {
     const config = loadWorkspaceConfig(repoRoot);
     const status = providerStatusFn(engine);
     if (!status.installed || !status.authenticated) throw new Error(`${engine} CLI is not installed and signed in`);
-    return { config, status, model: modelForProvider(config, engine) };
+    return { config, status, model: modelOverride || modelForProvider(config, engine) };
   }
 
-  function engineBuild(engine, resumeId) {
-    const { status, model } = engineStatus(engine);
+  function engineBuild(engine, resumeId, modelOverride = null) {
+    const { status, model } = engineStatus(engine, modelOverride);
     return ENGINES[engine].build(resumeId, {
       model, command: status.executable, env: status.env,
       ...(engine === 'codex' ? { reasoningEffort: 'medium' } : {}),
@@ -191,6 +194,27 @@ export function registerChatRoutes({
 
   routes['GET /api/usage'] = (req, res) => {
     try { return replyJson(res, 200, readUsage(os.homedir())); } catch (e) { return replyJson(res, 500, { error: e.message }); }
+  };
+
+  // What the engine picker needs, in one request: how much of each provider's
+  // allowance is gone, and which models that provider can be asked for. Reads
+  // local logs and configuration only — it never spawns a provider CLI, so
+  // opening a chat stays fast.
+  routes['GET /api/engines'] = (req, res) => {
+    try {
+      const usage = readUsage(os.homedir());
+      const config = loadWorkspaceConfig(repoRoot);
+      const detected = detectedModels(usage);
+      const engines = Object.fromEntries(Object.keys(ENGINES).map((engine) => {
+        const configured = modelForProvider(config, engine);
+        return [engine, {
+          usage: usage[engine] || { unknown: true },
+          models: providerModels(engine, { detected: detected[engine] || [], configured }),
+          defaultModel: configured || null,
+        }];
+      }));
+      return replyJson(res, 200, { engines, checkedAt: usage.checkedAt });
+    } catch (e) { return replyJson(res, 500, { error: e.message }); }
   };
 
   routes['POST /api/chat/stop'] = (req, res, body) => {
@@ -356,10 +380,15 @@ export function registerChatRoutes({
     try { chat = loadChat(repoRoot, id, purpose); } catch (e) { return replyJson(res, 400, { error: e.message }); }
     const engine = chat && chat.cliSessionId ? chat.engine : b.engine;
     if (!ENGINES[engine]) return replyJson(res, 400, { error: 'engine must be claude or codex' });
+    // The model is locked for the same reason the engine is: a resumed CLI
+    // session is already bound to the model it started with.
+    const requestedModel = b.model === null || b.model === undefined ? null : String(b.model).trim() || null;
+    if (requestedModel && !isSafeModelId(requestedModel)) return replyJson(res, 400, { error: 'model is invalid' });
+    const model = chat && chat.cliSessionId ? (chat.model || null) : requestedModel;
     const text = typeof b.text === 'string' ? b.text.trim() : '';
     if (!text) return replyJson(res, 400, { error: 'text required' });
-    if (!chat) chat = emptyChat(engine);
-    else chat.engine = engine;
+    if (!chat) chat = emptyChat(engine, model);
+    else { chat.engine = engine; chat.model = model; }
 
     if (b.mode === 'fit-assessment') {
       if (purpose !== 'job') return replyJson(res, 400, { error: 'fit assessment belongs to the job conversation' });
@@ -368,7 +397,7 @@ export function registerChatRoutes({
 
     sseStart(res);
     let built;
-    try { built = engineBuild(engine, chat.cliSessionId); } catch (e) {
+    try { built = engineBuild(engine, chat.cliSessionId, model); } catch (e) {
       sseSend(res, 'error', { message: e.message });
       return sseEnd(res);
     }

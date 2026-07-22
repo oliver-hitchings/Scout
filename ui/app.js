@@ -190,6 +190,8 @@ const Scout = {
   cvRenderTimer: null,
   chat: null,
   chatOpenSeq: 0,
+  engineOptions: null,
+  enginePicks: {},
   workspaceConfig: null,
   discoveries: [],
   discoveryTimer: null,
@@ -1642,6 +1644,7 @@ const Scout = {
       id,
       data: r.chat || { engine: null, cliSessionId: null, messages: [], filesTouched: [] },
       engine: r.chat ? r.chat.engine : null,
+      model: r.chat ? (r.chat.model || null) : null,
       prefills: r.prefills || {},
       purpose: r.purpose || purpose,
       artifact: r.artifact || null,
@@ -1658,6 +1661,7 @@ const Scout = {
       if (instr) prefill = prefill.replace('<your change>', instr);
     }
     document.getElementById('chat-input').value = prefill;
+    if (!c.engine) void this.loadEngineOptions();
     this.refreshUsage(c);
     if (c.recovering) this.scheduleChatRecovery(c);
   },
@@ -1725,6 +1729,7 @@ const Scout = {
       <div class="chat-head">
         <b>${prep ? 'Interview prep - ' : ''}${this.esc(this.company(c.id))}</b>
         ${c.engine ? `<span class="chip" style="margin-left:0">${this.esc(c.engine)}</span>` : ''}
+        ${c.engine ? `<span class="chip model-chip" title="Model used for this conversation">${this.esc(c.model || 'provider default')}</span>` : ''}
         <span id="usage-meters" class="meta"></span>
         ${c.engine && c.data.cliSessionId
           ? '<button class="act" data-action="handoff-chat">summarise &amp; switch</button>'
@@ -1755,14 +1760,92 @@ const Scout = {
     });
   },
 
+  // Provider allowances are account-wide, so headroom is reported per engine.
+  // Claude's logs additionally record which model produced each turn, which gives
+  // spend per model but no per-model ceiling — it is labelled as spend, never as
+  // anything remaining.
+  engineUsageHtml(engine, usage) {
+    if (!usage || usage.unknown) return '<span class="engine-usage unknown">usage unavailable</span>';
+    if (engine === 'codex') {
+      const windows = usage.windows?.length ? usage.windows : [usage.primary, usage.secondary].filter(Boolean);
+      if (!windows.length) return '<span class="engine-usage unknown">usage unavailable</span>';
+      return windows.map((window) => {
+        const reset = window.resetsAt ? ` · resets ${this.esc(new Date(window.resetsAt).toLocaleString())}` : '';
+        return `<span class="engine-usage"><b>${this.esc(Math.round(window.usedPercent))}%</b> of your ${this.esc(window.label)} limit used${reset}</span>`;
+      }).join('');
+    }
+    const thousands = (value) => `${Math.round(Number(value || 0) / 1000).toLocaleString()}k`;
+    return `<span class="engine-usage">~${this.esc(thousands(usage.fiveHourTokens))} tokens in the last 5 hours · ~${this.esc(thousands(usage.weekTokens))} this week</span>
+      <span class="engine-usage note">account-wide; Claude does not publish a per-model limit</span>`;
+  },
+
+  modelSpendHtml(engine, usage, modelId) {
+    if (engine !== 'claude' || !modelId) return '';
+    const entry = (usage?.byModel || []).find((item) => item.model === modelId);
+    if (!entry) return '';
+    const thousands = (value) => `${Math.round(Number(value || 0) / 1000).toLocaleString()}k`;
+    return `<span class="engine-usage note">~${this.esc(thousands(entry.weekTokens))} tokens spent on this model this week</span>`;
+  },
+
+  engineCardHtml(engine, info) {
+    const name = engine[0].toUpperCase() + engine.slice(1);
+    const models = info?.models || [];
+    const selected = this.enginePicks?.[engine] ?? (info?.defaultModel || '');
+    const option = (value, label) => `<option value="${this.esc(value)}" ${String(selected) === String(value) ? 'selected' : ''}>${this.esc(label)}</option>`;
+    return `<div class="engine-card" data-engine-card="${this.esc(engine)}">
+      <div class="engine-head"><b>${this.esc(name)}</b>${info?.defaultModel ? `<span class="chip">default ${this.esc(info.defaultModel)}</span>` : ''}</div>
+      <div class="engine-usage-block">${this.engineUsageHtml(engine, info?.usage)}</div>
+      <label class="engine-model">Model
+        <select data-engine-model="${this.esc(engine)}">
+          ${option('', 'Provider default')}
+          ${models.map((model) => option(model.id, model.label + (model.detected ? ' · used here' : ''))).join('')}
+          ${option('__other__', 'Other…')}
+        </select>
+      </label>
+      <input class="engine-model-custom ${selected === '__other__' ? '' : 'hidden'}" data-engine-model-custom="${this.esc(engine)}" type="text" placeholder="Exact model id" pattern="[A-Za-z0-9._:\-]+">
+      <div class="engine-model-spend">${this.modelSpendHtml(engine, info?.usage, selected)}</div>
+      <button class="act primary" data-action="pick-engine" data-engine="${this.esc(engine)}">Use ${this.esc(name)}</button>
+    </div>`;
+  },
+
   chatPickerHtml() {
     const onboarding = this.chat?.id === 'setup-onboarding';
     const prep = this.chat?.purpose === 'interview-prep';
+    const engines = this.engineOptions?.engines;
     return `<div class="chat-picker">
-      <div class="label">choose an engine for ${onboarding ? 'setup' : prep ? 'interview prep' : 'this job'}</div>
-      <button class="act" data-action="pick-engine" data-engine="claude">Claude</button>
-      <button class="act" data-action="pick-engine" data-engine="codex">Codex</button>
+      <div class="label">choose an engine and model for ${onboarding ? 'setup' : prep ? 'interview prep' : 'this job'}</div>
+      <div class="engine-cards">
+        ${['claude', 'codex'].map((engine) => this.engineCardHtml(engine, engines?.[engine])).join('')}
+      </div>
+      ${engines ? '' : '<p class="meta">Checking how much of each provider allowance is left…</p>'}
     </div>`;
+  },
+
+  // Read once when the picker is shown; the drawer re-renders when it arrives.
+  async loadEngineOptions() {
+    try { this.engineOptions = await this.api('/api/engines'); }
+    catch { this.engineOptions = null; return; }
+    if (this.chat && !this.chat.engine) this.renderChatDrawer();
+  },
+
+  // Keep the remembered pick, the free-text field and the per-model spend line in
+  // step with the dropdown.
+  onEngineModelChange(select) {
+    const engine = select.dataset.engineModel;
+    const card = select.closest('[data-engine-card]');
+    if (!card) return;
+    this.enginePicks = { ...this.enginePicks, [engine]: select.value };
+    card.querySelector('[data-engine-model-custom]')?.classList.toggle('hidden', select.value !== '__other__');
+    const spend = card.querySelector('.engine-model-spend');
+    if (spend) spend.innerHTML = this.modelSpendHtml(engine, this.engineOptions?.engines?.[engine]?.usage, select.value);
+  },
+
+  selectedEngineModel(engine) {
+    const card = document.querySelector(`[data-engine-card="${engine}"]`);
+    if (!card) return null;
+    const value = card.querySelector('[data-engine-model]')?.value || '';
+    if (value !== '__other__') return value || null;
+    return card.querySelector('[data-engine-model-custom]')?.value.trim() || null;
   },
 
   chatBubble(role, text) {
@@ -1861,6 +1944,7 @@ const Scout = {
   pickEngine(engine) {
     const val = document.getElementById('chat-input').value;
     this.chat.engine = engine;
+    this.chat.model = this.selectedEngineModel(engine);
     this.renderChatDrawer();
     document.getElementById('chat-input').value = val;
   },
@@ -1925,7 +2009,7 @@ const Scout = {
       const resp = await fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: c.id, purpose: c.purpose, engine: c.engine, text, mode: c.mode }),
+        body: JSON.stringify({ id: c.id, purpose: c.purpose, engine: c.engine, model: c.model || null, text, mode: c.mode }),
       });
       const ct = resp.headers.get('content-type') || '';
       if (!resp.ok || !ct.includes('event-stream')) {
@@ -2047,20 +2131,16 @@ const Scout = {
     if (u.claude && !u.claude.unknown) {
       bits.push(`claude ~${Math.round(u.claude.fiveHourTokens / 1000)}k/5h ~${Math.round(u.claude.weekTokens / 1000)}k/wk`);
     } else bits.push('claude ?');
-    if (u.codex && !u.codex.unknown && u.codex.primary) {
-      const wk = u.codex.secondary ? ` ${Math.round(u.codex.secondary.usedPercent)}%/wk` : '';
-      bits.push(`codex ${Math.round(u.codex.primary.usedPercent)}%/5h${wk}`);
+    // Label each Codex window from its own length. Assuming the first window is
+    // the five-hour one reported a weekly allowance as "/5h".
+    const windows = u.codex?.windows?.length ? u.codex.windows : [u.codex?.primary, u.codex?.secondary].filter(Boolean);
+    if (windows.length) {
+      bits.push(`codex ${windows.map((window) => `${Math.round(window.usedPercent)}% ${window.label} used`).join(', ')}`);
     } else bits.push('codex ?');
     el.textContent = bits.join(' · ');
-    const resetBits = [];
-    const resetAt = (window) => {
-      if (!window || !Number.isFinite(window.resetsInSeconds)) return null;
-      return new Date(Date.now() + window.resetsInSeconds * 1000).toLocaleTimeString();
-    };
-    const primaryReset = resetAt(u.codex?.primary);
-    const secondaryReset = resetAt(u.codex?.secondary);
-    if (primaryReset) resetBits.push(`codex 5h resets ${primaryReset}`);
-    if (secondaryReset) resetBits.push(`codex weekly resets ${secondaryReset}`);
+    const resetBits = windows
+      .filter((window) => window.resetsAt)
+      .map((window) => `codex ${window.label} resets ${new Date(window.resetsAt).toLocaleString()}`);
     const checked = u.checkedAt ? new Date(u.checkedAt).toLocaleTimeString() : 'unknown';
     el.title = ['approximate', ...resetBits, `checked ${checked}`].join(' - ');
   },
@@ -2241,6 +2321,7 @@ const Scout = {
       else if (element.dataset.changeAction === 'commute-filter') {
         this.setCommuteFilter(element.dataset.key, element.type === 'checkbox' ? element.checked : element.value);
       } else if (element.dataset.changeAction === 'cv-zoom') this.setCvZoom(element.value);
+      else if (element.dataset.engineModel) this.onEngineModelChange(element);
     });
     document.addEventListener?.('input', (event) => {
       if (event.target.dataset.inputAction !== 'cv-dirty') return;
