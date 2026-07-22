@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { seedWorkspace } from '../../ui/lib/workspace.mjs';
 
@@ -35,6 +36,14 @@ export default async function globalSetup() {
   const legacy = path.join(workspace, 'applications', 'legacy-systems');
   fs.mkdirSync(legacy, { recursive: true });
   fs.writeFileSync(path.join(legacy, 'cv.typ'), '= Legacy CV\n\nExisting source remains editable.\n');
+  const masterSource = fs.readFileSync(path.join(workspace, 'cv', 'master-cv.md'));
+  const rendered = path.join(workspace, '.scout', 'rendered');
+  fs.mkdirSync(rendered, { recursive: true });
+  fs.writeFileSync(path.join(rendered, 'master-cv.pdf'), '%PDF-1.7\nsynthetic browser reference pdf');
+  fs.writeFileSync(path.join(workspace, '.scout', 'cv-renders.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    renders: { master: { sourceSha256: crypto.createHash('sha256').update(masterSource).digest('hex'), renderedAt: '2026-07-20T08:00:00.000Z' } },
+  }, null, 2)}\n`);
 
   process.env.SCOUT_WORKSPACE = workspace;
   process.env.SCOUT_DEVICE_SETTINGS = path.join(workspace, '.scout', 'device-settings.json');

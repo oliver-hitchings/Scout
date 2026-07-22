@@ -8,7 +8,7 @@ import { isMainModule } from './lib/mainModule.mjs';
 import { atomicWriteFile } from './lib/atomicWrite.mjs';
 import { triage } from './lib/derive.mjs';
 import { pipeline } from './lib/pipeline.mjs';
-import { listCvFiles, safeCvPath } from './lib/cv.mjs';
+import { cvPdfPath, listCvFiles, renderCvTarget, safeCvPath } from './lib/cv.mjs';
 import { cvDownloadDecision, overrideCvQuality, readCvQuality, runCvQuality } from './lib/cvQuality.mjs';
 import { parseScanRuns, scanHealthFromText } from './lib/scanHealth.mjs';
 import { scanEstimate } from './lib/scanEstimate.mjs';
@@ -384,7 +384,7 @@ async function handleRead(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/operations') {
     const type = url.searchParams.get('type');
-    if (type && !['proposal', 'scan'].includes(type)) return sendJson(res, 400, { error: 'operation type must be proposal or scan' });
+    if (type && !['proposal', 'scan', 'cv-render'].includes(type)) return sendJson(res, 400, { error: 'operation type must be proposal, scan or cv-render' });
     return sendJson(res, 200, { operation: operations.latest(type), operations: operations.list(type) });
   }
   if (req.method === 'GET' && url.pathname.startsWith('/api/operations/')) {
@@ -528,11 +528,12 @@ async function handleRead(req, res, url) {
     catch (e) { return sendJson(res, 400, { error: e.message }); }
   }
   if (req.method === 'GET' && url.pathname === '/api/cv/pdf') {
+    const target = url.searchParams.get('target') === 'master' ? 'master' : 'application';
     const slug = url.searchParams.get('slug') || '';
-    if (!/^[a-z0-9-]+$/.test(slug)) return sendJson(res, 400, { error: 'bad slug' });
-    const pdf = path.join(WORKSPACE_ROOT, 'applications', slug, 'cv.pdf');
-    if (!fs.existsSync(pdf)) return sendJson(res, 404, { error: 'no pdf - render first' });
-    if (url.searchParams.get('download') === '1') {
+    let pdf;
+    try { pdf = cvPdfPath(WORKSPACE_ROOT, { target, slug }); }
+    catch (e) { return sendJson(res, /stale/i.test(e.message) ? 409 : 404, { error: e.message }); }
+    if (target === 'application' && url.searchParams.get('download') === '1') {
       let decision;
       try { decision = cvDownloadDecision(WORKSPACE_ROOT, slug); }
       catch (e) { return sendJson(res, 400, { error: e.message }); }
@@ -540,7 +541,9 @@ async function handleRead(req, res, url) {
     }
     const buf = fs.readFileSync(pdf);
     const headers = { 'Content-Type': 'application/pdf', 'Content-Length': buf.length };
-    if (url.searchParams.get('download') === '1') headers['Content-Disposition'] = `attachment; filename="${slug}-cv.pdf"`;
+    if (url.searchParams.get('download') === '1') headers['Content-Disposition'] = `attachment; filename="${target === 'master' ? 'master-cv-reference' : `${slug}-cv`}.pdf"`;
+    res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'self'");
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.writeHead(200, headers);
     return res.end(buf);
   }
@@ -843,16 +846,29 @@ routes['POST /api/cv/save'] = (req, res, body) => {
 
 routes['POST /api/cv/render'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
-  const r = renderCv(WORKSPACE_ROOT, b.slug || '', { appRoot: APP_ROOT });
-  if (r.ok) void queueCheckpoint(`render cv - ${b.slug || 'application'}`);
-  replyJson(res, 200, r);
+  const target = b.target === 'master' ? 'master' : 'application';
+  const slug = target === 'application' ? String(b.slug || '') : '';
+  try {
+    const operation = operations.start('cv-render', async (update) => {
+      update({ phase: target === 'master' ? 'Preparing master reference PDF' : 'Preparing tailored PDF', current: 1, total: 3 });
+      const result = await renderCvTarget(WORKSPACE_ROOT, { target, slug }, { appRoot: APP_ROOT });
+      update({ phase: 'Validating PDF', current: 2, total: 3 });
+      if (target === 'application') void queueCheckpoint(`render cv - ${slug}`);
+      update({ phase: 'PDF ready', current: 3, total: 3 });
+      return result;
+    }, { phase: 'Queued for rendering', total: 3 });
+    return replyJson(res, 202, { operation });
+  } catch (e) {
+    if (e instanceof OperationConflictError) return replyJson(res, 409, { error: e.message, operation: e.operation });
+    return replyJson(res, 400, { error: e.message });
+  }
 };
 
 routes['POST /api/cv/quality'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try {
     const config = loadWorkspaceConfig(WORKSPACE_ROOT);
-    const result = runCvQuality(WORKSPACE_ROOT, b.slug || '', { locale: config.locale, appRoot: APP_ROOT });
+    const result = runCvQuality(WORKSPACE_ROOT, b.slug || '', { locale: config.locale, appRoot: APP_ROOT, compile: false });
     void queueCheckpoint(`review cv quality - ${b.slug || 'application'}`);
     return replyJson(res, 200, result);
   } catch (e) { return replyJson(res, 400, { error: e.message }); }

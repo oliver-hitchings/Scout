@@ -187,6 +187,7 @@ const Scout = {
   cvState: { path: null, slug: null, opportunityId: null, content: null, dirty: false },
   cvOptionsOpportunityId: null,
   cvPreviewZoom: 'page-width',
+  cvRenderTimer: null,
   chat: null,
   chatOpenSeq: 0,
   workspaceConfig: null,
@@ -1286,7 +1287,8 @@ const Scout = {
       const label = matches.length === 1
         ? `${matches[0].company} — ${matches[0].role}`
         : matches.length > 1 ? `${matches[0].company} — ${matches.length} tracked roles` : entry.slug;
-      const states = [entry.pdf ? 'PDF ready' : 'PDF missing', entry.quality ? 'quality recorded' : 'legacy', matches.length ? null : 'unmatched']
+      const pdfState = entry.pdfCurrent ? 'PDF ready' : entry.pdfStale ? 'PDF stale' : 'PDF missing';
+      const states = [pdfState, entry.quality ? 'quality recorded' : 'legacy', matches.length ? null : 'unmatched']
         .filter(Boolean).map((value) => `<span class="chip">${this.esc(value)}</span>`).join('');
       return `<button class="act cv-entry" data-action="open-cv" data-cv-path="${this.esc(cvPath)}" data-slug="${this.esc(entry.slug)}" data-opportunity-id="${this.esc(opportunityId || '')}"><span class="cv-entry-label">${this.esc(label)}</span><span class="cv-entry-state">${states}</span></button>`;
     }).join('') || '<div class="meta">No tailored CVs yet. Create one from a tracked opportunity.</div>';
@@ -1310,8 +1312,8 @@ const Scout = {
           <div class="label"><span id="cv-editing">select a file</span> <span id="cv-dirty" style="color:var(--warn)"></span></div>
           <textarea id="cv-text" class="cv-source" data-input-action="cv-dirty"></textarea>
            <div class="controls" style="flex-wrap:wrap;margin-top:6px">
-             <button class="act" data-action="save-cv">save + render</button>
-             <button class="act" data-action="download-cv">download PDF</button>
+             <button id="cv-save-render" class="act" data-action="save-cv">save + render</button>
+             <button id="cv-download" class="act" data-action="download-cv" disabled>download PDF</button>
            </div>
            <div id="cv-quality" class="cv-quality"><div class="meta">Select a tailored CV to see its quality review.</div></div>
           <div class="cv-chat-request">
@@ -1335,8 +1337,8 @@ const Scout = {
                 <option value="150">150%</option>
               </select>
             </label>
-            <button class="act" data-action="fullscreen-cv">full screen</button>
-            <button class="act" data-action="open-cv-pdf">open PDF</button>
+            <button id="cv-fullscreen" class="act" data-action="fullscreen-cv" disabled>full screen</button>
+            <button id="cv-open-pdf" class="act" data-action="open-cv-pdf" disabled>open PDF</button>
           </div>
           <div id="cv-preview-shell">
             <div id="cv-preview">Select a tailored CV to render its PDF.</div>
@@ -1348,8 +1350,9 @@ const Scout = {
       document.getElementById('cv-editing').textContent = `editing: ${this.cvState.path}`;
       document.getElementById('cv-dirty').textContent = this.cvState.dirty ? 'unsaved' : '';
       document.querySelectorAll('[data-cv-path]').forEach((button) => button.classList.toggle('active', button.dataset.cvPath === this.cvState.path));
-      if (this.cvState.slug) await this.renderCvPreview(this.cvState.slug);
-      else document.getElementById('cv-preview').textContent = 'The master CV is source material only and has no PDF preview. Open or create a tailored CV to render a PDF.';
+      this.updateCvControls();
+      await this.showStoredCv();
+      await this.reattachCvRender();
     }
   },
 
@@ -1394,8 +1397,42 @@ const Scout = {
     document.getElementById('cv-dirty').textContent = '';
     document.querySelectorAll('[data-cv-path]').forEach((b) =>
       b.classList.toggle('active', b.dataset.cvPath === pathRel));
-    if (slug) await this.renderCvPreview(slug);
-    else document.getElementById('cv-preview').textContent = 'The master CV is source material only and has no PDF preview. Open or create a tailored CV to render a PDF.';
+    this.updateCvControls();
+    await this.showStoredCv();
+    if (slug) await this.refreshCvQuality(slug);
+    else {
+      const quality = document.getElementById('cv-quality');
+      if (quality) quality.innerHTML = '<div class="label">Master reference</div><b>Evidence source</b><div class="meta">The reference PDF is for reviewing the approved master evidence. Tailored application PDFs keep their separate quality gate.</div>';
+    }
+  },
+
+  currentCvRequest() {
+    if (!this.cvState.path) return null;
+    return this.cvState.slug ? { target: 'application', slug: this.cvState.slug } : { target: 'master' };
+  },
+
+  currentCvRenderState() {
+    if (!this.cvState.path) return { pdf: false, current: false, stale: false };
+    if (!this.cvState.slug) return this.state.cvFiles?.masterRender || { pdf: false, current: false, stale: false };
+    return this.state.cvFiles?.entries?.find((entry) => entry.slug === this.cvState.slug) || { pdf: false, current: false, stale: false };
+  },
+
+  updateCvControls() {
+    const master = Boolean(this.cvState.path && !this.cvState.slug);
+    const current = this.currentCvRenderState().current === true;
+    const save = document.getElementById('cv-save-render');
+    if (save) save.textContent = master ? 'save + render reference PDF' : 'save + render tailored PDF';
+    for (const id of ['cv-download', 'cv-fullscreen', 'cv-open-pdf']) {
+      const button = document.getElementById(id); if (button) button.disabled = !current;
+    }
+  },
+
+  async showStoredCv() {
+    const preview = document.getElementById('cv-preview');
+    if (!preview || !this.cvState.path) return;
+    const state = this.currentCvRenderState();
+    if (state.current) this.showPdf();
+    else preview.innerHTML = `<div class="cv-preview-status">${state.stale ? 'This PDF is stale because the source changed. Save and render again.' : this.cvState.slug ? 'No tailored PDF yet. Save and render to create it.' : 'No master reference PDF yet. Save and render to create it.'}</div>`;
   },
 
   async saveCv() {
@@ -1406,26 +1443,66 @@ const Scout = {
     this.cvState.dirty = false;
     this.cvState.content = content;
     document.getElementById('cv-dirty').textContent = '';
-    if (!this.cvState.slug) return;
-    await this.renderCvPreview(this.cvState.slug);
+    await this.renderCvPreview();
   },
 
-  async renderCvPreview(slug) {
+  async renderCvPreview() {
     const preview = document.getElementById('cv-preview');
-    if (!preview) return;
+    const request = this.currentCvRequest();
+    if (!preview || !request) return;
     preview.innerHTML = '<div class="cv-preview-status">rendering PDF...</div>';
     try {
-      const rendered = await this.api('/api/cv/render', {
+      const response = await fetch('/api/cv/render', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ slug }),
+        body: JSON.stringify(request),
       });
-      if (rendered.ok) this.showPdf(slug);
-      else preview.innerHTML = `<div class="cv-preview-error">Render failed:\n${this.esc(rendered.stderr || rendered.stdout || 'unknown error')}</div>`;
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Render could not start (${response.status})`);
+      await this.watchCvRender(body.operation.id);
     } catch (e) {
       preview.innerHTML = `<div class="cv-preview-error">Preview could not load: ${this.esc(e.message)}</div>`;
     }
-    await this.refreshCvQuality(slug);
+  },
+
+  async watchCvRender(id) {
+    if (!id) return;
+    if (this.cvRenderTimer) clearTimeout(this.cvRenderTimer);
+    const poll = async (resolve) => {
+      const preview = document.getElementById('cv-preview');
+      try {
+        const response = await fetch(`/api/operations/${encodeURIComponent(id)}`);
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || 'PDF render status unavailable');
+        const operation = body.operation;
+        if (preview && ['queued', 'running'].includes(operation.status)) preview.innerHTML = `<div class="cv-preview-status">${this.esc(operation.phase || 'Rendering PDF')} · step ${this.esc(operation.progress?.current || 0)}/${this.esc(operation.progress?.total || 3)}</div>`;
+        if (['queued', 'running'].includes(operation.status)) {
+          this.cvRenderTimer = setTimeout(() => poll(resolve), 250);
+          return;
+        }
+        this.cvRenderTimer = null;
+        if (operation.status === 'failed') {
+          if (preview) preview.innerHTML = `<div class="cv-preview-error">Render failed: ${this.esc(operation.error || 'unknown error')}</div>`;
+        } else {
+          this.state.cvFiles = await this.api('/api/cv');
+          this.updateCvControls();
+          await this.showStoredCv();
+          if (this.cvState.slug) await this.refreshCvQuality(this.cvState.slug);
+        }
+      } catch (error) {
+        this.cvRenderTimer = null;
+        if (preview) preview.innerHTML = `<div class="cv-preview-error">Render status unavailable: ${this.esc(error.message)}</div>`;
+      }
+      resolve?.();
+    };
+    return new Promise((resolve) => poll(resolve));
+  },
+
+  async reattachCvRender() {
+    try {
+      const body = await this.api('/api/operations?type=cv-render');
+      if (body.operation && ['queued', 'running'].includes(body.operation.status)) this.watchCvRender(body.operation.id);
+    } catch { /* no active render */ }
   },
 
   async refreshCvQuality(slug) {
@@ -1469,15 +1546,22 @@ const Scout = {
     this.openChat(this.cvState.opportunityId, 'reuseEvidence');
   },
 
-  showPdf(slug) {
-    const url = `/api/cv/pdf?slug=${encodeURIComponent(slug)}&t=${Date.now()}#zoom=${encodeURIComponent(this.cvPreviewZoom)}`;
+  pdfUrl({ download = false } = {}) {
+    const request = this.currentCvRequest();
+    if (!request) return '';
+    const query = request.target === 'master' ? 'target=master' : `slug=${encodeURIComponent(request.slug)}`;
+    return `/api/cv/pdf?${query}${download ? '&download=1' : ''}&t=${Date.now()}#zoom=${encodeURIComponent(this.cvPreviewZoom)}`;
+  },
+
+  showPdf() {
+    const url = this.pdfUrl();
     document.getElementById('cv-preview').innerHTML =
       `<iframe class="cv-preview-frame" title="CV PDF preview" src="${url}"></iframe>`;
   },
 
   setCvZoom(zoom) {
     this.cvPreviewZoom = zoom;
-    if (this.cvState.slug) this.showPdf(this.cvState.slug);
+    if (this.currentCvRenderState().current) this.showPdf();
   },
 
   async fullscreenCv() {
@@ -1492,13 +1576,17 @@ const Scout = {
   },
 
   openCvPdf() {
-    if (!this.cvState.slug) return alert('Open a tailored CV first.');
-    const url = `/api/cv/pdf?slug=${encodeURIComponent(this.cvState.slug)}&t=${Date.now()}#zoom=${encodeURIComponent(this.cvPreviewZoom)}`;
-    window.open(url, '_blank', 'noopener');
+    if (!this.currentCvRenderState().current) return alert('Save and render a current PDF first.');
+    window.open(this.pdfUrl(), '_blank', 'noopener');
   },
 
   async downloadCv() {
-    if (!this.cvState.slug) return alert('Open a tailored (application) CV, then save + render first.');
+    if (!this.currentCvRenderState().current) return alert('Save and render a current PDF first.');
+    if (!this.cvState.slug) {
+      const a = document.createElement('a');
+      a.href = this.pdfUrl({ download: true }); a.download = 'master-cv-reference.pdf';
+      document.body.appendChild(a); a.click(); a.remove(); return;
+    }
     let quality = await this.api(`/api/cv/quality?slug=${encodeURIComponent(this.cvState.slug)}`);
     if (quality.error) return alert(`Could not check CV quality: ${quality.error}`);
     if (!['ready', 'overridden'].includes(quality.status)) {
@@ -1513,7 +1601,7 @@ const Scout = {
       await this.refreshCvQuality(this.cvState.slug);
     }
     const a = document.createElement('a');
-    a.href = `/api/cv/pdf?slug=${encodeURIComponent(this.cvState.slug)}&download=1&t=${Date.now()}`;
+    a.href = this.pdfUrl({ download: true });
     a.download = `${this.cvState.slug}-cv.pdf`;
     document.body.appendChild(a);
     a.click();
