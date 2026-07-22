@@ -6,6 +6,20 @@ import path from 'node:path';
 import test from 'node:test';
 import { checkForUpdate, compareVersions, downloadVerifiedUpdate, packageName, parseChecksums } from './updates.mjs';
 
+function streamedResponse(chunks, headers = {}) {
+  return {
+    ok: true,
+    headers: { get: (name) => headers[name.toLowerCase()] || null },
+    body: new ReadableStream({
+      start(controller) {
+        chunks.forEach((chunk) => controller.enqueue(new Uint8Array(chunk)));
+        controller.close();
+      },
+    }),
+    arrayBuffer: async () => { throw new Error('package must not be buffered'); },
+  };
+}
+
 test('beta versions compare numerically', () => {
   assert.equal(compareVersions('0.1.0-beta.10', '0.1.0-beta.9'), 1);
   assert.equal(compareVersions('v0.1.0-beta.7', '0.1.0-beta.7'), 0);
@@ -48,7 +62,7 @@ test('checksum parser rejects paths and verified download is written atomically'
   const base = 'https://github.com/oliver-hitchings/Scout/releases/download/v0.1.0-beta.12';
   const responses = new Map([
     [`${base}/checksums.txt`, { ok: true, text: async () => `${digest}  ${name}\n` }],
-    [`${base}/${name}`, { ok: true, headers: { get: () => String(bytes.length) }, arrayBuffer: async () => bytes }],
+    [`${base}/${name}`, streamedResponse([bytes.subarray(0, 4), bytes.subarray(4)], { 'content-length': String(bytes.length) })],
   ]);
   const result = await downloadVerifiedUpdate({ available: true, currentVersion: '0.1.0-beta.11', latestVersion: '0.1.0-beta.12', package: { name, url: `${base}/${name}`, checksumsUrl: `${base}/checksums.txt` } }, directory, { fetchFn: async (url) => responses.get(url) });
   assert.equal(result.sha256, digest);
@@ -61,5 +75,23 @@ test('verified download refuses a checksum mismatch', async () => {
   const base = 'https://github.com/oliver-hitchings/Scout/releases/download/v0.1.0-beta.12';
   await assert.rejects(downloadVerifiedUpdate({ available: true, currentVersion: 'old', latestVersion: 'new', package: { name, url: `${base}/${name}`, checksumsUrl: `${base}/checksums.txt` } }, os.tmpdir(), { fetchFn: async (url) => url.endsWith('checksums.txt')
     ? { ok: true, text: async () => `${'0'.repeat(64)}  ${name}\n` }
-    : { ok: true, headers: { get: () => '3' }, arrayBuffer: async () => Buffer.from('bad') } }), /checksum verification failed/);
+    : streamedResponse([Buffer.from('b'), Buffer.from('ad')], { 'content-length': '3' }) }), /checksum verification failed/);
+});
+
+test('verified download enforces its byte limit while streaming and removes the partial file', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-update-limit-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const name = 'Scout-0.1.0-beta.12-windows-x64.exe';
+  const base = 'https://github.com/oliver-hitchings/Scout/releases/download/v0.1.0-beta.12';
+  const digest = crypto.createHash('sha256').update('abcdef').digest('hex');
+  await assert.rejects(downloadVerifiedUpdate({
+    available: true, currentVersion: 'old', latestVersion: 'new',
+    package: { name, url: `${base}/${name}`, checksumsUrl: `${base}/checksums.txt` },
+  }, directory, {
+    maxPackageBytes: 5,
+    fetchFn: async (url) => url.endsWith('checksums.txt')
+      ? { ok: true, text: async () => `${digest}  ${name}\n` }
+      : streamedResponse([Buffer.from('abc'), Buffer.from('def')]),
+  }), /download limit/);
+  assert.deepEqual(fs.readdirSync(directory), []);
 });
