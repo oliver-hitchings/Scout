@@ -44,7 +44,10 @@ function request({ method = 'GET', path = '/', headers = {}, body = '' }) {
       res.on('end', () => resolve({ status: res.statusCode, text, headers: res.headers }));
     });
     req.on('error', reject);
-    req.end(body);
+    if (Array.isArray(body)) {
+      body.forEach((chunk) => req.write(chunk));
+      req.end();
+    } else req.end(body);
   });
 }
 
@@ -206,6 +209,19 @@ test('normal same-origin JSON chat mutations still work', async () => {
     path: '/api/chat/stop',
     headers: { host, origin: `http://${host}`, 'content-type': 'application/json; charset=utf-8' },
     body: JSON.stringify({ id: 'no-running-turn' }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(JSON.parse(response.text), { ok: true, stopped: false });
+});
+
+test('request JSON preserves UTF-8 characters split across network chunks', async () => {
+  const host = `127.0.0.1:${port}`;
+  const encoded = Buffer.from(JSON.stringify({ id: 'café-気候' }));
+  const boundary = encoded.indexOf(Buffer.from('é')) + 1;
+  const response = await request({
+    method: 'POST', path: '/api/chat/stop',
+    headers: { host, origin: `http://${host}`, 'content-type': 'application/json' },
+    body: [encoded.subarray(0, boundary), encoded.subarray(boundary)],
   });
   assert.equal(response.status, 200);
   assert.deepEqual(JSON.parse(response.text), { ok: true, stopped: false });

@@ -62,16 +62,46 @@ export function parseChecksums(text) {
   return entries;
 }
 
-async function responseBytes(response, label) {
+function validatePackageResponse(response, label, maxBytes) {
   if (!response.ok) throw new Error(`${label} download failed (${response.status})`);
   const length = Number(response.headers?.get?.('content-length') || 0);
-  if (length > MAX_PACKAGE_BYTES) throw new Error(`${label} exceeds Scout's download limit`);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > MAX_PACKAGE_BYTES) throw new Error(`${label} has an invalid size`);
-  return bytes;
+  if (length > maxBytes) throw new Error(`${label} exceeds Scout's download limit`);
+  if (!response.body) throw new Error(`${label} response has no readable body`);
 }
 
-export async function downloadVerifiedUpdate(update, directory, { fetchFn = globalThis.fetch, fileSystem = fs } = {}) {
+async function* responseChunks(body) {
+  if (typeof body.getReader === 'function') {
+    const reader = body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        if (value?.byteLength) yield Buffer.from(value);
+      }
+    } finally { reader.releaseLock(); }
+    return;
+  }
+  if (body[Symbol.asyncIterator]) {
+    for await (const chunk of body) if (chunk?.length) yield Buffer.from(chunk);
+    return;
+  }
+  throw new Error('Update package response is not streamable');
+}
+
+function writeComplete(fileSystem, descriptor, chunk) {
+  let offset = 0;
+  while (offset < chunk.length) {
+    const written = fileSystem.writeSync(descriptor, chunk, offset, chunk.length - offset);
+    if (!written) throw new Error('Update package could not be written completely');
+    offset += written;
+  }
+}
+
+export async function downloadVerifiedUpdate(update, directory, {
+  fetchFn = globalThis.fetch,
+  fileSystem = fs,
+  maxPackageBytes = MAX_PACKAGE_BYTES,
+} = {}) {
   const pkg = update?.package;
   if (!update?.available || !pkg || !RELEASE_URL.test(pkg.url || '') || !RELEASE_URL.test(pkg.checksumsUrl || '')) {
     throw new Error('No verified package is available for this device');
@@ -79,6 +109,7 @@ export async function downloadVerifiedUpdate(update, directory, { fetchFn = glob
   if (path.basename(pkg.name) !== pkg.name || !/^Scout-[0-9A-Za-z.-]+-(?:windows-x64\.exe|macos-(?:arm64|x64)\.dmg|linux-x64\.(?:deb|tar\.gz))$/.test(pkg.name)) {
     throw new Error('The release package name is invalid');
   }
+  if (Number(pkg.size || 0) > maxPackageBytes) throw new Error("Update package exceeds Scout's download limit");
   const headers = { 'user-agent': `Scout/${update.currentVersion}`, accept: 'application/octet-stream' };
   const [manifestResponse, packageResponse] = await Promise.all([
     fetchFn(pkg.checksumsUrl, { headers, signal: AbortSignal.timeout(30000) }),
@@ -89,15 +120,31 @@ export async function downloadVerifiedUpdate(update, directory, { fetchFn = glob
   if (manifest.length > 100000) throw new Error('Checksum manifest is unexpectedly large');
   const expected = parseChecksums(manifest).get(pkg.name);
   if (!expected) throw new Error('The package is missing from checksums.txt');
-  const bytes = await responseBytes(packageResponse, 'Update package');
-  const actual = crypto.createHash('sha256').update(bytes).digest('hex');
-  if (!crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'))) throw new Error('Update checksum verification failed');
+  validatePackageResponse(packageResponse, 'Update package', maxPackageBytes);
   fileSystem.mkdirSync(directory, { recursive: true });
   const target = path.join(directory, pkg.name);
-  const temporary = `${target}.${process.pid}.part`;
+  const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.part`;
+  const hash = crypto.createHash('sha256');
+  let descriptor;
+  let byteLength = 0;
   try {
-    fileSystem.writeFileSync(temporary, bytes, { mode: 0o600 });
+    descriptor = fileSystem.openSync(temporary, 'wx', 0o600);
+    for await (const chunk of responseChunks(packageResponse.body)) {
+      byteLength += chunk.length;
+      if (byteLength > maxPackageBytes) throw new Error("Update package exceeds Scout's download limit");
+      hash.update(chunk);
+      writeComplete(fileSystem, descriptor, chunk);
+    }
+    if (!byteLength) throw new Error('Update package has an invalid size');
+    fileSystem.fsyncSync(descriptor);
+    fileSystem.closeSync(descriptor);
+    descriptor = undefined;
+    const actual = hash.digest('hex');
+    if (!crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'))) throw new Error('Update checksum verification failed');
     fileSystem.renameSync(temporary, target);
-  } finally { fileSystem.rmSync(temporary, { force: true }); }
-  return { path: target, name: pkg.name, sha256: actual, version: update.latestVersion, verifiedAt: new Date().toISOString() };
+    return { path: target, name: pkg.name, sha256: actual, version: update.latestVersion, verifiedAt: new Date().toISOString() };
+  } finally {
+    if (descriptor !== undefined) fileSystem.closeSync(descriptor);
+    fileSystem.rmSync(temporary, { force: true });
+  }
 }

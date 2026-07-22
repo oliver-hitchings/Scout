@@ -61,3 +61,5 @@ Restore requires an empty target folder, the private repository HTTPS URL, and e
 ## SmartScreen or checksum mismatch
 
 Unsigned beta installers may trigger SmartScreen. Compare `Get-FileHash -Algorithm SHA256` with the release checksum. If it differs, do not run the file; download again from the official release. A matching checksum does not replace antivirus scanning or code signing.
+
+Scout streams an in-app update into a restricted temporary file and computes SHA-256 as bytes arrive. It renames the package to its final download name only after the complete checksum matches; an interrupted, oversized or mismatched download removes its partial file and does not replace an existing verified package.

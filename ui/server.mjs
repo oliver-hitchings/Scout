@@ -31,6 +31,7 @@ import {
   prepareGithubDeployKey, queueWorkspaceSync, restoreWorkspaceFromGithub, rotateWorkspaceRecoveryPassphrase, syncStatus,
 } from './lib/workspaceSync.mjs';
 import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
+import { BoundedUtf8Body } from './lib/requestBody.mjs';
 import {
   acquireTrackerMutationLock, mutateTrackerSnapshot, readTrackerSnapshot,
   releaseTrackerMutationLock, TrackerRevisionConflictError,
@@ -559,20 +560,23 @@ export function createServer() {
     if (!guardRequest(req, res, url)) return;
     const routeKey = `${req.method} ${url.pathname}`;
     if (routes[routeKey]) {
-      let body = '';
-      let tooLarge = false;
       const limit = url.pathname === '/api/setup/import-cv' ? 14 * 1024 * 1024 : 1e6;
-      req.on('data', (c) => {
-        if (tooLarge) return;
-        body += c;
-        if (body.length > limit) {
-          tooLarge = true;
-          replyJson(res, 413, { error: 'request body too large' });
-        }
+      const body = new BoundedUtf8Body(limit);
+      let bodyFailed = false;
+      req.on('data', (chunk) => {
+        if (bodyFailed) return;
+        const result = body.append(chunk);
+        if (result.ok) return;
+        bodyFailed = true;
+        replyJson(res, result.reason === 'too-large' ? 413 : 400, {
+          error: result.reason === 'too-large' ? 'request body too large' : 'request body is not valid UTF-8',
+        });
       });
       req.on('end', () => {
-        if (tooLarge) return;
-        Promise.resolve(routes[routeKey](req, res, body, url))
+        if (bodyFailed) return;
+        const decoded = body.finish();
+        if (!decoded.ok) return replyJson(res, 400, { error: 'request body is not valid UTF-8' });
+        Promise.resolve(routes[routeKey](req, res, decoded.text, url))
           .catch((error) => { if (!res.writableEnded) replyJson(res, 500, { error: error.message }); });
       });
       return;
