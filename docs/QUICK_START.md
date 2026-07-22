@@ -101,6 +101,8 @@ Scout starts the first supervised scan automatically when the required setup ans
 
 Use `claude` instead if selected. Review the dated report and tracker changes. Confirm that exclusions, salary handling and locations behave as intended before relying on results.
 
+The **All** tab is a searchable table. On a phone, swipe the labelled table region horizontally to reach commute, stage, status and last-checked columns; filtering keeps the text cursor and in-progress keyboard composition in place.
+
 ## 7. Enable daily scans (optional)
 
 During setup, choose the local daily time and enable the schedule after the first healthy scan. Return to **Settings → First scan** to change or disable it later. The command-line equivalent is:

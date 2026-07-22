@@ -309,6 +309,9 @@
 
     /* Table (All tab) */
     table { width: 100%; border-collapse: collapse; }
+    .all-table-scroll { max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; }
+    .all-table-scroll table { min-width:720px; }
+    .all-table-scroll:focus { outline:2px solid var(--accent); outline-offset:2px; }
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
     th {
       color: var(--muted);
@@ -764,6 +767,7 @@
     .source-degraded { border-color:var(--warn); color:var(--warn); }
     .source-unavailable { border-color:var(--danger); color:var(--danger); }
     @keyframes scout-arrive { from { opacity:0; transform:translateX(30px); } }
+    @keyframes scout-arrive-mobile { from { opacity:0; } }
     @media (prefers-reduced-motion:reduce) { .scout-sprite { animation:none; background-position:var(--scout-still-x) var(--scout-still-y), center; } .scout-arrival { animation:none; } }
     @media (max-width:620px) { .scout-arrival { right:6px; } .scout-arrival-character { width:120px; height:120px; } .scout-arrival-copy { margin-bottom:48px; } }
     @media (max-width:700px) {
@@ -780,6 +784,7 @@
       .filterbar { align-items:stretch; }
       .filterbar label { min-height:44px; }
       .filterbar select, .filterbar input { min-height:40px; max-width:100%; }
+      .all-table-scroll { -webkit-overflow-scrolling:touch; scrollbar-width:thin; }
       .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .report-list { display: block; }
       .report-list .dates { display: none; }
@@ -800,11 +805,12 @@
       .chat-companion { align-items:flex-end; padding:8px 12px 2px; }
       .chat-companion .scout-character { width:82px; height:82px; }
       .chat-companion .scout-bubble { max-width:calc(100vw - 118px); }
-      .scout-arrival { right:4px; max-width:calc(100vw - 8px); }
+      .scout-arrival { left:auto; right:4px; width:calc(100vw - 8px); min-width:0; max-width:none; box-sizing:border-box; animation-name:scout-arrive-mobile; }
       .scout-arrival-character { width:104px; height:104px; }
-      .scout-arrival-copy { min-width:0; margin-bottom:46px; }
+      .scout-arrival-copy { flex:1 1 0; min-width:0; max-width:calc(100vw - 112px); margin-bottom:46px; overflow-wrap:anywhere; }
       .scout-arrival-copy .scout-bubble { padding:10px 12px; }
-      .scout-arrival-copy button { min-height:44px; margin-top:2px; }
+      .scout-arrival-copy > div { display:flex; flex-wrap:wrap; gap:4px; }
+      .scout-arrival-copy button { min-height:44px; margin:2px 0 0; }
     }
     @media (max-width:380px) {
       #scan-status { display:none; }

@@ -1,8 +1,11 @@
 import { expect, test } from '@playwright/test';
+import fs from 'node:fs';
+
+const currentVersion = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
 const establishedStatus = {
   bootstrap: false, established: true, ready: true, setupComplete: true, trackerExists: true,
-  workspaceRoot: 'SYNTHETIC_WORKSPACE', appRoot: 'SYNTHETIC_APP', appVersion: '0.1.0-beta.15',
+  workspaceRoot: 'SYNTHETIC_WORKSPACE', appRoot: 'SYNTHETIC_APP', appVersion: currentVersion,
   config: { locale: 'en-GB', currency: 'GBP', timezone: 'Europe/London', profile: { displayName: 'Example Person' }, search: {}, commute: {}, ai: { provider: 'codex' } },
   providers: { codex: { installed: true, authenticated: true }, claude: { installed: false, authenticated: false } },
   scanHealth: { healthy: true }, schedule: { enabled: false, configured: false, runs: [] },

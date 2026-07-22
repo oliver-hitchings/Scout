@@ -11,6 +11,8 @@ test('phone layout keeps navigation scrollable and primary controls touch sized'
   assert.match(html, /nav \{[^}]*overflow-x:auto/);
   assert.match(html, /nav button \{[^}]*min-height:44px/);
   assert.match(html, /\.setup-actions button \{[^}]*min-height:44px/);
+  assert.match(html, /\.all-table-scroll \{[^}]*overflow-x:auto/);
+  assert.match(app, /aria-label="All opportunities table"/);
 });
 
 test('dashboard exposes an explicit scan-now control', () => {
@@ -20,7 +22,8 @@ test('dashboard exposes an explicit scan-now control', () => {
 
 test('phone layout constrains chat and strong-match arrival to the viewport', () => {
   assert.match(html, /\.chat-drawer \{ width:100vw/);
-  assert.match(html, /\.scout-arrival \{[^}]*max-width:calc\(100vw - 8px\)/);
+  assert.match(html, /\.scout-arrival \{[^}]*width:calc\(100vw - 8px\)/);
+  assert.match(html, /\.scout-arrival-copy \{[^}]*max-width:calc\(100vw - 112px\)/);
   assert.match(html, /\.chat-companion \.scout-bubble \{[^}]*max-width:calc\(100vw - 118px\)/);
 });
 
