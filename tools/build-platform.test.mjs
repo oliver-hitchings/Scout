@@ -15,6 +15,8 @@ test('macOS packaging compiles a native AppKit launcher instead of bundling a sh
   assert.match(build, /xcrun.*swiftc/);
   assert.doesNotMatch(build.match(/export function buildMac[\s\S]*?return \{ output/)?.[0] || '', /ScoutLauncher\.sh/);
   assert.match(launcher, /applicationShouldHandleReopen/);
+  assert.match(launcher, /static func main\(\)/);
+  assert.match(launcher, /application\.delegate = delegate/);
   assert.match(launcher, /Scout could not open/);
   assert.match(launcher, /Diagnostic log/);
 });

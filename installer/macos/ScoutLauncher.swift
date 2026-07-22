@@ -9,6 +9,13 @@ final class ScoutLauncher: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var quitting = false
 
+    static func main() {
+        let application = NSApplication.shared
+        let delegate = ScoutLauncher()
+        application.delegate = delegate
+        application.run()
+    }
+
     private lazy var workspaceURL: URL = {
         let arguments = CommandLine.arguments
         if let index = arguments.firstIndex(of: "--workspace"), arguments.indices.contains(index + 1) {
@@ -27,6 +34,7 @@ final class ScoutLauncher: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureMenus()
+        appendDiagnostic("Native launcher started.")
         startOrOpen()
     }
 
@@ -75,6 +83,7 @@ final class ScoutLauncher: NSObject, NSApplicationDelegate {
                 }
                 throw NSError(domain: "ScoutLauncher", code: 2, userInfo: [NSLocalizedDescriptionKey: "Scout did not become ready within 15 seconds."])
             } catch {
+                self.appendDiagnostic("Launcher startup failed: \(error.localizedDescription)")
                 DispatchQueue.main.async { self.showStartupFailure(error) }
             }
         }
@@ -85,11 +94,19 @@ final class ScoutLauncher: NSObject, NSApplicationDelegate {
         request.timeoutInterval = 0.8
         let semaphore = DispatchSemaphore(value: 0)
         var healthy = false
-        URLSession.shared.dataTask(with: request) { _, response, _ in
-            healthy = (response as? HTTPURLResponse)?.statusCode == 200
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        let session = URLSession(configuration: configuration)
+        session.dataTask(with: request) { data, response, _ in
+            if (response as? HTTPURLResponse)?.statusCode == 200,
+               let data,
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                healthy = object["name"] as? String == "Scout"
+            }
             semaphore.signal()
         }.resume()
         _ = semaphore.wait(timeout: .now() + 1.0)
+        session.invalidateAndCancel()
         return healthy
     }
 
@@ -119,12 +136,29 @@ final class ScoutLauncher: NSObject, NSApplicationDelegate {
         process.standardError = log
         process.terminationHandler = { [weak self] task in
             guard let self, !self.quitting, task.terminationStatus != 0 else { return }
+            self.appendDiagnostic("Bundled Scout server stopped unexpectedly (status \(task.terminationStatus)).")
             DispatchQueue.main.async {
                 self.showStartupFailure(NSError(domain: "ScoutLauncher", code: Int(task.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "Scout's local server stopped unexpectedly."]))
             }
         }
         try process.run()
         server = process
+    }
+
+    private func appendDiagnostic(_ message: String) {
+        do {
+            try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: logURL.path) {
+                FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            }
+            let log = try FileHandle(forWritingTo: logURL)
+            try log.seekToEnd()
+            let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+            try log.write(contentsOf: Data(line.utf8))
+            try log.close()
+        } catch {
+            NSLog("Scout diagnostic write failed: %@", error.localizedDescription)
+        }
     }
 
     @objc private func openDashboard(_ sender: Any?) {
