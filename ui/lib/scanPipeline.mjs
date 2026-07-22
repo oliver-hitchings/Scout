@@ -68,40 +68,164 @@ function mandatorySignals(description, requirements) {
     .slice(0, 12).map((text, index) => ({ id: `mandatory-${String(index + 1).padStart(2, '0')}`, text: text.slice(0, 300) }));
 }
 
-export function compactCandidates(sources, maximum = 40) {
-  const candidates = [];
-  for (const source of Object.values(sources || {})) {
+export const DEFAULT_CANDIDATE_LIMIT = 60;
+
+// Fields the assessment prompt actually reads. Everything else stays in the
+// local scan bundle: `requirements` and `sourceReferences` duplicate content
+// the model already receives, and `providerId`/`duplicateCount` are bookkeeping.
+const PROMPT_CANDIDATE_FIELDS = [
+  'candidateId', 'company', 'role', 'url', 'location', 'salary', 'workingType',
+  'postedDate', 'source', 'tags', 'description', 'mandatorySignals',
+];
+
+function hardExclusionMatchesFor(candidate, terms) {
+  const haystack = `${candidate?.company || ''}
+${candidate?.role || ''}
+${candidate?.description || ''}`.toLowerCase();
+  return terms.filter((term) => haystack.includes(term.toLowerCase()));
+}
+
+// Hard exclusions are the user's stated dealbreakers, so a candidate matching
+// one can never be kept. Applying them in code before the assessment turn is
+// both cheaper and more reliable than asking the model to do it, and the run
+// record already reports a hard_exclusion discard count.
+export function applyHardExclusions(candidates, exclusions = []) {
+  const terms = (exclusions || []).map((value) => String(value || '').trim()).filter(Boolean);
+  if (!terms.length) return { kept: candidates, excluded: [] };
+  const kept = [];
+  const excluded = [];
+  for (const candidate of candidates) {
+    // Exactly the haystack and matching rule applyTrustedExclusions uses after
+    // assessment, so this can only remove candidates that would have been
+    // discarded anyway. Diverging here would silently change which roles a
+    // scan reports, rather than only what it costs.
+    const matched = hardExclusionMatchesFor(candidate, terms);
+    if (matched.length) excluded.push({ ...candidate, hardExclusionMatches: matched });
+    else kept.push(candidate);
+  }
+  return { kept, excluded };
+}
+
+// `second-pass` previously changed nothing but the artifact label: the second
+// provider re-collected every source and re-scored every candidate, so two
+// daily jobs cost roughly double for largely the same work. A verification pass
+// should re-examine what the primary scan actually decided today — the roles it
+// kept, and the ones close enough to the threshold that a second opinion could
+// change the outcome. Falls back to the full set when there is nothing from
+// today to verify, so a standalone second-pass run still does useful work.
+export function verificationCandidates(candidates, tracker, today, policy = {}) {
+  const checkScore = Number(policy.checkScore ?? 55);
+  const recentUrls = new Set();
+  for (const entry of tracker?.opportunities || []) {
+    const recent = entry.lastChecked === today || entry.firstSeen === today;
+    const worthVerifying = recent && (entry.status === 'new' || entry.status === 'watch')
+      && (typeof entry.score !== 'number' || entry.score >= checkScore - 10);
+    if (!worthVerifying) continue;
+    for (const url of entry.sources || []) if (url) recentUrls.add(String(url));
+  }
+  if (!recentUrls.size) return { candidates, verified: false };
+  const selected = candidates.filter((candidate) => (candidate.sources || [candidate.url])
+    .some((url) => recentUrls.has(String(url))));
+  return selected.length ? { candidates: selected, verified: true } : { candidates, verified: false };
+}
+
+export function promptCandidate(candidate) {
+  return Object.fromEntries(PROMPT_CANDIDATE_FIELDS
+    .filter((field) => candidate[field] !== undefined)
+    .map((field) => [field, candidate[field]]));
+}
+
+function normaliseJob(job) {
+  const company = String(job?.company || '').trim();
+  const role = String(job?.title || job?.role || '').trim();
+  const url = String(job?.url || '').trim();
+  if (!company || !role || !/^https?:\/\//i.test(url)) return null;
+  return {
+    company, role, url, location: String(job?.location || ''), salary: job?.salary || null,
+    workingType: String(job?.workingType || ''), postedDate: job?.postedDate || null,
+    source: String(job?.source || ''), providerId: String(job?.providerId || ''),
+    description: String(job?.description || ''), requirements: String(job?.requirements || ''),
+    tags: Array.isArray(job?.tags) ? job.tags : [], sourceReferences: sourceReferencesOf(job), duplicateCount: 1,
+  };
+}
+
+function absorbDuplicate(existing, incoming) {
+  existing.sourceReferences = mergeSourceReferences(existing, incoming);
+  existing.duplicateCount += 1;
+  existing.tags = [...new Set([...existing.tags, ...incoming.tags])];
+  if (incoming.description.length > existing.description.length) existing.description = incoming.description;
+  if (!existing.salary && incoming.salary) existing.salary = incoming.salary;
+}
+
+// Candidates were previously filled in source order until the cap was reached,
+// so once it filled every remaining source contributed nothing and the loss was
+// never recorded. Each source now gets a guaranteed share of the budget first,
+// leftover capacity is shared among the sources that still have jobs, and what
+// could not fit is reported so a truncated scan is visible rather than silent.
+export function compactCandidates(sources, maximum = DEFAULT_CANDIDATE_LIMIT) {
+  const pools = new Map();
+  // sameUnderlyingJob only matches jobs that share a URL or a normalised
+  // company, so comparing every new job against every earlier one is wasted
+  // work. Bucketing keeps the raised candidate limit from making collection
+  // quadratic over a few hundred postings.
+  const byCompany = new Map();
+  const byUrl = new Map();
+  for (const [name, source] of Object.entries(sources || {})) {
+    const pool = [];
     for (const job of source?.jobs || []) {
-      const company = String(job?.company || '').trim();
-      const role = String(job?.title || job?.role || '').trim();
-      const url = String(job?.url || '').trim();
-      if (!company || !role || !/^https?:\/\//i.test(url)) continue;
-      const incoming = {
-        company, role, url, location: String(job?.location || ''), salary: job?.salary || null,
-        workingType: String(job?.workingType || ''), postedDate: job?.postedDate || null,
-        source: String(job?.source || ''), providerId: String(job?.providerId || ''),
-        description: String(job?.description || ''), requirements: String(job?.requirements || ''),
-        tags: Array.isArray(job?.tags) ? job.tags : [], sourceReferences: sourceReferencesOf(job), duplicateCount: 1,
-      };
-      const duplicate = candidates.find((candidate) => sameUnderlyingJob(candidate, incoming));
+      const incoming = normaliseJob(job);
+      if (!incoming) continue;
+      const key = jobIdentity(incoming).company || '';
+      const bucket = byCompany.get(key) || [];
+      const duplicate = byUrl.get(incoming.url)
+        || bucket.find((candidate) => sameUnderlyingJob(candidate, incoming));
       if (duplicate) {
-        duplicate.sourceReferences = mergeSourceReferences(duplicate, incoming);
-        duplicate.duplicateCount += 1;
-        duplicate.tags = [...new Set([...duplicate.tags, ...incoming.tags])];
-        if (incoming.description.length > duplicate.description.length) duplicate.description = incoming.description;
-        if (!duplicate.salary && incoming.salary) duplicate.salary = incoming.salary;
+        absorbDuplicate(duplicate, incoming);
+        for (const reference of duplicate.sourceReferences) if (reference.url) byUrl.set(reference.url, duplicate);
         continue;
       }
-      if (candidates.length < maximum) candidates.push(incoming);
+      bucket.push(incoming);
+      byCompany.set(key, bucket);
+      for (const reference of incoming.sourceReferences) if (reference.url) byUrl.set(reference.url, incoming);
+      byUrl.set(incoming.url, incoming);
+      pool.push(incoming);
     }
+    if (pool.length) pools.set(name, pool);
   }
-  return candidates.map((candidate, index) => ({
-    ...candidate,
+
+  const selected = [];
+  const dropped = {};
+  const share = pools.size ? Math.max(1, Math.floor(maximum / pools.size)) : 0;
+  for (const [name, pool] of pools) selected.push(...pool.slice(0, share).map((job) => ({ name, job })));
+  // Round-robin the remainder so no single large source consumes it all.
+  for (let index = share; selected.length < maximum; index += 1) {
+    let added = false;
+    for (const [name, pool] of pools) {
+      if (selected.length >= maximum) break;
+      if (index >= pool.length) continue;
+      selected.push({ name, job: pool[index] });
+      added = true;
+    }
+    if (!added) break;
+  }
+  const takenByName = new Map();
+  for (const { name } of selected) takenByName.set(name, (takenByName.get(name) || 0) + 1);
+  for (const [name, pool] of pools) {
+    const missed = pool.length - (takenByName.get(name) || 0);
+    if (missed > 0) dropped[name] = missed;
+  }
+
+  const candidates = selected.map(({ job }, index) => ({
+    ...job,
     candidateId: `candidate-${String(index + 1).padStart(3, '0')}`,
-    description: candidate.description.slice(0, 1200),
-    sources: [...new Set(candidate.sourceReferences.map((reference) => reference.url).filter(Boolean))],
-    mandatorySignals: mandatorySignals(candidate.description, candidate.requirements),
+    description: job.description.slice(0, 1200),
+    sources: [...new Set(job.sourceReferences.map((reference) => reference.url).filter(Boolean))],
+    mandatorySignals: mandatorySignals(job.description, job.requirements),
   }));
+  return {
+    candidates,
+    dropped: { perSource: dropped, total: Object.values(dropped).reduce((sum, count) => sum + count, 0) },
+  };
 }
 
 export function validateAssessments(value, candidates) {
@@ -264,7 +388,11 @@ export function validateWrittenScanArtifacts(root, expectedRun) {
   return { tracker, report, run };
 }
 
-export function writeScanArtifacts(root, { provider, mode, sources, queries = [], candidates, assessmentResult, policy, exclusions = [], startedAt, error = null, skipped = false }) {
+export function writeScanArtifacts(root, {
+  provider, mode, sources, queries = [], candidates, assessmentResult, policy, exclusions = [], startedAt,
+  error = null, skipped = false, dropped = { perSource: {}, total: 0 }, hardExcluded = [], closedAdverts = [],
+  livenessSummary = { checked: 0, gone: 0, unverified: 0 }, verificationScoped = false,
+}) {
   const paths = workspacePaths(root);
   const timestamp = new Date().toISOString();
   const date = timestamp.slice(0, 10);
@@ -284,7 +412,17 @@ export function writeScanArtifacts(root, { provider, mode, sources, queries = []
     queries_checked: [...queries], candidates_found: candidates.length, keepers_added: merged.keepersAdded,
     duplicates_collapsed: candidates.reduce((total, candidate) => total + Math.max(0, Number(candidate.duplicateCount || 1) - 1), 0),
     keepers_updated: merged.keepersUpdated,
-    discarded: merged.discarded, reviewed: merged.reviewed, errors, source_health: health,
+    discarded: {
+      ...merged.discarded,
+      // Applied deterministically before the assessment turn rather than by
+      // the provider, so they are counted here instead.
+      hard_exclusion: merged.discarded.hard_exclusion + hardExcluded.length,
+      advert_closed: closedAdverts.length,
+    },
+    candidates_dropped: dropped.total, candidates_dropped_by_source: dropped.perSource,
+    adverts_checked: livenessSummary.checked, adverts_closed: livenessSummary.gone,
+    adverts_unverified: livenessSummary.unverified, verification_scoped: verificationScoped,
+    reviewed: merged.reviewed, errors, source_health: health,
   };
   const earlierRuns = fs.existsSync(paths.scanRuns)
     ? fs.readFileSync(paths.scanRuns, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => {

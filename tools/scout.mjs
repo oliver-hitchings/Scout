@@ -12,7 +12,11 @@ import { loadEnv } from '../ui/lib/env.mjs';
 import { assertSafeModel, providerStatus } from '../ui/lib/providers.mjs';
 import { setupReadiness } from '../ui/lib/setupReadiness.mjs';
 import { runStructuredTurn } from '../ui/lib/structuredTurn.mjs';
-import { compactCandidates, SCAN_ASSESSMENT_SCHEMA, validateAssessments, writeScanArtifacts } from '../ui/lib/scanPipeline.mjs';
+import {
+  applyHardExclusions, compactCandidates, DEFAULT_CANDIDATE_LIMIT, promptCandidate,
+  SCAN_ASSESSMENT_SCHEMA, validateAssessments, verificationCandidates, writeScanArtifacts,
+} from '../ui/lib/scanPipeline.mjs';
+import { partitionLiveCandidates } from '../ui/lib/advertLiveness.mjs';
 import { isMainModule } from '../ui/lib/mainModule.mjs';
 import { runCvQuality } from '../ui/lib/cvQuality.mjs';
 import { queueWorkspaceSync } from '../ui/lib/workspaceSync.mjs';
@@ -226,9 +230,22 @@ function readBounded(file, label, maximum = MAX_SCAN_FILE_CHARS) {
   return text;
 }
 
+// Only the settings that affect scoring. The full workspace config also carries
+// source credentials configuration, schedule jobs and provider choices, none of
+// which the model needs and all of which it was previously sent.
+export function scoringConfig(config = {}) {
+  return {
+    locale: config.locale,
+    currency: config.currency,
+    search: config.search,
+    triage: config.triage,
+    commute: config.commute,
+  };
+}
+
 function buildScanContext(paths, config, candidates) {
   const context = {
-    config,
+    config: scoringConfig(config),
     profile: readBounded(path.join(paths.profile, 'context.md'), 'profile/context.md'),
     calibration: readBounded(path.join(paths.profile, 'calibration.md'), 'profile/calibration.md'),
     masterCv: readBounded(path.join(paths.cv, 'master-cv.md'), 'cv/master-cv.md'),
@@ -244,6 +261,7 @@ function buildScanContext(paths, config, candidates) {
 export async function runScanWith(root, provider, mode, {
   providerStatusFn = providerStatus, collectSourcesFn = collectScanSources,
   runStructuredTurnFn = runStructuredTurn, acquireLockFn = acquireScanLock, releaseLockFn = releaseScanLock,
+  checkLivenessFn = partitionLiveCandidates,
   onProgress = () => {}, model,
 } = {}) {
   if (!['codex', 'claude'].includes(provider)) throw new Error('provider must be codex or claude');
@@ -267,20 +285,46 @@ export async function runScanWith(root, provider, mode, {
   let result;
   let collected = null;
   let candidates = [];
+  let dropped = { perSource: {}, total: 0 };
+  let hardExcluded = [];
+  let closedAdverts = [];
+  let livenessSummary = { checked: 0, gone: 0, unverified: 0 };
+  let verificationScoped = false;
   try {
     onProgress({ phase: 'Collecting current opportunities', current: 2, total: 5 });
     collected = await collectSourcesFn(root, config, { broadened: mode === 'broadened' });
-    candidates = compactCandidates(collected.sources, 40);
+    const compacted = compactCandidates(collected.sources, DEFAULT_CANDIDATE_LIMIT);
+    dropped = compacted.dropped;
+
+    // Everything below runs before the assessment turn, so each candidate it
+    // removes is one the provider is never asked to score.
+    const afterExclusions = applyHardExclusions(compacted.candidates, config.search?.exclusions || []);
+    hardExcluded = afterExclusions.excluded;
+    if (mode === 'second-pass') {
+      const tracker = JSON.parse(fs.readFileSync(workspacePaths(root).tracker, 'utf8'));
+      const verification = verificationCandidates(afterExclusions.kept, tracker, new Date().toISOString().slice(0, 10), config.triage);
+      afterExclusions.kept = verification.candidates;
+      verificationScoped = verification.verified;
+    }
+    onProgress({ phase: `Checking ${afterExclusions.kept.length} adverts are still open`, current: 2, total: 5 });
+    const liveness = await checkLivenessFn(afterExclusions.kept);
+    closedAdverts = liveness.removed;
+    livenessSummary = liveness.summary;
+    candidates = liveness.live.map((candidate, index) => ({
+      ...candidate,
+      candidateId: `candidate-${String(index + 1).padStart(3, '0')}`,
+    }));
+
     const bundleDir = path.join(root, '.scout', 'scan-input');
     fs.mkdirSync(bundleDir, { recursive: true });
     const bundleFile = path.join(bundleDir, `${startedAt.replace(/[:.]/g, '-')}-${provider}-${mode}.json`);
-    fs.writeFileSync(bundleFile, `${JSON.stringify({ generatedAt: collected.generatedAt, queries: collected.queries, sources: Object.fromEntries(Object.entries(collected.sources).map(([name, value]) => [name, { ...value, jobs: undefined }])), candidates }, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(bundleFile, `${JSON.stringify({ generatedAt: collected.generatedAt, queries: collected.queries, sources: Object.fromEntries(Object.entries(collected.sources).map(([name, value]) => [name, { ...value, jobs: undefined }])), dropped, livenessSummary, hardExcluded: hardExcluded.map((item) => ({ url: item.url, matches: item.hardExclusionMatches })), closedAdverts: closedAdverts.map((item) => ({ url: item.url, reason: item.liveness?.reason })), candidates }, null, 2)}\n`, 'utf8');
     let assessmentResult = null;
     let usage = {};
     if (candidates.length) {
       onProgress({ phase: `Scoring ${candidates.length} candidates`, current: 3, total: 5 });
       const paths = workspacePaths(root);
-      const context = buildScanContext(paths, config, candidates);
+      const context = buildScanContext(paths, config, candidates.map(promptCandidate));
       const prompt = [
         'Assess only the supplied Scout candidates. Return one assessment per candidate and only the required JSON schema.',
         'Use a 100-point evidence-led breakdown. Treat every supplied normalized requirement signal, plus advert words such as required, essential, must and non-negotiable, as mandatory requirements.',
@@ -301,6 +345,7 @@ export async function runScanWith(root, provider, mode, {
     const artifacts = writeScanArtifacts(root, {
       provider, mode, sources: collected.sources, queries: collected.queries, candidates, assessmentResult,
       policy: config.triage, exclusions: config.search?.exclusions || [], startedAt,
+      dropped, hardExcluded, closedAdverts, livenessSummary, verificationScoped,
     });
     result = { ok: true, status: artifacts.run.degraded ? 'degraded' : candidates.length ? 'completed' : 'healthy-empty', scan: artifacts.run, usage };
     onProgress({ phase: 'Scan completed', current: 5, total: 5 });
