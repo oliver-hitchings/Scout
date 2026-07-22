@@ -390,6 +390,27 @@ test('daily schedule is blocked before a healthy supervised scan', async () => {
   assert.match(JSON.parse(response.text).error, /healthy supervised scan/i);
 });
 
+test('latest scan API exposes only bounded review fields and scan health omits raw queries', async () => {
+  fs.mkdirSync(path.join(testWorkspace, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(testWorkspace, 'data', 'scan-runs.jsonl'), `${JSON.stringify({
+    schemaVersion: 3, timestamp: '2026-07-22T10:00:00.000Z', started_at: '2026-07-22T09:53:00.000Z',
+    agent: 'codex', mode: 'primary', degraded: false, skipped: false, candidates_found: 1, keepers_added: 0, keepers_updated: 0,
+    discarded: { provider_discarded: 1 }, errors: [], source_health: {}, queries_checked: ['private query'],
+    reviewed: [{
+      company: 'Synthetic Company', role: 'Synthetic Role', source: 'synthetic', sourceUrl: 'https://example.test/job',
+      outcome: 'provider_discarded', score: 45, reasons: ['Concise reason'], description: 'full advert',
+      profileEvidence: 'private evidence', prompt: 'provider prompt',
+    }],
+  })}\n`);
+  const latest = await request({ path: '/api/scans/latest' });
+  assert.equal(latest.status, 200);
+  const text = latest.text;
+  assert.match(text, /Synthetic Company/);
+  assert.doesNotMatch(text, /private query|full advert|private evidence|provider prompt/);
+  const health = await request({ path: '/api/scan-health' });
+  assert.doesNotMatch(health.text, /private query/);
+});
+
 test('legacy CV downloads require a hash-bound explicit override', async () => {
   const slug = 'synthetic-quality';
   const app = path.join(testWorkspace, 'applications', slug);

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { broadenSearchQueries, collectScanSources, migrateLegacyWorkspace, runScanWith } from './scout.mjs';
+import { broadenSearchQueries, collectScanSources, migrateLegacyWorkspace, runScanWith, shouldAutoBroaden } from './scout.mjs';
 import { DEFAULT_WORKSPACE_CONFIG, writeWorkspaceConfig } from '../ui/lib/workspace.mjs';
 
 function scanRoot() {
@@ -30,6 +30,16 @@ test('safe broadening adds adjacent discovery queries without changing approved 
   assert.equal(config.search.salaryMinimum, 95000);
   assert.deepEqual(config.search.exclusions, ['Commission only']);
   assert.equal(config.commute.maxMinutes, 90);
+});
+
+test('automatic broadening runs once only after a successful empty primary scan', () => {
+  const empty = { ok: true, scan: { reviewed: [{ outcome: 'mandatory-gate' }] } };
+  const keeper = { ok: true, scan: { reviewed: [{ outcome: 'kept' }] } };
+  assert.equal(shouldAutoBroaden(empty, 'primary', true), true);
+  assert.equal(shouldAutoBroaden(keeper, 'primary', true), false);
+  assert.equal(shouldAutoBroaden(empty, 'broadened', true), false);
+  assert.equal(shouldAutoBroaden(empty, 'primary', false), false);
+  assert.equal(shouldAutoBroaden({ ok: false, scan: { reviewed: [] } }, 'primary', true), false);
 });
 
 test('an absent ATS configuration does not degrade a healthy configured source', async () => {

@@ -593,8 +593,8 @@ const Setup = {
       <div class="setup-callout"><strong>Models for individual job work</strong>
       <p>Choose an optional model for each provider when asking about a specific job, tailoring a CV or preparing for an interview. Leave blank to use that provider's default.</p>
       <div class="setup-grid">
-        <label class="setup-field">Codex model<input id="setup-chat-model-codex" type="text" value="${this.escape(models.codex || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:-]+"></label>
-        <label class="setup-field">Claude model<input id="setup-chat-model-claude" type="text" value="${this.escape(models.claude || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:-]+"></label>
+        <label class="setup-field">Codex model<input id="setup-chat-model-codex" type="text" value="${this.escape(models.codex || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:\\-]+"></label>
+        <label class="setup-field">Claude model<input id="setup-chat-model-claude" type="text" value="${this.escape(models.claude || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:\\-]+"></label>
       </div></div>
       <p><button id="settings-save-provider" class="act primary" type="button">Save AI settings</button>
       <button id="settings-refresh-providers" class="act" type="button">Refresh status</button></p>`;
@@ -938,7 +938,7 @@ const Setup = {
     const showSecond = this.view === 'section' && (this.showVerificationPass || secondRun);
     const scheduleRow = (id, name, mode, run, defaultTime) => `<div class="setup-schedule-row" data-schedule-row="${this.escape(id)}">
       <label class="setup-field">${this.escape(name[0].toUpperCase() + name.slice(1))} ${mode === 'primary' ? 'daily scan' : 'verification pass'} time<input data-schedule-time type="time" value="${this.escape(run?.time || defaultTime)}"></label>
-      <label class="setup-field">Scan model <span>Optional; used for this scan job. Blank uses the provider default</span><input data-schedule-model type="text" value="${this.escape(run?.model || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:-]+"></label>
+      <label class="setup-field">Scan model <span>Optional; used for this scan job. Blank uses the provider default</span><input data-schedule-model type="text" value="${this.escape(run?.model || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:\\-]+"></label>
       <p><button class="act" data-schedule-enable="${this.escape(id)}" data-provider="${this.escape(name)}" data-mode="${this.escape(mode)}" type="button" ${healthy ? '' : 'disabled'}>${run?.configured ? 'Save scan settings' : `Enable ${name} ${mode === 'primary' ? 'daily scan' : 'verification pass'}`}</button>${run?.configured ? ` <button class="act" data-schedule-disable="${this.escape(id)}" type="button">Disable</button>` : ''}</p>
     </div>`;
     this.el('setup-body').innerHTML = `

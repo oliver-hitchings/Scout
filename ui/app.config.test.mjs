@@ -56,8 +56,9 @@ test('sync status opens backup details and stale builds require a safe explicit 
 
 test('master CV preview explains how to obtain a rendered PDF', () => {
   const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
-  assert.match(source, /master CV is source material only and has no PDF preview/i);
-  assert.match(source, /Open or create a tailored CV to render a PDF/i);
+  assert.match(source, /save \+ render reference PDF/i);
+  assert.match(source, /No master reference PDF yet\. Save and render to create it\./i);
+  assert.doesNotMatch(source, /master CV is source material only and has no PDF preview/i);
 });
 
 test('company history keeps real correspondence separate from role-specific Scout chats', () => {

@@ -61,6 +61,11 @@ export function broadenSearchQueries(config, baseQueries = []) {
   return [...queries].slice(0, 30);
 }
 
+export function shouldAutoBroaden(scanResult, mode, enabled = false) {
+  if (!enabled || mode !== 'primary' || !scanResult?.ok) return false;
+  return !(scanResult.scan?.reviewed || []).some((item) => item.outcome === 'kept');
+}
+
 function workspaceQueries(root, { broadened = false } = {}) {
   const config = loadWorkspaceConfig(root);
   const queries = new Set((config.search?.roleFamilies || []).map((q) => String(q).trim()).filter(Boolean));
@@ -160,8 +165,7 @@ export async function runScan(root, provider, mode, {
   assertScanReady(root, provider);
   const initial = await runScanWith(root, provider, mode, { onProgress, model });
   let result = initial;
-  const kept = (initial.scan?.reviewed || []).some((item) => item.outcome === 'kept');
-  if (autoBroaden && mode === 'primary' && initial.ok && !kept) {
+  if (shouldAutoBroaden(initial, mode, autoBroaden)) {
     const broadenedEstimate = estimate ? {
       ...estimate,
       totalSecondsLow: Number(estimate.totalSecondsLow || 0) * 2,
