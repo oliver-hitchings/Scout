@@ -1,4 +1,4 @@
-import { daysBetween, followUpsDue } from './derive.mjs';
+import { daysBetween, followUpsDue, triage } from './derive.mjs';
 import { currentStage, isInterviewStage, lastCompletedStage, stagesOf } from './tracker.mjs';
 
 const ACTIVE_STATUSES = ['outreach', 'applied', 'interviewing'];
@@ -124,5 +124,19 @@ export function pipeline(data, today, policy = {}) {
     awaitingDecision,
     recentlyClosed,
     flags,
+  };
+}
+
+// A workspace that has not been created yet must still answer /api/opportunities
+// with exactly the shape a populated workspace returns. Deriving it from the
+// same functions keeps the two branches from drifting apart: a hand-written
+// literal previously omitted pipeline.flags, which crashed the dashboard on
+// every fresh install.
+export function emptyTrackerView(today, policy = {}) {
+  const data = { updated: today, opportunities: [] };
+  return {
+    ...data,
+    triage: triage(data, today, policy),
+    pipeline: pipeline(data, today, policy),
   };
 }
