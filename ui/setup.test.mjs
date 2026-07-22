@@ -11,6 +11,7 @@ import {
   operationRemaining,
   scanOutcomeSummary,
   shouldAutoRunFirstScan,
+  shouldRequestRecoveryKey,
   splitList,
   validateCvName,
 } from './setup.js';
@@ -83,6 +84,13 @@ test('a first scan starts automatically only when the workspace has never scanne
   assert.equal(shouldAutoRunFirstScan({}), true);
   assert.equal(shouldAutoRunFirstScan({}, false), false);
   assert.equal(shouldAutoRunFirstScan({ lastRunAt: '2026-07-12T10:00:00.000Z' }), false);
+});
+
+test('recovery keys are requested only from the Scout host', () => {
+  assert.equal(shouldRequestRecoveryKey({ requestAccess: 'local', sync: { enabled: true } }), true);
+  assert.equal(shouldRequestRecoveryKey({ requestAccess: 'remote-owner', sync: { enabled: true } }), false);
+  assert.equal(shouldRequestRecoveryKey({ requestAccess: 'local', sync: { enabled: false } }), false);
+  assert.equal(shouldRequestRecoveryKey({ requestAccess: 'local', sync: { enabled: true } }, 'already-shown'), false);
 });
 
 test('scan outcome explains strict zero-keeper results', () => {

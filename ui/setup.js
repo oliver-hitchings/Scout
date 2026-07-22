@@ -82,6 +82,10 @@ export function shouldAutoRunFirstScan(scanHealth = {}, ready = true) {
   return Boolean(ready && !scanHealth.lastRunAt);
 }
 
+export function shouldRequestRecoveryKey(status = {}, pendingRecoveryKey = null) {
+  return status.requestAccess === 'local' && status.sync?.enabled && !pendingRecoveryKey;
+}
+
 export function scanOutcomeSummary(scanHealth = {}) {
   const reviewed = Number(scanHealth.candidatesFound || 0);
   const kept = Number(scanHealth.keepersAdded || 0);
@@ -197,7 +201,7 @@ const Setup = {
         this.renderBootstrap();
         return;
       }
-      if (status.sync?.enabled && !this.pendingRecoveryKey) {
+      if (shouldRequestRecoveryKey(status, this.pendingRecoveryKey)) {
         const pending = await requestJson('/api/sync/recovery-key', {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
         });
