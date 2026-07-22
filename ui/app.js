@@ -728,10 +728,13 @@ const Scout = {
 
   renderPipeline() {
     if (!this.state.data) return;
+    // A pre-update server can answer with an older pipeline shape. Render an
+    // empty board rather than throwing, which would abort loadOpportunities()
+    // before the dashboard and discovery prompts are drawn.
     const p = this.state.data.pipeline;
     const h = this.state.data.scanHealth;
     const el = document.getElementById('tab-pipeline');
-    if (!p || !el) return;
+    if (!p || !el || !Array.isArray(p.flags)) return;
     const metric = (label, value) => `<div class="metric"><b>${this.esc(value)}</b>${this.esc(label)}</div>`;
     const healthText = h
       ? `${h.healthy ? 'healthy' : (h.stale ? 'stale' : 'degraded')}${h.reason ? ' - ' + h.reason : ''}`

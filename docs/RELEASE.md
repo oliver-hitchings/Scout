@@ -31,6 +31,10 @@ Release only from this clean-history public application repository. Never copy c
 7. Test on clean Windows, macOS and Ubuntu runners: install; first launch; provider detection; supervised/scheduled scans; missed-run/overlap/timeout; upgrade; and uninstall preserving the workspace.
 8. Tag the reviewed commit with the exact package version prefixed by `v`. The cross-platform workflow builds all packages, runs native smoke tests and required-marker audits, deploys and health-checks the exact tag on the approved private Beta VPS, then publishes one checksum manifest and the release notes. A failed or unapproved VPS deployment prevents publication.
 
+### Release tags are immutable
+
+Once a tag is pushed, never move, delete or recreate it. The workflow deploys "the exact tag", so a moved tag means the commit someone fetched earlier is not the commit the release now claims, and Scout's own update check verifies packages against the assets of that published tag. To correct a published release, bump the version and cut a new tag (for example `v0.1.0-beta.19.1`); leave the original tag and its release in place. Consider a GitHub tag-protection ruleset on `v*` so this cannot happen by accident.
+
 ## Private Beta VPS deployment
 
 The tag workflow uses the protected GitHub Environment `beta-vps`. Configure an owner approval rule and restrict it to release tags. Store these values as environment secrets, never in the repository:

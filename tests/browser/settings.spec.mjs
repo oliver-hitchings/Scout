@@ -300,7 +300,8 @@ test('settings opens a hub and retuning is explicit and dismissible', async ({ p
   await dialog.getByRole('button', { name: 'Retune my search' }).click();
   await expect(dialog.getByRole('heading', { name: 'Retune Scout' })).toBeVisible();
   await expect(dialog.getByRole('heading', { name: 'Retune Scout' })).toBeFocused();
-  await expect(dialog.getByRole('heading', { name: 'Choose an AI provider' })).toBeVisible();
+  // Retuning the search must open the search questions, not the AI provider step.
+  await expect(dialog.getByRole('heading', { name: 'First, what should I call you?' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Close settings' })).toBeVisible();
 
   await page.keyboard.press('Escape');
