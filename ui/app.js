@@ -751,19 +751,29 @@ const Scout = {
 
   renderAll() {
     if (!this.state.data) return;
-    const { key, dir } = this.state.sort;
-    const q = this.state.filter.toLowerCase();
-    let rows = this.filteredEntries('all');
-    if (q) rows = rows.filter((e) => `${e.company} ${e.role} ${(e.tags || []).join(' ')}`.toLowerCase().includes(q));
-    rows.sort((a, b) => {
-      const av = a[key] ?? (key === 'score' ? -1 : '');
-      const bv = b[key] ?? (key === 'score' ? -1 : '');
-      return av < bv ? dir : av > bv ? -dir : 0;
-    });
+    const rowsHtml = () => {
+      const { key, dir } = this.state.sort;
+      const q = this.state.filter.toLowerCase();
+      let rows = this.filteredEntries('all');
+      if (q) rows = rows.filter((e) => `${e.company} ${e.role} ${(e.tags || []).join(' ')}`.toLowerCase().includes(q));
+      rows.sort((a, b) => {
+        const av = a[key] ?? (key === 'score' ? -1 : '');
+        const bv = b[key] ?? (key === 'score' ? -1 : '');
+        return av < bv ? dir : av > bv ? -dir : 0;
+      });
+      return rows.map((e) => `<tr data-action="open-entry" data-tab="${this.esc(this.categoryOf(e))}" data-id="${this.esc(e.id)}" role="button" tabindex="0" style="cursor:pointer">
+        <td><b>${typeof e.score === 'number' ? e.score : '-'}</b></td>
+        <td>${this.esc(e.company)}</td><td>${this.esc(e.role)}</td>
+        <td>${this.esc(this.categoryOf(e))}</td>
+        <td>${this.esc(this.commuteMinutes(e, 'car') ?? '-')}</td>
+        <td>${this.esc(this.commuteMinutes(e, 'public') ?? '-')}</td>
+        <td>${this.esc(this.currentStage(e) || '-')}</td>
+        <td>${this.esc(e.status)}</td><td>${this.esc(e.lastChecked || 'never')}</td></tr>`).join('');
+    };
     document.getElementById('tab-all').innerHTML =
       `${this.filterBar()}
        <div class="controls"><input id="filter" placeholder="search company / role / tag..." value="${this.esc(this.state.filter)}"></div>
-       <table><thead><tr>
+       <div class="all-table-scroll" role="region" aria-label="All opportunities table" tabindex="0"><table><thead><tr>
          <th data-action="sort" data-key="score" role="button" tabindex="0">score</th>
          <th data-action="sort" data-key="company" role="button" tabindex="0">company</th>
          <th>role</th>
@@ -773,18 +783,13 @@ const Scout = {
          <th>stage</th>
          <th data-action="sort" data-key="status" role="button" tabindex="0">status</th>
          <th data-action="sort" data-key="lastChecked" role="button" tabindex="0">last checked</th>
-       </tr></thead><tbody>` +
-      rows.map((e) => `<tr data-action="open-entry" data-tab="${this.esc(this.categoryOf(e))}" data-id="${this.esc(e.id)}" role="button" tabindex="0" style="cursor:pointer">
-        <td><b>${typeof e.score === 'number' ? e.score : '-'}</b></td>
-        <td>${this.esc(e.company)}</td><td>${this.esc(e.role)}</td>
-        <td>${this.esc(this.categoryOf(e))}</td>
-        <td>${this.esc(this.commuteMinutes(e, 'car') ?? '-')}</td>
-        <td>${this.esc(this.commuteMinutes(e, 'public') ?? '-')}</td>
-        <td>${this.esc(this.currentStage(e) || '-')}</td>
-        <td>${this.esc(e.status)}</td><td>${this.esc(e.lastChecked || 'never')}</td></tr>`).join('') +
-      '</tbody></table>';
+       </tr></thead><tbody id="all-table-body">${rowsHtml()}</tbody></table></div>`;
     const f = document.getElementById('filter');
-    if (f) f.addEventListener('input', (ev) => { this.state.filter = ev.target.value; this.renderAll(); document.getElementById('filter')?.focus(); }, { once: true });
+    if (f) f.addEventListener('input', (event) => {
+      this.state.filter = event.target.value;
+      const body = document.getElementById('all-table-body');
+      if (body) body.innerHTML = rowsHtml();
+    });
   },
 
   setSort(key) {

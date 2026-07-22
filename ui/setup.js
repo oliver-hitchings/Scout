@@ -1068,7 +1068,7 @@ const Setup = {
   },
 
   async prepareDeployKey() {
-    this.setMessage('Creating a dedicated key and pinning GitHub host identityâ€¦');
+    this.setMessage('Creating a dedicated key and pinning GitHub host identity…');
     try {
       const result = await requestJson('/api/sync/deploy-key', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',

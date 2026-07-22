@@ -7,6 +7,7 @@ import { RELEASE_FILES } from './build-release.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ignoredDirectories = new Set(['.git', 'dist', 'node_modules']);
+const commonMojibake = new RegExp('\\u00c3.|\\u00c2.|\\u00e2\\u20ac|\\ufffd');
 
 function markdownFiles(directory = root) {
   const files = [];
@@ -15,6 +16,18 @@ function markdownFiles(directory = root) {
     const absolute = path.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...markdownFiles(absolute));
     else if (entry.isFile() && entry.name.endsWith('.md')) files.push(absolute);
+  }
+  return files;
+}
+
+function userFacingSourceFiles(directory = root) {
+  const files = [];
+  const extensions = new Set(['.html', '.js', '.json', '.md', '.mjs', '.webmanifest']);
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (ignoredDirectories.has(entry.name) || entry.name === 'docs') continue;
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...userFacingSourceFiles(absolute));
+    else if (entry.isFile() && !entry.name.includes('.test.') && extensions.has(path.extname(entry.name))) files.push(absolute);
   }
   return files;
 }
@@ -96,6 +109,14 @@ test('current documentation contains no common encoding or private-path leaks', 
     if (/Ã.|Â.|â(?:€|†|€™)|�/.test(content)) findings.push(`${relative(file)}: encoding`);
     if (/[A-Z]:\\Users\\(?!YOUR_USER|USERNAME|user\b)[^\\\s]+\\/i.test(content)) findings.push(`${relative(file)}: user path`);
     if (/github\.com\/oliver-hitchings\/scout-workspace/i.test(content)) findings.push(`${relative(file)}: private repository`);
+  }
+  assert.deepEqual(findings, []);
+});
+
+test('user-facing source files contain no common mojibake sequences', () => {
+  const findings = [];
+  for (const file of userFacingSourceFiles()) {
+    if (commonMojibake.test(fs.readFileSync(file, 'utf8'))) findings.push(relative(file));
   }
   assert.deepEqual(findings, []);
 });

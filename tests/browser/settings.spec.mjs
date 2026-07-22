@@ -1,4 +1,7 @@
 import { expect, test } from '@playwright/test';
+import fs from 'node:fs';
+
+const currentVersion = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
 const establishedStatus = {
   bootstrap: false,
@@ -8,7 +11,7 @@ const establishedStatus = {
   trackerExists: true,
   workspaceRoot: 'SYNTHETIC_WORKSPACE',
   appRoot: 'SYNTHETIC_APP',
-  appVersion: '0.1.0-beta.14',
+  appVersion: currentVersion,
   config: {
     locale: 'en-GB', currency: 'GBP', timezone: 'Europe/London',
     profile: { displayName: 'Example Person', tone: 'natural and direct' },
@@ -383,6 +386,73 @@ test('settings close remains reachable on a phone viewport', async ({ page }) =>
   expect(box.y).toBeGreaterThanOrEqual(0);
 });
 
+test('phone All view reaches its rightmost column and keeps strong-match controls on screen', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 740 });
+  await page.getByRole('button', { name: 'All' }).click();
+  const tableRegion = page.getByRole('region', { name: 'All opportunities table' });
+  await expect(tableRegion).toBeVisible();
+  const scroll = await tableRegion.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+    const region = element.getBoundingClientRect();
+    const last = element.querySelector('th:last-child').getBoundingClientRect();
+    return { left: element.scrollLeft, regionRight: region.right, lastLeft: last.left, lastRight: last.right };
+  });
+  expect(scroll.left).toBeGreaterThan(0);
+  expect(scroll.lastLeft).toBeLessThan(scroll.regionRight);
+  expect(scroll.lastRight).toBeLessThanOrEqual(scroll.regionRight + 1);
+
+  await page.evaluate(() => {
+    window.Scout.discoveries = [window.Scout.state.data.opportunities[0]];
+    window.Scout.showStrongMatchArrival();
+  });
+  const arrival = page.locator('#scout-arrival');
+  await expect(arrival.getByRole('button', { name: 'Show me' })).toBeVisible();
+  const arrivalBox = await arrival.boundingBox();
+  expect(arrivalBox.x).toBeGreaterThanOrEqual(0);
+  expect(arrivalBox.x + arrivalBox.width).toBeLessThanOrEqual(360);
+  expect(arrivalBox.y + arrivalBox.height).toBeLessThanOrEqual(740);
+  for (const button of await arrival.getByRole('button').all()) {
+    const buttonBox = await button.boundingBox();
+    expect(buttonBox.x).toBeGreaterThanOrEqual(0);
+    expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(360);
+  }
+});
+
+test('All filter preserves start, middle, end, and composition editing', async ({ page }) => {
+  await page.getByRole('button', { name: 'All' }).click();
+  const filter = page.locator('#filter');
+  await filter.fill('Legacy');
+  await page.evaluate(() => { window.filterIdentity = document.getElementById('filter'); });
+  for (const sample of [
+    { start: 0, text: 'X', expected: 'XLegacy', caret: 1 },
+    { start: 3, text: 'X', expected: 'LegXacy', caret: 4 },
+    { start: 6, text: 'X', expected: 'LegacyX', caret: 7 },
+  ]) {
+    await filter.fill('Legacy');
+    const result = await page.evaluate(({ start, text }) => {
+      const input = document.getElementById('filter');
+      input.setRangeText(text, start, start, 'end');
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      return {
+        same: input === document.getElementById('filter') && input === window.filterIdentity,
+        value: input.value, start: input.selectionStart, end: input.selectionEnd,
+      };
+    }, sample);
+    expect(result).toEqual({ same: true, value: sample.expected, start: sample.caret, end: sample.caret });
+  }
+
+  const composition = await page.evaluate(() => {
+    const input = document.getElementById('filter');
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+    input.value = '気候';
+    input.setSelectionRange(2, 2);
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data: '気候', isComposing: true }));
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '気候' }));
+    return { same: input === document.getElementById('filter'), value: input.value, caret: input.selectionStart };
+  });
+  expect(composition).toEqual({ same: true, value: '気候', caret: 2 });
+});
+
 test('mandatory first-run setup cannot be dismissed', async ({ page }) => {
   await page.unroute('**/api/setup/status');
   await page.route('**/api/setup/status', async (route) => {
@@ -392,7 +462,7 @@ test('mandatory first-run setup cannot be dismissed', async ({ page }) => {
         bootstrap: true,
         workspaceRoot: 'SYNTHETIC_WORKSPACE',
         appRoot: 'SYNTHETIC_APP',
-        appVersion: '0.1.0-beta.14',
+        appVersion: currentVersion,
         git: { installed: true },
         sync: { state: 'disabled', enabled: false },
         pendingSetupSections: [],
@@ -414,7 +484,7 @@ test('a stale UI prompts for a safe refresh and protects dirty work', async ({ p
   await page.route('**/api/app-info', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify({ name: 'Scout', version: '0.1.0-beta.14', uiBuildId: 'newer-build' }),
+      body: JSON.stringify({ name: 'Scout', version: currentVersion, uiBuildId: 'newer-build' }),
     });
   });
   await page.reload();
