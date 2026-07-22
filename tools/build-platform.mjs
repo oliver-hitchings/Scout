@@ -26,8 +26,11 @@ export function buildMac({ arch = process.arch, nodeExecutable = process.execPat
   const stage = path.join(ROOT, 'dist', 'release', `macos-${arch}`); stageRelease({ root: ROOT, stageDir: stage, nodeExecutable, platform: 'darwin' });
   const bundle = path.join(stage, 'dmg-root', 'Scout.app'); const contents = path.join(bundle, 'Contents');
   copy(path.join(stage, 'app'), path.join(contents, 'Resources', 'app')); copy(path.join(stage, 'runtime'), path.join(contents, 'Resources', 'runtime'));
-  const launcher = path.join(contents, 'MacOS', 'Scout'); copy(path.join(ROOT, 'installer', 'unix', 'ScoutLauncher.sh'), launcher); executable(launcher);
-  const plist = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleName</key><string>Scout</string><key>CFBundleIdentifier</key><string>app.scout.local</string><key>CFBundleVersion</key><string>${VERSION}</string><key>CFBundleShortVersionString</key><string>${VERSION}</string><key>CFBundleExecutable</key><string>Scout</string><key>LSMinimumSystemVersion</key><string>13.0</string></dict></plist>`;
+  const launcher = path.join(contents, 'MacOS', 'Scout');
+  fs.mkdirSync(path.dirname(launcher), { recursive: true });
+  run('xcrun', ['swiftc', '-parse-as-library', path.join(ROOT, 'installer', 'macos', 'ScoutLauncher.swift'), '-framework', 'AppKit', '-o', launcher]);
+  executable(launcher);
+  const plist = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleName</key><string>Scout</string><key>CFBundleDisplayName</key><string>Scout</string><key>CFBundleIdentifier</key><string>app.scout.local</string><key>CFBundleVersion</key><string>${VERSION}</string><key>CFBundleShortVersionString</key><string>${VERSION}</string><key>CFBundleExecutable</key><string>Scout</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>13.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>`;
   fs.writeFileSync(path.join(contents, 'Info.plist'), plist);
   fs.symlinkSync('/Applications', path.join(stage, 'dmg-root', 'Applications'));
   const output = path.join(ROOT, 'installer', 'output'); fs.mkdirSync(output, { recursive: true }); const name = arch === 'arm64' ? artifactNames().macArm : artifactNames().macIntel;
