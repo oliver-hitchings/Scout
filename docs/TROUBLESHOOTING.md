@@ -36,6 +36,8 @@ The same protection applies when a new service worker is ready: Scout keeps the 
 
 The header backup status opens **Backup details**. Use **Advanced backup settings** from there for configuration. The main **Settings** button opens the sectioned settings hub; first-run onboarding appears automatically only for an unfinished workspace.
 
+An authenticated remote owner can open Scout and review settings through the private Tailscale address. Scout does not request or display the emergency recovery key remotely; recovery-key handling remains available only on the Scout host and must not prevent the remote interface from loading.
+
 On macOS, use the Scout menu's **Open Scout** and **Show diagnostic log** actions. A packaged startup failure should display an alert naming the log. If Finder still does nothing, verify the DMG checksum, move Scout into Applications, use Control-click → Open once, and inspect `~/Documents/Scout Workspace/logs/ui-stdout.log` before reporting a synthetic error summary.
 
 If Setup temporarily cannot reach the local Scout server, select **Retry** after the server is available. Retry reconnects in place: it does not reload the page or discard answers you have entered in the current onboarding or retuning step.

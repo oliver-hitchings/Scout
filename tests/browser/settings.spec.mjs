@@ -57,6 +57,36 @@ test.beforeEach(async ({ page }) => {
   ))).toBe(true);
 });
 
+test('remote owner setup does not request the host-only recovery key', async ({ page }) => {
+  await page.unroute('**/api/setup/status');
+  await page.route('**/api/setup/status', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...establishedStatus,
+        requestAccess: 'remote-owner',
+        sync: { state: 'synced', enabled: true },
+        remoteAccess: { state: 'enabled', enabled: true, installed: true },
+      }),
+    });
+  });
+  let recoveryKeyRequests = 0;
+  await page.route('**/api/sync/recovery-key', async (route) => {
+    recoveryKeyRequests += 1;
+    await route.fulfill({
+      status: 403,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'this setting can only be changed on the Scout host' }),
+    });
+  });
+
+  await page.evaluate(() => window.ScoutSetup.refreshStatus());
+
+  await expect.poll(() => recoveryKeyRequests).toBe(0);
+  await expect.poll(() => page.evaluate(() => window.ScoutSetup.status?.requestAccess)).toBe('remote-owner');
+  await expect(page.getByRole('dialog')).toBeHidden();
+});
+
 test('first service worker installation does not pretend Scout has updated', async ({ page }) => {
   await page.evaluate(async () => {
     await navigator.serviceWorker.ready;
