@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { acquireScanLock, releaseScanLock } from '../../tools/scan-lock.mjs';
 import { atomicWriteFile } from './atomicWrite.mjs';
