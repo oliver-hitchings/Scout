@@ -161,6 +161,7 @@ test('index.html defines static Jobs, Speculative and Shortlist tabs, not catego
   const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.match(html, /data-tab="jobs"/);
   assert.match(html, /data-tab="speculative"/);
+  assert.ok(html.indexOf('data-tab="speculative"') < html.indexOf('data-tab="jobs"'));
   assert.match(html, /data-tab="shortlist"/);
   assert.match(html, /id="tab-jobs"/);
   assert.match(html, /id="tab-speculative"/);
