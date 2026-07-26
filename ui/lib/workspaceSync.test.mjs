@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  adoptExistingWorkspaceFromGithub, confirmRecoveryKey, connectWorkspaceSync, disableWorkspaceSync, loadSyncSettings, pendingRecoveryKey,
-  queueWorkspaceSync, restoreWorkspaceFromGithub, runWorkspaceSync, syncStatus, validateGithubUrl,
+  adoptExistingWorkspaceFromGithub, analyzeWorkspaceDivergence, confirmRecoveryKey, connectWorkspaceSync, disableWorkspaceSync, loadSyncSettings, pendingRecoveryKey,
+  queueWorkspaceSync, resolveWorkspaceDivergence, restoreWorkspaceFromGithub, runWorkspaceSync, syncStatus, validateGithubUrl,
   verifyPrivateGithubRemote,
 } from './workspaceSync.mjs';
 import { initializeRecoveryBackup } from './recoveryBackup.mjs';
@@ -34,6 +34,29 @@ function fixture() {
 }
 
 const fakeCapabilities = (spawn) => ({ spawn });
+
+async function pairedFixture() {
+  const f = fixture();
+  const spawn = (command, args, options) => {
+    if (args[0] === 'credential-manager') return { status: 0, stdout: 'test-gcm', stderr: '' };
+    return spawnSync(command, args, options);
+  };
+  const connected = await connectWorkspaceSync(f.root, {
+    remoteUrl: 'https://github.com/example/repo', passphrase: 'correct horse battery staple',
+  }, { verifyRemote: async () => ({ url: f.remote, empty: true }), spawn });
+  const deviceTwo = path.join(f.base, 'device-two');
+  await restoreWorkspaceFromGithub({
+    remoteUrl: 'https://github.com/example/repo', targetRoot: deviceTwo, secret: connected.recoveryKey,
+  }, { verifyRemote: async () => ({ url: f.remote, empty: false }), spawn });
+  return { ...f, spawn, deviceTwo };
+}
+
+async function disjointDivergence(pair) {
+  fs.writeFileSync(path.join(pair.root, 'data', 'remote-change.json'), '{}\n');
+  await runWorkspaceSync(pair.root, 'remote change', { spawn: pair.spawn });
+  fs.writeFileSync(path.join(pair.deviceTwo, 'data', 'local-change.json'), '{}\n');
+  return runWorkspaceSync(pair.deviceTwo, 'local change', { spawn: pair.spawn });
+}
 
 test('GitHub repository URLs reject credentials and non-GitHub remotes', () => {
   assert.equal(validateGithubUrl('https://github.com/example/scout-workspace').url, 'https://github.com/example/scout-workspace.git');
@@ -213,9 +236,121 @@ test('two devices fast-forward safely and divergence never resets, rebases, or f
   const diverged = await runWorkspaceSync(deviceTwo, 'local change', { spawn });
   assert.equal(diverged.state, 'needs-attention');
   assert.equal(diverged.conflict, true);
+  assert.equal(diverged.resolution.classification, 'disjoint-safe');
+  assert.equal(diverged.resolution.canResolve, true);
+  assert.deepEqual(diverged.resolution.localAreas, ['workspace files']);
+  assert.deepEqual(diverged.resolution.remoteAreas, ['workspace files']);
   assert.equal(fs.existsSync(path.join(deviceTwo, 'data', 'local-change.json')), true);
   assert.equal(fs.existsSync(path.join(deviceTwo, 'data', 'remote-change.json')), false);
   assert.equal(calls.some((args) => args.includes('rebase') || args.includes('reset') || args.some((arg) => /^--force/.test(arg))), false);
+  await assert.rejects(() => resolveWorkspaceDivergence(deviceTwo, {
+    analysisToken: 'stale-analysis',
+    confirmed: true,
+  }, { spawn }), /history changed/);
+  const resolved = await resolveWorkspaceDivergence(deviceTwo, {
+    analysisToken: diverged.resolution.analysisToken,
+    confirmed: true,
+  }, { spawn });
+  assert.equal(resolved.state, 'synced');
+  assert.equal(resolved.resolved, true);
+  assert.equal(resolved.recoveryRefsCreated, true);
+  assert.equal(fs.existsSync(path.join(deviceTwo, 'data', 'local-change.json')), true);
+  assert.equal(fs.existsSync(path.join(deviceTwo, 'data', 'remote-change.json')), true);
+  assert.equal(git(deviceTwo, 'rev-list', '--left-right', '--count', 'HEAD...@{u}'), '0\t0');
+  assert.equal(git(deviceTwo, 'for-each-ref', '--format=%(refname)', 'refs/scout-recovery').split('\n').length, 2);
+  assert.equal(calls.some((args) => args.includes('rebase') || args.includes('reset') || args.some((arg) => /^--force/.test(arg))), false);
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('overlapping or dirty divergence stays manual and diagnostics expose no raw paths', async () => {
+  const f = fixture();
+  const spawn = (command, args, options) => {
+    if (args[0] === 'credential-manager') return { status: 0, stdout: 'test-gcm', stderr: '' };
+    return spawnSync(command, args, options);
+  };
+  const connected = await connectWorkspaceSync(f.root, {
+    remoteUrl: 'https://github.com/example/repo', passphrase: 'correct horse battery staple',
+  }, { verifyRemote: async () => ({ url: f.remote, empty: true }), spawn });
+  const deviceTwo = path.join(f.base, 'device-two');
+  await restoreWorkspaceFromGithub({
+    remoteUrl: 'https://github.com/example/repo', targetRoot: deviceTwo, secret: connected.recoveryKey,
+  }, { verifyRemote: async () => ({ url: f.remote, empty: false }), spawn });
+
+  fs.writeFileSync(path.join(f.root, 'workspace.json'), '{"schemaVersion":1,"from":"github"}\n');
+  await runWorkspaceSync(f.root, 'remote overlapping change', { spawn });
+  fs.writeFileSync(path.join(deviceTwo, 'workspace.json'), '{"schemaVersion":1,"from":"local"}\n');
+  await runWorkspaceSync(deviceTwo, 'local overlapping change', { spawn });
+
+  const overlap = analyzeWorkspaceDivergence(deviceTwo, { spawn });
+  assert.equal(overlap.classification, 'overlapping');
+  assert.equal(overlap.canResolve, false);
+  assert.deepEqual(overlap.localAreas, ['workspace settings']);
+  assert.deepEqual(overlap.remoteAreas, ['workspace settings']);
+  assert.doesNotMatch(JSON.stringify(overlap), /workspace\.json/);
+  const localBefore = git(deviceTwo, 'rev-parse', 'HEAD');
+  const refused = await resolveWorkspaceDivergence(deviceTwo, {
+    analysisToken: overlap.analysisToken,
+    confirmed: true,
+  }, { spawn });
+  assert.equal(refused.state, 'needs-attention');
+  assert.equal(git(deviceTwo, 'rev-parse', 'HEAD'), localBefore);
+
+  fs.writeFileSync(path.join(deviceTwo, 'workspace.json'), '{"schemaVersion":1,"dirty":true}\n');
+  const dirty = analyzeWorkspaceDivergence(deviceTwo, { spawn });
+  assert.equal(dirty.classification, 'manual-required');
+  assert.match(dirty.reason, /uncommitted/);
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('renamed or deleted files are never classified as automatically resolvable', async () => {
+  const f = await pairedFixture();
+  fs.writeFileSync(path.join(f.root, 'data', 'remote-change.json'), '{}\n');
+  await runWorkspaceSync(f.root, 'remote change', { spawn: f.spawn });
+  fs.renameSync(path.join(f.deviceTwo, 'workspace.json'), path.join(f.deviceTwo, 'workspace-renamed.json'));
+  await runWorkspaceSync(f.deviceTwo, 'local rename', { spawn: f.spawn });
+  const resolution = analyzeWorkspaceDivergence(f.deviceTwo, { spawn: f.spawn });
+  assert.equal(resolution.classification, 'manual-required');
+  assert.equal(resolution.canResolve, false);
+  assert.match(resolution.reason, /renamed, deleted/);
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('an unexpected merge failure preserves recovery refs and leaves both tips unchanged', async () => {
+  const f = await pairedFixture();
+  const divergence = await disjointDivergence(f);
+  const localBefore = git(f.deviceTwo, 'rev-parse', 'HEAD');
+  const remoteBefore = git(f.deviceTwo, 'rev-parse', '@{u}');
+  const failingSpawn = (command, args, options) => {
+    if (args[0] === 'merge' && args.includes('--no-ff')) return { status: 1, stdout: '', stderr: 'synthetic merge failure' };
+    return f.spawn(command, args, options);
+  };
+  const result = await resolveWorkspaceDivergence(f.deviceTwo, {
+    analysisToken: divergence.resolution.analysisToken,
+    confirmed: true,
+  }, { spawn: failingSpawn });
+  assert.equal(result.state, 'needs-attention');
+  assert.equal(git(f.deviceTwo, 'rev-parse', 'HEAD'), localBefore);
+  assert.equal(git(f.deviceTwo, 'rev-parse', '@{u}'), remoteBefore);
+  assert.equal(git(f.deviceTwo, 'for-each-ref', '--format=%(refname)', 'refs/scout-recovery').split('\n').length, 2);
+  fs.rmSync(f.base, { recursive: true, force: true });
+});
+
+test('a push failure keeps the preserved merge locally and reports offline', async () => {
+  const f = await pairedFixture();
+  const divergence = await disjointDivergence(f);
+  const offlineSpawn = (command, args, options) => {
+    if (args[0] === 'push') return { status: 1, stdout: '', stderr: 'synthetic offline push' };
+    return f.spawn(command, args, options);
+  };
+  const result = await resolveWorkspaceDivergence(f.deviceTwo, {
+    analysisToken: divergence.resolution.analysisToken,
+    confirmed: true,
+  }, { spawn: offlineSpawn });
+  assert.equal(result.state, 'offline');
+  assert.equal(result.pending, true);
+  assert.equal(fs.existsSync(path.join(f.deviceTwo, 'data', 'local-change.json')), true);
+  assert.equal(fs.existsSync(path.join(f.deviceTwo, 'data', 'remote-change.json')), true);
+  assert.equal(git(f.deviceTwo, 'rev-list', '--left-right', '--count', 'HEAD...@{u}').split('\t')[0] > 0, true);
   fs.rmSync(f.base, { recursive: true, force: true });
 });
 

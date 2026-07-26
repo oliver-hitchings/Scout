@@ -30,7 +30,7 @@ import { disableRemoteAccess, enableRemoteAccess, remoteAccessStatus } from './l
 import { checkForUpdate, downloadVerifiedUpdate } from './lib/updates.mjs';
 import {
   adoptExistingWorkspaceFromGithub, confirmRecoveryKey, connectWorkspaceSync, detectGit, disableWorkspaceSync, loadSyncSettings, pendingRecoveryKey,
-  prepareGithubDeployKey, queueWorkspaceSync, restoreWorkspaceFromGithub, rotateWorkspaceRecoveryPassphrase, syncStatus,
+  prepareGithubDeployKey, queueWorkspaceResolution, queueWorkspaceSync, restoreWorkspaceFromGithub, rotateWorkspaceRecoveryPassphrase, syncStatus,
 } from './lib/workspaceSync.mjs';
 import { completedWorkspaceSections, pendingWorkspaceSections } from './lib/setupSections.mjs';
 import { BoundedUtf8Body } from './lib/requestBody.mjs';
@@ -231,6 +231,7 @@ const LOCAL_ONLY_ROUTES = new Set([
 const REMOTE_MUTATION_WITHOUT_BACKUP = new Set([
   'POST /api/sync/backup',
   'POST /api/sync/retry',
+  'POST /api/sync/resolve',
   'POST /api/update/check',
   'POST /api/restart',
 ]);
@@ -712,6 +713,19 @@ routes['POST /api/sync/retry'] = async (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
   try { return replyJson(res, 200, await queueCheckpoint('retry backup')); }
   catch (e) { return replyJson(res, 500, { error: e.message }); }
+};
+
+routes['POST /api/sync/resolve'] = async (req, res, body) => {
+  const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  try {
+    const result = await queueWorkspaceResolution(WORKSPACE_ROOT, {
+      analysisToken: String(b.analysisToken || ''),
+      confirmed: b.confirmed === true,
+    });
+    return replyJson(res, 200, result);
+  } catch (e) {
+    return replyJson(res, /confirm|changed/i.test(e.message) ? 409 : 500, { error: e.message });
+  }
 };
 
 routes['POST /api/sync/disable'] = (req, res, body) => {

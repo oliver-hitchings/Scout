@@ -112,6 +112,14 @@ test('remote owner mutations require HTTPS Origin and administration remains loc
   fs.writeFileSync(path.join(testWorkspace, '.scout', 'sync.json'), JSON.stringify({ version: 1, enabled: true, remoteUrl: 'git@github.com:example/private.git' }));
   const ownerChat = await request({ method: 'POST', path: '/api/chat/stop', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: JSON.stringify({ id: 'none' }) });
   assert.equal(ownerChat.status, 200);
+  const backupResolution = await request({
+    method: 'POST',
+    path: '/api/sync/resolve',
+    headers: { ...remote, origin: 'https://scout-host.example.ts.net' },
+    body: JSON.stringify({ analysisToken: 'stale', confirmed: false }),
+  });
+  assert.equal(backupResolution.status, 409);
+  assert.match(JSON.parse(backupResolution.text).error, /Confirm/);
   const localOnly = await request({ method: 'POST', path: '/api/remote-access/disable', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
   assert.equal(localOnly.status, 403);
   assert.match(JSON.parse(localOnly.text).error, /only be changed on the Scout host/);

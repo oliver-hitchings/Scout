@@ -215,11 +215,132 @@ function setState(root, state, details = {}) {
   return value;
 }
 
+function affectedArea(file) {
+  const value = String(file || '').replaceAll('\\', '/');
+  if (value.startsWith('.scout-backup/')) return 'encrypted recovery data';
+  if (value.startsWith('applications/')) return 'applications';
+  if (value.startsWith('data/opportunities')) return 'opportunity tracker';
+  if (value.startsWith('data/companies')) return 'company history';
+  if (value.startsWith('reports/')) return 'reports';
+  if (value.startsWith('profile/')) return 'profile and preferences';
+  if (value === 'workspace.json' || value.startsWith('config/')) return 'workspace settings';
+  return 'workspace files';
+}
+
+function resolutionToken(localCommit, remoteCommit, branch) {
+  return crypto.createHash('sha256').update(`${localCommit}\n${remoteCommit}\n${branch}`).digest('hex');
+}
+
+function changedPaths(root, range, options = {}) {
+  const result = runGit(root, ['diff', '--name-status', '--find-renames', range], options);
+  if (!result.ok) return { ok: false, paths: [], complex: true };
+  const paths = [];
+  let complex = false;
+  for (const line of result.stdout.split(/\r?\n/).filter(Boolean)) {
+    const [status, ...names] = line.split('\t');
+    if (!/^[AM]$/.test(status)) complex = true;
+    paths.push(...names.filter(Boolean));
+  }
+  return { ok: true, paths: [...new Set(paths)], complex };
+}
+
+function manualResolution(reason, details = {}) {
+  return {
+    classification: 'manual-required',
+    canResolve: false,
+    reason,
+    localAreas: [],
+    remoteAreas: [],
+    ...details,
+  };
+}
+
+function pathsOverlap(left, right) {
+  const a = String(left).replaceAll('\\', '/').toLowerCase();
+  const b = String(right).replaceAll('\\', '/').toLowerCase();
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+export function analyzeWorkspaceDivergence(root, options = {}) {
+  if (!repoReady(root, options)) return manualResolution('backup repository is not ready');
+  const branchResult = runGit(root, ['branch', '--show-current'], options);
+  if (!branchResult.ok || !branchResult.stdout) return manualResolution('backup branch is unavailable');
+  const branch = branchResult.stdout;
+  const upstream = `refs/remotes/origin/${branch}`;
+  if (!runGit(root, ['show-ref', '--verify', '--quiet', upstream], options).ok) {
+    return manualResolution('GitHub branch has not been fetched');
+  }
+  const counts = runGit(root, ['rev-list', '--left-right', '--count', `HEAD...${upstream}`], options);
+  if (!counts.ok) return manualResolution('backup history could not be compared');
+  const [ahead, behind] = counts.stdout.split(/\s+/).map(Number);
+  if (!(ahead > 0 && behind > 0)) return null;
+
+  const local = runGit(root, ['rev-parse', 'HEAD'], options);
+  const remote = runGit(root, ['rev-parse', upstream], options);
+  const base = runGit(root, ['merge-base', 'HEAD', upstream], options);
+  if (!local.ok || !remote.ok || !base.ok) return manualResolution('backup branch tips could not be verified', { ahead, behind });
+  const common = {
+    ahead,
+    behind,
+    localCommit: local.stdout,
+    remoteCommit: remote.stdout,
+    analysisToken: resolutionToken(local.stdout, remote.stdout, branch),
+  };
+  const tracked = runGit(root, ['status', '--porcelain', '--untracked-files=no'], options);
+  if (!tracked.ok || tracked.stdout) return manualResolution('tracked workspace files have uncommitted changes', common);
+  const untracked = runGit(root, ['ls-files', '--others', '--exclude-standard', '-z'], options);
+  if (!untracked.ok) return manualResolution('untracked workspace files could not be checked', common);
+  const unsafeUntracked = untracked.stdout.split('\0').filter(Boolean).filter((file) => !sensitiveTrackedPath(file));
+  if (unsafeUntracked.length) return manualResolution('untracked workspace files need review', common);
+
+  const localChanges = changedPaths(root, `${base.stdout}..HEAD`, options);
+  const remoteChanges = changedPaths(root, `${base.stdout}..${upstream}`, options);
+  if (!localChanges.ok || !remoteChanges.ok) return manualResolution('changed workspace areas could not be compared', common);
+  const details = {
+    ...common,
+    localAreas: [...new Set(localChanges.paths.map(affectedArea))].sort(),
+    remoteAreas: [...new Set(remoteChanges.paths.map(affectedArea))].sort(),
+  };
+  if (localChanges.complex || remoteChanges.complex) {
+    return manualResolution('renamed, deleted, or non-standard changes need review', details);
+  }
+  if (localChanges.paths.some((localPath) => remoteChanges.paths.some((remotePath) => pathsOverlap(localPath, remotePath)))) {
+    return {
+      classification: 'overlapping',
+      canResolve: false,
+      reason: 'the VPS and GitHub changed at least one of the same files',
+      ...details,
+    };
+  }
+  return {
+    classification: 'disjoint-safe',
+    canResolve: true,
+    reason: 'the VPS and GitHub changed separate files',
+    ...details,
+  };
+}
+
 export function syncStatus(root, options = {}) {
   const settings = loadSyncSettings(root);
   const git = detectGit(options);
   if (!settings.enabled) return { state: git.installed ? 'disabled' : 'setup-required', enabled: false, git, remoteUrl: remoteUrl(root, options) };
-  return { state: 'pending', enabled: true, git, remoteUrl: settings.remoteUrl, lastSuccessfulAt: settings.lastSuccessfulAt || null, ...(STATUS.get(path.resolve(root)) || {}) };
+  const current = { state: 'pending', enabled: true, git, remoteUrl: settings.remoteUrl, lastSuccessfulAt: settings.lastSuccessfulAt || null, ...(STATUS.get(path.resolve(root)) || {}) };
+  if (current.state === 'pending' || current.state === 'needs-attention') {
+    const resolution = analyzeWorkspaceDivergence(root, options);
+    if (resolution) return {
+      ...current,
+      state: 'needs-attention',
+      pending: true,
+      conflict: true,
+      ahead: resolution.ahead,
+      behind: resolution.behind,
+      error: resolution.classification === 'disjoint-safe'
+        ? 'The VPS and GitHub both contain new changes that can be safely preserved'
+        : 'The VPS and GitHub both contain new changes',
+      resolution,
+    };
+  }
+  return current;
 }
 
 function sameGithubRepository(left, right) {
@@ -304,12 +425,34 @@ export async function runWorkspaceSync(root, reason = 'workspace update', option
   const [ahead, behind] = counts.stdout.split(/\s+/).map(Number);
   if (ahead > 0 && behind > 0) {
     checkpointLocally(root, settings, options, reason);
-    return setState(root, 'needs-attention', { enabled: true, pending: true, conflict: true, ahead, behind, error: 'This device and GitHub both contain new changes' });
+    const resolution = analyzeWorkspaceDivergence(root, options);
+    return setState(root, 'needs-attention', {
+      enabled: true,
+      pending: true,
+      conflict: true,
+      ahead: resolution?.ahead ?? ahead,
+      behind: resolution?.behind ?? behind,
+      error: resolution?.classification === 'disjoint-safe'
+        ? 'The VPS and GitHub both contain new changes that can be safely preserved'
+        : 'This device and GitHub both contain new changes',
+      ...(resolution ? { resolution } : {}),
+    });
   }
   if (behind > 0) {
     if (worktreeDirty(root, options)) {
       checkpointLocally(root, settings, options, reason);
-      return setState(root, 'needs-attention', { enabled: true, pending: true, conflict: true, ahead: Math.max(1, ahead), behind, error: 'This device has unsynced work and GitHub contains newer changes' });
+      const resolution = analyzeWorkspaceDivergence(root, options);
+      return setState(root, 'needs-attention', {
+        enabled: true,
+        pending: true,
+        conflict: true,
+        ahead: resolution?.ahead ?? Math.max(1, ahead),
+        behind: resolution?.behind ?? behind,
+        error: resolution?.classification === 'disjoint-safe'
+          ? 'The VPS and GitHub both contain new changes that can be safely preserved'
+          : 'This device has unsynced work and GitHub contains newer changes',
+        ...(resolution ? { resolution } : {}),
+      });
     }
     const ff = runGit(root, ['merge', '--ff-only', upstream], options);
     if (!ff.ok) return setState(root, 'needs-attention', { enabled: true, conflict: true, error: ff.error });
@@ -339,6 +482,68 @@ export function queueWorkspaceSync(root, reason, options = {}) {
   const previous = QUEUES.get(key) || Promise.resolve();
   const next = previous.catch(() => {}).then(() => runWorkspaceSync(root, reason, options));
   const tracked = next.finally(() => { if (QUEUES.get(key) === tracked) QUEUES.delete(key); });
+  QUEUES.set(key, tracked);
+  return next;
+}
+
+export async function resolveWorkspaceDivergence(root, { analysisToken, confirmed } = {}, options = {}) {
+  if (!confirmed) throw new Error('Confirm that Scout should preserve both histories');
+  const settings = loadSyncSettings(root);
+  if (!settings.enabled) throw new Error('Private backup is not enabled');
+  const fetch = runGit(root, ['fetch', 'origin'], options);
+  if (!fetch.ok) return setState(root, 'offline', { enabled: true, pending: true, error: fetch.error });
+  const resolution = analyzeWorkspaceDivergence(root, options);
+  if (!resolution) return { ...syncStatus(root, options), alreadyResolved: true };
+  if (resolution.classification !== 'disjoint-safe' || !resolution.canResolve) {
+    return setState(root, 'needs-attention', {
+      enabled: true,
+      pending: true,
+      conflict: true,
+      ahead: resolution.ahead,
+      behind: resolution.behind,
+      error: 'This backup divergence needs manual review',
+      resolution,
+    });
+  }
+  if (!analysisToken || analysisToken !== resolution.analysisToken) {
+    throw new Error('Backup history changed; review the refreshed diagnosis before fixing it');
+  }
+
+  const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+  const localRef = `refs/scout-recovery/${stamp}/local`;
+  const remoteRef = `refs/scout-recovery/${stamp}/github`;
+  const localSaved = runGit(root, ['update-ref', localRef, resolution.localCommit], options);
+  const remoteSaved = runGit(root, ['update-ref', remoteRef, resolution.remoteCommit], options);
+  if (!localSaved.ok || !remoteSaved.ok) throw new Error('Scout could not create backup recovery references');
+
+  const branch = runGit(root, ['branch', '--show-current'], options);
+  const upstream = `refs/remotes/origin/${branch.stdout}`;
+  const currentLocal = runGit(root, ['rev-parse', 'HEAD'], options);
+  const currentRemote = runGit(root, ['rev-parse', upstream], options);
+  if (!currentLocal.ok || !currentRemote.ok
+      || currentLocal.stdout !== resolution.localCommit || currentRemote.stdout !== resolution.remoteCommit) {
+    throw new Error('Backup history changed; review the refreshed diagnosis before fixing it');
+  }
+  const merge = runGit(root, ['merge', '--no-ff', '--no-edit', upstream], options);
+  if (!merge.ok) {
+    if (fs.existsSync(path.join(root, '.git', 'MERGE_HEAD'))) runGit(root, ['merge', '--abort'], options);
+    return setState(root, 'needs-attention', {
+      enabled: true,
+      pending: true,
+      conflict: true,
+      error: 'The safe merge did not complete; both recovery references were preserved',
+      resolution,
+    });
+  }
+  const status = await runWorkspaceSync(root, 'resolve backup divergence', options);
+  return { ...status, resolved: status.state === 'synced', recoveryRefsCreated: true };
+}
+
+export function queueWorkspaceResolution(root, input, options = {}) {
+  const key = path.resolve(root);
+  const previous = QUEUES.get(key) || Promise.resolve();
+  const next = previous.catch(() => {}).then(() => resolveWorkspaceDivergence(root, input, options));
+  const tracked = next.catch(() => {}).finally(() => { if (QUEUES.get(key) === tracked) QUEUES.delete(key); });
   QUEUES.set(key, tracked);
   return next;
 }
