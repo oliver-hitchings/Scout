@@ -24,6 +24,9 @@ jobs:
       - run: npm ci
       - run: node tools/typst-runtime.mjs install
       - run: node tools/typst-runtime.mjs verify --compile
+      - name: Verify Windows artifact publication protocol
+        if: runner.os == 'Windows'
+        run: node --test tools/artifact-publication.test.mjs
       - run: npm test
       - name: Verify release staging
         run: node tools/build-release.mjs --stage-only
@@ -35,6 +38,24 @@ jobs:
         run: npm run release:audit -- --root dist/release/stage --stage --require-markers
         env:
           SCOUT_RELEASE_MARKERS: ${{ secrets.SCOUT_RELEASE_MARKERS }}
+      - name: Install native Windows packager
+        if: runner.os == 'Windows'
+        run: choco install innosetup --yes --no-progress
+      - name: Exercise native Windows packaging
+        if: runner.os == 'Windows'
+        run: node tools/build-release.mjs --installer
+        env:
+          SCOUT_RELEASE_MARKERS: SyntheticCiPackagingMarker
+      - name: Exercise native macOS packaging
+        if: runner.os == 'macOS'
+        run: node tools/build-platform.mjs mac
+        env:
+          SCOUT_RELEASE_MARKERS: SyntheticCiPackagingMarker
+      - name: Exercise native Linux packaging
+        if: runner.os == 'Linux'
+        run: node tools/build-platform.mjs linux
+        env:
+          SCOUT_RELEASE_MARKERS: SyntheticCiPackagingMarker
 
   browser-acceptance:
     strategy:
