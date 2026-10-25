@@ -22,6 +22,19 @@ test('service worker caches shell assets but never private APIs or workspace con
   assert.match(html, /Offline editing is not supported/);
 });
 
+test('every browser-resolved app module stays inside the offline shell', () => {
+  // app.js imports the shared durable run-state vocabulary. If the worker does
+  // not precache it, the installed app cannot boot offline.
+  const app = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const imports = [...app.matchAll(/\bfrom\s+['"](\.\/lib\/[^'"?]+)[^'"]*['"]/g)].map((match) => match[1]);
+  assert.ok(imports.length > 0);
+  for (const relative of imports) {
+    const path = `/lib/${relative.replace('./lib/', '')}`;
+    assert.match(worker, new RegExp(`\`${path.replaceAll('.', '\\.')}\\?v=\\$\\{BUILD\\}\``), path);
+    assert.match(worker, new RegExp(`url\\.pathname === '${path.replaceAll('.', '\\.')}'`), path);
+  }
+});
+
 test('service worker uses exact build caches and network-first navigation', () => {
   assert.match(worker, /const BUILD = '__SCOUT_UI_BUILD__'/);
   assert.match(worker, /const CACHE_PREFIX = 'scout-shell-'/);

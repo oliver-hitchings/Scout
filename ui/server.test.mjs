@@ -1341,6 +1341,7 @@ test('served shell and service worker receive the exact UI build id', async () =
   assert.equal(app.headers['cache-control'], 'no-cache');
   assert.match(app.text, new RegExp(`chatDrawerState\\.mjs\\?v=${UI_BUILD_ID}`));
   assert.match(app.text, new RegExp(`codexDeepLink\\.mjs\\?v=${UI_BUILD_ID}`));
+  assert.match(app.text, new RegExp(`durableRunStates\\.mjs\\?v=${UI_BUILD_ID}`));
   assert.doesNotMatch(app.text, /__SCOUT_UI_BUILD__/);
 
   const manifest = await request({ path: '/manifest.webmanifest' });
@@ -1386,6 +1387,19 @@ test('the served shell and offline cache both version the character module', asy
   const module = await request({ path: '/lib/scoutCharacter.mjs' });
   assert.equal(module.status, 200);
   assert.match(module.headers['content-type'], /text\/javascript/);
+});
+
+test('a change to the durable run-state vocabulary alone moves the UI build fingerprint', () => {
+  const readOriginal = (name) => fs.readFileSync(path.join(APP_ROOT, 'ui', name));
+  assert.equal(computeUiBuildId(readOriginal), UI_BUILD_ID);
+
+  // The browser refuses a durable state it does not recognise, so a change to
+  // the shared vocabulary has to move the fingerprint and the shell cache.
+  const mutated = computeUiBuildId((name) => (name === 'lib/durableRunStates.mjs'
+    ? Buffer.from('export const DURABLE_RUN_STATES = new Set([]);')
+    : readOriginal(name)));
+  assert.notEqual(mutated, UI_BUILD_ID);
+  assert.ok(UI_BUILD_FILES.includes('lib/durableRunStates.mjs'));
 });
 
 test('restart responds first, then schedules the respawn', async () => {

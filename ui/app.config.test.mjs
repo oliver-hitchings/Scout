@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { CATEGORY_PALETTE } from './lib/categoryColor.mjs';
 import { createChatDrawerState, reduceChatDrawer } from './lib/chatDrawerState.mjs';
 import { codexDeepLinkCapability, openCodexTask } from './lib/codexDeepLink.mjs';
+import { DURABLE_RUN_STATES, TERMINAL_RUN_STATES } from './lib/durableRunStates.mjs';
 
 function loadScout() {
   const context = {
@@ -18,6 +19,8 @@ function loadScout() {
     codexDeepLinkCapability,
     codexTaskLaunchView: openCodexTask,
     reduceChatDrawer,
+    DURABLE_RUN_STATES,
+    TERMINAL_RUN_STATES,
   };
   context.activityState = () => 'thinking';
   context.applyScoutState = () => {};
@@ -447,6 +450,52 @@ test('run audit renders persisted recovery and queue state without private diagn
   assert.match(html, /1 queued request/i);
   assert.match(html, /run-1234…/);
   assert.doesNotMatch(html, /PRIVATE-HOST|4242|private prompt|full advert body|private queued prompt/i);
+});
+
+test('app.js takes the durable run-state vocabulary from the shared module', () => {
+  // The UI rejects a durable state it does not recognise. An inlined second
+  // copy of the vocabulary is how the server and the UI drift apart, so the
+  // browser must import the same module the server publishes from.
+  const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  assert.match(source, /import \{ DURABLE_RUN_STATES, TERMINAL_RUN_STATES \} from '\.\/lib\/durableRunStates\.mjs/);
+  assert.doesNotMatch(source, /const DURABLE_RUN_STATES = new Set/);
+  assert.doesNotMatch(source, /const TERMINAL_RUN_STATES = new Set/);
+});
+
+test('run audit renders recovered and retrying states distinctly', () => {
+  // The UI refuses a durable state it does not recognise, so the shared
+  // vocabulary has to publish both states before they can be rendered.
+  assert.equal(DURABLE_RUN_STATES.has('retrying'), true);
+  assert.equal(DURABLE_RUN_STATES.has('recovered'), true);
+  assert.equal(TERMINAL_RUN_STATES.has('retrying'), false);
+  assert.equal(TERMINAL_RUN_STATES.has('recovered'), false);
+
+  const { scout } = loadScout();
+  scout.scanRuns = [{
+    id: 'run-rec…', state: 'recovered', label: 'Recovered compatible work',
+    owner: 'active worker', startedAt: '2026-07-29T00:00:00.000Z',
+    updatedAt: '2026-07-29T00:05:00.000Z', profileVersion: 'profile-v3',
+    pipelineVersion: 'pipeline-v9', completedStages: ['collect'],
+    assessment: null, recoveryCount: 1, terminalReason: null,
+  }];
+  const recoveredHtml = scout.scanRunAuditCard();
+  assert.match(recoveredHtml, /Recovered compatible work/);
+  assert.match(recoveredHtml, /1 recovery/);
+
+  scout.scanRuns = [{
+    id: 'run-retry…', state: 'retrying', label: 'Retrying failed job',
+    owner: 'active worker', startedAt: '2026-07-29T00:00:00.000Z',
+    updatedAt: '2026-07-29T00:05:00.000Z', profileVersion: 'profile-v3',
+    pipelineVersion: 'pipeline-v9', completedStages: ['collect', 'normalise', 'deduplicate', 'filter', 'rank', 'select'],
+    assessment: {
+      currentBatch: 2, totalBatches: 3, totalBatchesExact: false,
+      completedBatches: 1, completedJobs: 10, failedJobs: 1,
+    },
+    recoveryCount: 0, terminalReason: null,
+  }];
+  const retryingHtml = scout.scanRunAuditCard();
+  assert.match(retryingHtml, /Retrying failed job/);
+  assert.match(retryingHtml, /batch 2 of at least 3/i);
 });
 
 test('the Jobs audit remains visible for queue-only and waiting workspaces', () => {

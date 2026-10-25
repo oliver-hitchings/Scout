@@ -14,6 +14,7 @@ const TEMPLATES = {
   '/offline-rollover/lib/scoutCharacter.mjs': text('lib/scoutCharacter.mjs'),
   '/offline-rollover/lib/chatDrawerState.mjs': text('lib/chatDrawerState.mjs'),
   '/offline-rollover/lib/codexDeepLink.mjs': text('lib/codexDeepLink.mjs'),
+  '/offline-rollover/lib/durableRunStates.mjs': text('lib/durableRunStates.mjs'),
 };
 const ASSETS = Object.fromEntries([
   'scout-icon.ico', 'scout-icon.png', 'scout-idle.png', 'scout-thinking.png',

@@ -1,5 +1,6 @@
 import { createChatDrawerState, reduceChatDrawer } from './lib/chatDrawerState.mjs?v=__SCOUT_UI_BUILD__';
 import { openCodexTask as codexTaskLaunchView } from './lib/codexDeepLink.mjs?v=__SCOUT_UI_BUILD__';
+import { DURABLE_RUN_STATES, TERMINAL_RUN_STATES } from './lib/durableRunStates.mjs?v=__SCOUT_UI_BUILD__';
 
 // Keep browser orchestration here while pure state machines live in /lib, where
 // deterministic unit tests exercise them without a DOM. Scout character data
@@ -7,12 +8,6 @@ import { openCodexTask as codexTaskLaunchView } from './lib/codexDeepLink.mjs?v=
 const SCOUT_UI_BUILD = typeof document !== 'undefined'
   ? document.querySelector?.('meta[name="scout-ui-build"]')?.content || null
   : null;
-const DURABLE_RUN_STATES = new Set([
-  'collecting', 'normalising', 'deduplicating', 'filtering', 'ranking', 'selecting',
-  'assessing', 'repairing', 'recovering', 'updating-tracker', 'writing-report',
-  'finalising', 'partial', 'abandoned', 'failed', 'complete',
-]);
-const TERMINAL_RUN_STATES = new Set(['partial', 'abandoned', 'failed', 'complete']);
 const ACTIVE_QUEUE_STATES = new Set(['queued', 'claimed', 'legacy-claimed']);
 const TERMINAL_QUEUE_STATES = new Set([
   'expired', 'stale', 'skipped', 'superseded', 'succeeded', 'succeeded-pending',

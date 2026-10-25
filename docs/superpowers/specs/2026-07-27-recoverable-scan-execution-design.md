@@ -457,8 +457,9 @@ Scan health and the UI expose:
 - ranking;
 - selecting;
 - assessing batch X of Y;
-- repairing/retrying affected jobs;
-- recovering;
+- repairing affected jobs;
+- retrying failed jobs;
+- recovered;
 - partial;
 - abandoned;
 - failed; and

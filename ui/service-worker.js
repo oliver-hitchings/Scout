@@ -4,7 +4,7 @@ const CACHE = `${CACHE_PREFIX}${BUILD}`;
 const SHELL = [
   '/', `/reportView.js?v=${BUILD}`, `/app.js?v=${BUILD}`, `/setup.js?v=${BUILD}`,
   `/lib/scoutCharacter.mjs?v=${BUILD}`, `/lib/chatDrawerState.mjs?v=${BUILD}`,
-  `/lib/codexDeepLink.mjs?v=${BUILD}`,
+  `/lib/codexDeepLink.mjs?v=${BUILD}`, `/lib/durableRunStates.mjs?v=${BUILD}`,
   `/manifest.webmanifest?v=${BUILD}`, `/assets/scout-icon.ico?v=${BUILD}`, `/assets/scout-icon.png?v=${BUILD}`,
   `/assets/scout-idle.png?v=${BUILD}`, `/assets/scout-thinking.png?v=${BUILD}`,
   `/assets/scout-searching.png?v=${BUILD}`, `/assets/scout-explaining.png?v=${BUILD}`,
@@ -39,7 +39,7 @@ self.addEventListener('fetch', (event) => {
   }
   const isShell = url.pathname === '/app.js' || url.pathname === '/setup.js' || url.pathname === '/reportView.js'
     || url.pathname === '/lib/scoutCharacter.mjs' || url.pathname === '/lib/chatDrawerState.mjs'
-    || url.pathname === '/lib/codexDeepLink.mjs'
+    || url.pathname === '/lib/codexDeepLink.mjs' || url.pathname === '/lib/durableRunStates.mjs'
     || url.pathname === '/manifest.webmanifest' || url.pathname.startsWith('/assets/');
   if (!isShell) return;
   const requestedBuild = url.searchParams.get('v');
