@@ -652,6 +652,12 @@ const Setup = {
     return this.view === 'retune' && this.retuneEntryStep !== null && this.step === this.retuneEntryStep;
   },
 
+  atFirstScanReview() {
+    // Activation sets completedAt before the first scan, so a fresh reload can
+    // resume in the dismissible retune view and still need profile publication.
+    return ['onboarding', 'retune'].includes(this.view) && this.step === STEPS.length - 1;
+  },
+
   focusDialogTitle() {
     window.ScoutModal?.focus(this.el('setup-overlay'), '#setup-title');
   },
@@ -1119,7 +1125,7 @@ const Setup = {
   },
 
   renderSearchProfileContext() {
-    if (this.view === 'onboarding' && this.step === STEPS.length - 1) {
+    if (this.atFirstScanReview()) {
       this.renderFirstScan();
       return;
     }
@@ -1134,7 +1140,7 @@ const Setup = {
       ]);
       this.searchProfile = { ...profile, adaptive };
       if (this.view === 'section' && this.settingsSection === 'search') this.renderSearchProfileSettings();
-      else if (this.view === 'onboarding' && this.step === STEPS.length - 1) this.renderFirstScan();
+      else if (this.atFirstScanReview()) this.renderFirstScan();
     } catch (error) {
       this.setMessage(error.message, 'error');
     }
@@ -2081,7 +2087,7 @@ const Setup = {
     const healthy = Boolean(health.lastRunAt && health.healthy);
     const configuredJobs = (this.status?.config?.schedule?.jobs || []).some((job) => job.enabled !== false);
     const hasHistory = Boolean(health.lastRunAt) || configuredJobs;
-    const freshOnboarding = this.view === 'onboarding' && !hasHistory;
+    const freshOnboarding = this.atFirstScanReview() && !hasHistory;
     const profileReady = firstScanProfileReady(this.searchProfile, hasHistory);
     const provider = this.status?.config?.ai?.provider;
     const primaryId = `${provider}-primary`;
@@ -2166,7 +2172,7 @@ const Setup = {
   async runSupervisedScan() {
     const hasHistory = Boolean(this.status?.scanHealth?.lastRunAt)
       || (this.status?.config?.schedule?.jobs || []).some((job) => job.enabled !== false);
-    if (this.view === 'onboarding' && !firstScanProfileReady(this.searchProfile, hasHistory)) {
+    if (this.atFirstScanReview() && !firstScanProfileReady(this.searchProfile, hasHistory)) {
       this.setMessage('Review and publish the complete search profile before the first scan.', 'error');
       return;
     }
