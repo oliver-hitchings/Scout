@@ -27,9 +27,61 @@ Release only from this clean-history public application repository. Never copy c
    Set `ISCC_PATH` when required. The installer is named
    `Scout-<version>-windows-x64.exe`; it and `checksums.txt` are written to
    `installer/output/`. The current installer creates UI shortcuts but does not
-   add the CLI to `PATH`.
+   add the CLI to `PATH`. Start with no file at either final name: package
+   publication never overwrites an existing artifact or checksum manifest.
+
+   Every platform packager writes into a private
+   `.scout-release-pending-<random-id>` directory under `installer/output/`
+   while holding the local `.scout-release-publication.lock`. The output
+   directory, lock, temporary directory and their real ancestor identities are
+   checked without following symlinks or reparse points. Temporary directories
+   use mode `0700` on Unix and a protected current-user-only DACL on Windows;
+   that privacy state is rechecked with the directory identity. Packaging, payload
+   postchecks and temporary-file authorization all finish before Scout creates
+   publisher-owned sealed copies in a second unpredictable private directory
+   that is never passed to the packager. Scout rechecks the temporary source
+   while copying, records the authorized digests in a private transaction
+   journal, and creates each final artifact name with an atomic, no-overwrite
+   same-filesystem link to the sealed inode. The original ancestor fence and
+   the complete sealed/final byte identity are rechecked after every link and
+   again before the publication call succeeds. Scout flushes each sealed file,
+   the full-identity transaction journal and its directory before the first
+   link. After every final link is authorized, it publishes and flushes one
+   unpredictable `.scout-release-completed-<id>.json` receipt containing the
+   complete artifact authority; that small receipt remains after private
+   temporary cleanup as the durable commit boundary.
+   Packager or postcheck failure removes the temporary output; a cleanup failure
+   retains only bounded runner-cleanup residue and never replaces the primary
+   error with a raw filesystem path.
+
+   If a process stops before promotion, no final artifact exists. After
+   validating that the lock and pending directory are real children of the
+   expected output directory and that no packaging process remains, the runner
+   may delete that clearly temporary residue and rebuild. A stop during a
+   multi-file promotion leaves the private lock, sealed copies and transaction
+   journal as recovery evidence; some final names may contain authorized sealed
+   inodes, but the publication call did not complete. Validate the journal,
+   every recorded digest and every final inode as one set before either
+   identity-bound rollback or acceptance. Cleanup first moves owned directories
+   to unpredictable quarantine names, then empties the already-bound directory
+   rather than recursively trusting the pathname; any substituted quarantine is
+   retained and reported. A rollback failure is reported and
+   retains this evidence instead of silently deleting it. If the process stops
+   after the publication call succeeds, every final artifact is an authorized
+   sealed inode and the matching durable completion receipt exists; only
+   identity-bound temporary cleanup may remain. Never
+   delete or overwrite a colliding final artifact automatically—investigate its
+   provenance or use a clean output directory.
 7. Test on clean Windows, macOS and Ubuntu runners: install; first launch; provider detection; supervised/scheduled scans; missed-run/overlap/timeout; upgrade; and uninstall preserving the workspace.
 8. Tag the reviewed commit with the exact package version prefixed by `v`. The cross-platform workflow builds all packages, runs native smoke tests and required-marker audits, deploys and health-checks the exact tag on the approved private Beta VPS, then signs an exact-version release manifest, verifies it against the enrolled owner public key, and publishes the manifest and detached signature, SHA-256 checksums, a keyless GitHub/Sigstore attestation bundle and release notes. The protected `release-signing` environment requires owner approval and its signing key. Candidate tags containing `-rc` build only; they neither deploy, upload artifacts nor publish. A failed or unapproved VPS deployment prevents publication. Follow [release package verification and signing](SUPPLY_CHAIN_SECURITY.md) for the ownership, verification, rotation, incident and remaining platform-signing contract.
+
+Production signing, tag deployment and publication are cleanly skipped with a
+visible workflow summary when no active public release key is enrolled. The
+public readiness job needs no signing secret or environment approval. Malformed
+trust fails rather than silently skipping. Owner enrollment and rotation steps
+are in [Release key enrollment](RELEASE_KEYS.md); an empty registry keeps the
+updater failing closed and still blocks a signed release. Manual protected VPS
+rehearsals retain their explicit owner selection.
 
 Every reusable action in the release workflow is pinned to a reviewed immutable
 full commit SHA. Treat an action update as a dependency change: review the new
@@ -90,6 +142,15 @@ notification receipt state. It also measures the staged default installation
 path and round-trips a staged file beyond MAX_PATH. Browser jobs cover Chromium,
 Firefox and WebKit on every supported runner. Service-worker lifecycle tests
 explicitly opt in; API-route fixtures block worker routing interference.
+
+Public payload permissions are prepared before the privacy audit, including
+platform-generated metadata. POSIX payload files use `0644`, executables `0755`
+and directories `0755`, independently of the build host's umask. The uninspected
+outer stage remains `0700` (a verified owner-only DACL on Windows), and the audit
+snapshot is private while inspected. Its subsequent read-only seal and complete
+authorization checks still apply. Permission preparation requires the stage's
+creation identity and refuses audited snapshots, shared file inodes, unexpected
+links and special files; it never traverses the macOS Applications link.
 
 F-1 sealed packaging in PR #84 remains a separate gate. A native package-build
 failure blocks the install smoke; never bypass its audit or copy a workaround

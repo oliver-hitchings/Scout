@@ -42,7 +42,11 @@ Epic #77 and #76 stay open. Operator-only items (marked **Oliver**) need live pr
 
 ### B. Post-merge audit remediation (31 findings: 2 Critical, 10 Important, 14 Minor, 5 Provisional)
 The durable ledger is `docs/implementation/epic-77-post-merge-audit-remediation.md` on draft PR #84 (`033912444d92`). It orders the work as seven workstreams; the next beta is paused until its blockers close. Status:
-- F-1 sealed release-snapshot authorization: draft PR #84, in review. Do not duplicate.
+- F-1 sealed release-snapshot authorization: PR #84 is carried unchanged into
+  continuation PR #114 after integration merge #92. The verified code head
+  `1b085e3` passes all 21 hosted jobs, including four native installations; see
+  the 2026-10-26 completion below. Canonical integration/main validation remains
+  a separate owner gate.
 - D-1 fenced workspace adoption: a local-only branch exists elsewhere, unpushed and unfinished. Do not duplicate.
 - Provider authority and truthful UI (C-1, E-2, C-2 to C-5): open.
 - Retention and storage lifecycle (A-1 recovery pins, A-2 lazy digests, PROV-1 `.scout/scan-input` retention): open.
@@ -504,3 +508,42 @@ workspaces; no live account acceptance or private-host deployment is claimed.
   service installation, backup/restore rehearsal and any private operator
   context remain owner actions; the public systemd and household procedures are
   in [Home server](HOME_SERVER.md). These tests did not access the private host.
+
+## F-1 integration continuation — 2026-10-26
+
+The owner authorized continuing and superseding #84 while preserving its 33
+commits and credit. The new branch `friend/f1-sealed-release` starts after #92
+merged as `592c3ed`, merges #84 unchanged, and retains both operations procedures.
+RED-first release tests reproduced the native audit cleanup API mismatch and
+umask-dependent fixtures; only those test integrations changed. The requested
+six release suites pass 123/123 under umask 077, and the two release fixture
+suites pass 31/31 under umask 022. The seal, required markers, identity checks,
+no-overwrite publication, pre/post authorization and fail-closed updater remain
+required. Native install acceptance, exact-head hosted CI and independent review
+are tracked on the continuation PR and #85 before main or any release.
+
+### Hosted native completion — 2026-10-26 UTC
+
+PR #114 code head `1b085e30e71bb88977044d5b4c718a7db16e8332` completed
+[CI run 365](https://github.com/oliver-hitchings/Scout/actions/runs/40407699890)
+with **21/21 green**: four OS test/audit jobs, twelve browser jobs, Windows
+native compilation and four actual installation jobs. Windows, Linux Debian
+and portable, macOS ARM and Intel each complete first launch, synthetic CV
+import, reviewed profile publication, mode choice, production scan readiness,
+visible results and uninstall preserving the complete private workspace.
+
+The code head passes full npm (1,772 passed, seven platform skips, zero
+failures) and strict required-marker source/stage audits. Independent non-author
+composition review passed 215/215; the final fixture delta passed 73/73 with
+actual delayed-start, dependent-response and abort/error probes. No outstanding
+F-1 review findings remain. The original 33 #84 commits and credit are retained;
+privacy, seal, publication, readiness and stored-result assertions remain
+required. Detailed exact-head evidence is in the
+[F-1 ledger](implementation/epic-77-post-merge-audit-remediation.md).
+
+This is continuation-branch evidence. Canonical integration is still `592c3ed`
+at this checkpoint; owner merge, its full matrix and fresh canonical-tree
+review remain necessary before #85 can be marked ready for main. Empty
+production trust keeps updates failing closed; owner key enrollment and live
+provider/host/release rehearsals remain separate. No main merge, tag, release,
+deployment, issue closure or Epic checkbox change was performed.

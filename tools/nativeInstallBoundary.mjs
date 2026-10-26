@@ -23,6 +23,45 @@ export function runIsolatedNativeCommand(command, args, { env, ...options }) {
   return result;
 }
 
+export function uninstallWindowsNative(installedRoot, { env, run = runIsolatedNativeCommand }) {
+  // Inno's final _?= argument runs the actual uninstaller synchronously rather
+  // than returning after it relaunches a temporary copy beneath TEMP.
+  return run(path.join(installedRoot, 'unins000.exe'), [
+    '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', `_?=${installedRoot}`,
+  ], { env });
+}
+
+export async function finishNativeInstallCleanup(cleanup, { primaryError = null } = {}) {
+  try { await cleanup(); }
+  catch (error) {
+    const allowed = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY', 'ENOENT', 'ETIMEDOUT']);
+    const reason = allowed.has(error?.code) ? error.code : 'failed';
+    const message = `Native installation cleanup failed (${reason}); temporary installation retained for runner cleanup.`;
+    if (primaryError instanceof Error) primaryError.message += `\n${message}`;
+    else throw new Error(message);
+  }
+}
+
+export function createNativeScanBoundary(invoke, operation) {
+  const completion = Promise.withResolvers();
+  void completion.promise.catch(() => {});
+  return {
+    completion: completion.promise,
+    async route(route) {
+      try {
+        const result = await invoke('scan');
+        assert.equal(result.ok, true, result.error);
+        operation.result = result;
+        await route.fulfill({ status: 202, json: { operation } });
+        completion.resolve(result);
+      } catch (error) {
+        await route.fulfill({ status: 500, json: { error: 'Synthetic installed scan failed.' } }).catch(() => {});
+        completion.reject(error);
+      }
+    },
+  };
+}
+
 export function nativeWorkspaceSnapshot(root) {
   if (!fs.existsSync(root)) return null;
   const entries = {};

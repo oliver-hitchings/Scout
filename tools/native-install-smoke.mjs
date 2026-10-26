@@ -9,7 +9,8 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
-import { nativeInstallEnvironment, nativeWorkspaceSnapshot, runIsolatedNativeCommand } from './nativeInstallBoundary.mjs';
+import { createNativeScanBoundary, finishNativeInstallCleanup, nativeInstallEnvironment, nativeWorkspaceSnapshot, runIsolatedNativeCommand, uninstallWindowsNative } from './nativeInstallBoundary.mjs';
+import { createNativeRuntimeControl } from './nativeRuntimeControl.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 const output = path.join(root, 'installer/output');
@@ -22,9 +23,11 @@ fs.mkdirSync(home, { recursive: true });
 // Install and uninstall helpers can execute Scout code too. Isolate them
 // before the first native command, not only when launching the installed app.
 const env = nativeInstallEnvironment(process.env, { home, temporary, workspace });
+const runtimeControl = createNativeRuntimeControl({ temporary, workspace, env });
 let installedRoot, appRoot, runtime, launcher, launcherArgs = [], uninstall;
 let host, worker, browser;
 let ownsServer = false;
+let primaryError = null;
 const base = 'http://127.0.0.1:8459';
 const wait = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
 function run(command, args, options = {}) {
@@ -73,7 +76,7 @@ try {
     run(installer, ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', `/DIR=${installedRoot}`]);
     appRoot = path.join(installedRoot, 'app'); runtime = path.join(installedRoot, 'runtime/ScoutRuntime.exe');
     launcher = path.join(installedRoot, 'Scout.exe'); launcherArgs = ['--background'];
-    uninstall = () => run(path.join(installedRoot, 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART']);
+    uninstall = () => uninstallWindowsNative(installedRoot, { env });
   } else if (process.platform === 'darwin') {
     const mount = path.join(temporary, 'mount'); fs.mkdirSync(mount);
     run('hdiutil', ['attach', path.join(output, `Scout-${version}-macos-${process.arch}.dmg`), '-mountpoint', mount, '-nobrowse']);
@@ -124,6 +127,7 @@ try {
   await page.getByRole('button', { name: 'Create my local workspace' }).click();
   await until(() => fs.existsSync(path.join(workspace, 'workspace.json')), 'first workspace creation');
   const post = async (route, data) => {
+    await runtimeControl.drain();
     const response = await context.request.post(`${base}${route}`, { data, headers: { origin: base } });
     assert.ok(response.ok(), `Installed API action failed: ${route} ${response.status()} ${await response.text()}`);
     return response.json();
@@ -137,60 +141,83 @@ try {
   worker.on('message', (message) => { if (message.ready) ready = true; const callback = pending.get(message.id); if (callback) { pending.delete(message.id); callback(message); } });
   worker.stdout.resume(); worker.stderr.resume();
   await until(() => ready, 'installed worker import');
-  const invoke = (command) => new Promise((resolve, reject) => {
-    const id = ++next;
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('Installed synthetic operation timed out')); }, 60000);
-    pending.set(id, (message) => { clearTimeout(timer); message.error ? reject(new Error(message.error)) : resolve(message.result); });
-    worker.send({ id, command });
-  });
+  const invoke = async (command) => {
+    await runtimeControl.drain();
+    return new Promise((resolve, reject) => {
+      const id = ++next;
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error('Installed synthetic operation timed out')); }, 60000);
+      pending.set(id, (message) => { clearTimeout(timer); message.error ? reject(new Error(message.error)) : resolve(message.result); });
+      worker.send({ id, command });
+    });
+  };
   const proposal = await invoke('onboarding');
   await post('/api/setup/activate', { proposalId: proposal.proposalId, confirmed: true });
   await page.reload();
   await page.getByLabel('I reviewed this complete profile and want to publish it').check();
-  await page.getByRole('button', { name: 'Publish this reviewed profile' }).click();
+  await runtimeControl.drain();
+  const [publicationResponse] = await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === '/api/search-profile/publish' && response.request().method() === 'POST'),
+    page.getByRole('button', { name: 'Publish this reviewed profile' }).click(),
+  ]);
+  assert.ok(publicationResponse.ok(), `Installed UI profile publication failed (${publicationResponse.status()})`);
   await page.keyboard.press('Escape');
   await page.locator('#scout-settings').click();
   await page.getByRole('button', { name: 'Search & profile', exact: false }).click();
   await page.getByLabel('How should Scout help you?').selectOption('active');
-  await page.getByRole('button', { name: 'Save search mode', exact: true }).click();
+  // Make this browser boundary deterministic even when real Git is fast on
+  // the runner: the preceding owned checkpoint must finish before this save.
+  await runtimeControl.request('hold-checkpoint');
+  await runtimeControl.drain();
+  const [modeResponse] = await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === '/api/setup/config' && response.request().method() === 'POST'),
+    page.getByRole('button', { name: 'Save search mode', exact: true }).click(),
+  ]);
+  assert.ok(modeResponse.ok(), `Installed UI mode mutation failed (${modeResponse.status()})`);
   await until(() => JSON.parse(fs.readFileSync(path.join(workspace, 'workspace.json'), 'utf8')).mode === 'active', 'reviewed search mode');
   await page.keyboard.press('Escape');
   const operation = { id: 'installed-synthetic-scan', type: 'scan', status: 'succeeded', phase: 'Synthetic scan completed', progress: { current: 5, total: 5 } };
-  await page.route('**/api/scan', async (route) => {
-    const result = await invoke('scan'); assert.equal(result.ok, true, result.error); operation.result = result;
-    await route.fulfill({ status: 202, json: { operation } });
-  });
+  const scan = createNativeScanBoundary(invoke, operation);
+  await page.route('**/api/scan', scan.route);
   await page.route('**/api/operations/installed-synthetic-scan', (route) => route.fulfill({ json: { operation } }));
-  await page.locator('#scan-now').click();
-  await page.getByText('Synthetic Studio', { exact: true }).first().waitFor({ state: 'visible', timeout: 60000 });
+  await Promise.all([scan.completion, page.locator('#scan-now').click()]);
+  const resultCard = page.locator('#tab-jobs .card[data-id]').filter({ hasText: 'Synthetic Studio - Synthetic Engineer' });
+  await resultCard.getByText('Synthetic Studio - Synthetic Engineer', { exact: true }).waitFor({ state: 'visible', timeout: 60000 });
   const calls = fs.readFileSync(path.join(bin, 'calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   assert.ok(calls.some(({ kind }) => kind === 'onboarding')); assert.ok(calls.some(({ kind }) => kind === 'assessment'));
   assert.ok(fs.existsSync(path.join(workspace, 'data/scan-runs.jsonl')));
   await browser.close(); browser = null;
   console.log('Installed artifact: native first launch, workspace, CV import, reviewed onboarding/profile, mode choice, synthetic provider scan and visible results passed.');
+} catch (error) {
+  primaryError = error;
+  throw error;
 } finally {
-  await browser?.close().catch(() => {});
-  if (ownsServer) {
-    try { await fetch(`${base}/api/shutdown`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: '{}', signal: AbortSignal.timeout(10000) }); } catch {}
-  }
-  const stopChild = async (child) => {
-    if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
-    const closed = new Promise((resolve) => { child.once('close', resolve); child.once('error', resolve); });
-    child.kill();
-    const timeout = setTimeout(() => child.kill('SIGKILL'), 10000);
-    try { await closed; } finally { clearTimeout(timeout); }
-  };
-  await Promise.all([stopChild(host), stopChild(worker)]);
-  if (ownsServer) await until(async () => {
-    try { return !(await fetch(`${base}/api/app-info`, { signal: AbortSignal.timeout(1000) })).ok; }
-    catch { return true; }
-  }, 'installed runtime shutdown', 30000);
-  await wait(250);
-  if (uninstall) {
-    const before = nativeWorkspaceSnapshot(workspace);
-    uninstall();
-    assert.deepEqual(nativeWorkspaceSnapshot(workspace), before, 'Uninstall must preserve every private workspace path and file digest');
-    assert.equal(fs.existsSync(path.join(appRoot, 'ui/server.mjs')), false, 'Uninstall must remove application files');
-  }
-  fs.rmSync(temporary, { recursive: true, force: true });
+  await finishNativeInstallCleanup(async () => {
+    await browser?.close().catch(() => {});
+    if (ownsServer) {
+      try { await fetch(`${base}/api/shutdown`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: '{}', signal: AbortSignal.timeout(10000) }); } catch {}
+    }
+    const stopChild = async (child) => {
+      if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
+      const closed = new Promise((resolve) => { child.once('close', resolve); child.once('error', resolve); });
+      child.kill();
+      const timeout = setTimeout(() => child.kill('SIGKILL'), 10000);
+      try { await closed; } finally { clearTimeout(timeout); }
+    };
+    await Promise.all([stopChild(host), stopChild(worker)]);
+    if (ownsServer) await until(async () => {
+      try { return !(await fetch(`${base}/api/app-info`, { signal: AbortSignal.timeout(1000) })).ok; }
+      catch { return true; }
+    }, 'installed runtime shutdown', 30000);
+    await wait(250);
+    await runtimeControl.close();
+    if (uninstall) {
+      const before = nativeWorkspaceSnapshot(workspace);
+      uninstall();
+      assert.deepEqual(nativeWorkspaceSnapshot(workspace), before, 'Uninstall must preserve every private workspace path and file digest');
+      assert.equal(fs.existsSync(path.join(appRoot, 'ui/server.mjs')), false, 'Uninstall must remove application files');
+    }
+    // Windows directory watchers may release just after all owned processes
+    // close. Retries are bounded and cannot turn an acceptance failure green.
+    fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }, { primaryError });
 }

@@ -11,6 +11,50 @@ function meaningful(file, minimumBytes) {
   return fs.existsSync(file) && fs.statSync(file).size >= minimumBytes;
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+// Approval binds reviewed evidence and preferences, while these named fields
+// record separate operational choices. Every other field, including unknown
+// future fields, remains bound. This does not authorize changing an AI model,
+// endpoint, search rule, calibration or personal evidence.
+export function onboardingApprovalConfigDigest(config) {
+  const reviewed = structuredClone(config);
+  delete reviewed.mode;
+  delete reviewed.schedule;
+  delete reviewed._scoutMutation;
+  if (reviewed.searchProfile && typeof reviewed.searchProfile === 'object') delete reviewed.searchProfile.publishedId;
+  if (reviewed.setup && typeof reviewed.setup === 'object') {
+    for (const key of ['completedAt', 'completedSections', 'deferredSections']) delete reviewed.setup[key];
+  }
+  return crypto.createHash('sha256').update(canonicalJson(reviewed)).digest('hex');
+}
+
+function configRemainsApproved(root, marker, currentBytes, expected) {
+  const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+  const current = JSON.parse(currentBytes.toString('utf8'));
+  if (Object.hasOwn(marker, 'configApproval')) {
+    const binding = marker.configApproval;
+    return binding && Object.keys(binding).sort().join(',') === 'digest,schemaVersion'
+      && binding.schemaVersion === 1 && /^[a-f0-9]{64}$/.test(binding.digest || '')
+      && onboardingApprovalConfigDigest(current) === binding.digest;
+  }
+  if (digest(currentBytes) === expected) return true;
+  // Older markers can use only their original, hash-verified staged bytes as
+  // the approval baseline. Never derive trusted approval from current config.
+  const staged = path.join(root, '.scout', 'onboarding', 'workspace.json');
+  const stagedHash = marker.stagedHashes?.['workspace.json'];
+  if (!/^[a-f0-9]{64}$/.test(stagedHash || '') || !fs.lstatSync(staged).isFile()) return false;
+  const stagedBytes = fs.readFileSync(staged);
+  return digest(stagedBytes) === stagedHash
+    && onboardingApprovalConfigDigest(JSON.parse(stagedBytes.toString('utf8'))) === onboardingApprovalConfigDigest(current);
+}
+
 function activatedApproval(root) {
   const file = path.join(root, '.scout', 'onboarding', 'activated.json');
   let marker;
@@ -22,7 +66,9 @@ function activatedApproval(root) {
       return typeof expected === 'string' && /^[a-f0-9]{64}$/.test(expected)
         && fs.existsSync(target)
         && fs.lstatSync(target).isFile()
-        && crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex') === expected;
+        && (relative === 'workspace.json'
+          ? configRemainsApproved(root, marker, fs.readFileSync(target), expected)
+          : crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex') === expected);
     });
   } catch {
     return false;

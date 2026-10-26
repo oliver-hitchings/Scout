@@ -4,14 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import {
   assertAuditedStage,
   auditStageBeforePackaging,
   auditPublicSourceStage,
+  finishAuditedStageCleanup,
   includePublicSourcePath, includeReleasePath, productionDependencyFilter, productionLockfile,
   productionPackageManifest, PUBLIC_SOURCE_FILES, RELEASE_FILES,
-  removeAuditedStage, sha256, stagePublicSource, stageRelease, verifiedReleaseTreeDigest, writeChecksums,
+  normalisePublicStagePermissions, removeAuditedStage, sha256, stagePublicSource, stageRelease, verifiedReleaseTreeDigest, writeChecksums,
 } from './build-release.mjs';
+import { sealedAuditDirectoryMode, verifiedAuditTreeDigest } from './release-audit.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PRIVATE_COPY_FIXTURES = Object.freeze([
@@ -36,6 +39,102 @@ function assertPrivateCopyFixturesAbsent(root) {
     assert.equal(fs.existsSync(path.join(root, relative)), false, relative);
   }
 }
+
+function publicPermissionFixture(base) {
+  const root = path.join(base, 'source');
+  const runtime = path.join(base, 'runtime');
+  for (const entry of RELEASE_FILES) {
+    const file = path.join(root, entry.source);
+    fs.mkdirSync(entry.tree ? file : path.dirname(file), { recursive: true });
+    if (entry.tree) fs.writeFileSync(path.join(file, 'source.mjs'), 'export const synthetic = true;\n');
+    else fs.writeFileSync(file, entry.source === 'package.json' ? '{"version":"1.0.0"}'
+      : entry.source === 'package-lock.json' ? '{"lockfileVersion":3,"packages":{}}' : 'Synthetic public input.\n');
+  }
+  fs.mkdirSync(runtime);
+  for (const file of ['node', 'typst']) fs.writeFileSync(path.join(runtime, file), 'Synthetic runtime.');
+  return stageRelease({
+    root, stageDir: path.join(base, 'stage'), includeDependencies: false,
+    nodeExecutable: path.join(runtime, 'node'), typstExecutable: path.join(runtime, 'typst'),
+  });
+}
+
+test('a Debian package built under umask 077 remains readable after root-owned installation', {
+  skip: process.platform !== 'linux' ? 'The real Debian packager runs on Linux' : false,
+}, () => {
+  const previous = process.umask(0o077);
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-deb-public-modes-'));
+  let audit;
+  try {
+    const staged = publicPermissionFixture(base);
+    const control = path.join(staged.stageDir, 'DEBIAN');
+    fs.mkdirSync(control, { mode: 0o755 }); fs.chmodSync(control, 0o755);
+    fs.writeFileSync(path.join(control, 'control'), 'Package: scout-synthetic-modes\nVersion: 1.0.0\nArchitecture: all\nMaintainer: Synthetic fixture\nDescription: Synthetic public package fixture\n');
+    const output = path.join(base, 'artifacts'); fs.mkdirSync(output);
+    fs.writeFileSync(path.join(staged.appDir, 'generated-metadata.txt'), 'Synthetic platform metadata.');
+    normalisePublicStagePermissions(staged.stageDir, { expectedRecord: staged.stageRecord });
+    audit = auditStageBeforePackaging(staged.stageDir, {
+      authorizationRoot: base, env: { SCOUT_RELEASE_MARKERS: 'SyntheticUmaskFixtureMarker' },
+      sealedDirectoryModes: { DEBIAN: 0o755 },
+    });
+    const artifact = path.join(output, 'synthetic.deb');
+    assertAuditedStage(audit);
+    const built = spawnSync('dpkg-deb', ['--build', '--root-owner-group', audit.stageDir, artifact], { encoding: 'utf8' });
+    assert.equal(built.status, 0, built.stderr);
+    assertAuditedStage(audit);
+    const listing = spawnSync('dpkg-deb', ['--contents', artifact], { encoding: 'utf8' });
+    assert.equal(listing.status, 0, listing.stderr);
+    const entry = (file) => listing.stdout.split('\n').find((line) => line.endsWith(`./${file}`)) || '';
+    assert.match(entry('app/package.json'), /^-r--r--r--\s+root\/root\s/);
+    assert.match(entry('app/generated-metadata.txt'), /^-r--r--r--\s+root\/root\s/);
+    assert.match(entry('runtime/node'), /^-r-xr-xr-x\s+root\/root\s/);
+  } finally {
+    process.umask(previous);
+    if (audit) removeAuditedStage(audit.stageDir, { expectedRecord: audit.stageRecord });
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('public staging remains private while installable permissions are prepared before the audit', () => {
+  const previous = process.umask(0o022);
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-private-stage-modes-'));
+  let audit;
+  try {
+    const staged = publicPermissionFixture(base);
+    if (process.platform !== 'win32') assert.equal(fs.statSync(staged.stageDir).mode & 0o777, 0o700);
+    const generated = path.join(staged.appDir, 'generated.txt');
+    fs.writeFileSync(generated, 'Synthetic generated metadata.', { mode: 0o600 });
+    normalisePublicStagePermissions(staged.stageDir, { expectedRecord: staged.stageRecord });
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(staged.stageDir).mode & 0o777, 0o700);
+      assert.equal(fs.statSync(generated).mode & 0o777, 0o644);
+      assert.equal(fs.statSync(path.dirname(generated)).mode & 0o777, 0o755);
+    }
+    audit = auditStageBeforePackaging(staged.stageDir, {
+      authorizationRoot: base, env: { SCOUT_RELEASE_MARKERS: 'SyntheticPrivateStageMarker' },
+    });
+    assert.throws(() => normalisePublicStagePermissions(audit.stageDir, { expectedRecord: audit.stageRecord }), /unsealed creation identity/);
+    assertAuditedStage(audit);
+    if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(audit.stageDir, 'app/generated.txt')).mode & 0o777, 0o444);
+  } finally {
+    process.umask(previous);
+    if (audit) removeAuditedStage(audit.stageDir, { expectedRecord: audit.stageRecord });
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('permission preparation cannot change a shared inode outside the public stage', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-stage-hardlink-modes-'));
+  try {
+    const staged = publicPermissionFixture(base);
+    const outside = path.join(base, 'outside.txt');
+    fs.writeFileSync(outside, 'Synthetic outside data.', { mode: 0o600 });
+    const before = fs.statSync(outside).mode;
+    fs.linkSync(outside, path.join(staged.appDir, 'shared.txt'));
+    assert.throws(() => normalisePublicStagePermissions(staged.stageDir, { expectedRecord: staged.stageRecord }), /one link/);
+    assert.equal(fs.statSync(outside).mode, before);
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'Synthetic outside data.');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
 
 test('release manifest is allowlisted and excludes private workspace roots', () => {
   const sources = RELEASE_FILES.map((entry) => entry.source);
@@ -305,12 +404,16 @@ test('stage audit inspects unexpected nested git metadata', () => {
 });
 
 test('packaging consumes the audit-created read-only content snapshot', () => {
-  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-audited-stage-'));
+  const authorizationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-audited-root-'));
+  const stageDir = path.join(authorizationRoot, 'stage');
+  fs.mkdirSync(stageDir);
   fs.writeFileSync(path.join(stageDir, 'a.txt'), 'audited-a');
   fs.writeFileSync(path.join(stageDir, 'b.txt'), 'audited-b');
   const audit = auditStageBeforePackaging(stageDir, {
     env: { ...process.env, SCOUT_RELEASE_MARKERS: 'SyntheticPackagingMarker' },
+    authorizationRoot,
   });
+  assert.doesNotThrow(() => assertAuditedStage(audit));
   fs.writeFileSync(path.join(stageDir, 'a.txt'), 'changed-after-audit');
   assert.equal(fs.readFileSync(path.join(audit.stageDir, 'a.txt'), 'utf8'), 'audited-a');
   assert.throws(
@@ -321,7 +424,360 @@ test('packaging consumes the audit-created read-only content snapshot', () => {
   fs.chmodSync(path.join(audit.stageDir, 'a.txt'), 0o644);
   fs.writeFileSync(path.join(audit.stageDir, 'a.txt'), 'SyntheticPackagingMarker');
   assert.throws(() => assertAuditedStage(audit), /privacy-authorized snapshot/);
-  removeAuditedStage(audit.stageDir);
+  removeAuditedStage(audit.stageDir, { expectedRecord: audit.stageRecord });
+  fs.rmSync(authorizationRoot, { recursive: true, force: true });
+});
+
+test('seal transition predicts platform-reported directory permissions', () => {
+  assert.equal(sealedAuditDirectoryMode(0o555, 'win32'), 0o444);
+  assert.equal(sealedAuditDirectoryMode(0o755, 'win32'), 0o666);
+  for (const platform of ['linux', 'darwin']) {
+    assert.equal(sealedAuditDirectoryMode(0o555, platform), 0o555);
+    assert.equal(sealedAuditDirectoryMode(0o755, platform), 0o755);
+  }
+});
+
+test('sealing cannot authorize bytes that changed after the privacy inspection', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-seal-privacy-race-'));
+  const stage = path.join(root, 'stage');
+  fs.mkdirSync(stage);
+  fs.writeFileSync(path.join(stage, 'payload.txt'), 'Public synthetic content.');
+  const chmod = fs.chmodSync;
+  let injected = false;
+  let audit;
+  t.after(() => {
+    fs.chmodSync = chmod;
+    if (audit) removeAuditedStage(audit.stageDir, { expectedRecord: audit.stageRecord });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  fs.chmodSync = (file, mode) => {
+    if (!injected && String(file).includes('.audited-')
+      && path.basename(String(file)) === 'payload.txt' && (mode & 0o222) === 0) {
+      injected = true;
+      fs.writeFileSync(file, 'SyntheticSealRaceForbiddenMarker');
+    }
+    return chmod(file, mode);
+  };
+  assert.throws(() => {
+    audit = auditStageBeforePackaging(stage, {
+      authorizationRoot: root,
+      env: { SCOUT_RELEASE_MARKERS: 'SyntheticSealRaceForbiddenMarker' },
+    });
+  }, /changed during sealing/);
+  assert.equal(injected, true);
+});
+
+for (const change of ['replacement', 'addition', 'writable-file', 'writable-directory']) {
+  test(`sealing rejects ${change} introduced during its permission transition`, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-seal-transition-'));
+    const stage = path.join(root, 'stage');
+    fs.mkdirSync(stage);
+    fs.writeFileSync(path.join(stage, 'payload.txt'), 'Public synthetic content.');
+    const chmod = fs.chmodSync;
+    let injected = false;
+    let audit;
+    t.after(() => {
+      fs.chmodSync = chmod;
+      if (audit) removeAuditedStage(audit.stageDir, { expectedRecord: audit.stageRecord });
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    fs.chmodSync = (file, mode) => {
+      const target = String(file);
+      const directoryCase = change === 'writable-directory';
+      if (!injected && target.includes('.audited-')
+        && (directoryCase ? path.basename(target).includes('.audited-') : path.basename(target) === 'payload.txt')
+        && (mode & 0o222) === 0) {
+        injected = true;
+        if (change === 'replacement') {
+          const bytes = fs.readFileSync(file);
+          fs.renameSync(file, path.join(root, 'displaced.txt'));
+          fs.writeFileSync(file, bytes);
+        } else if (change === 'addition') {
+          fs.writeFileSync(path.join(path.dirname(target), 'uninspected.txt'), 'Public synthetic addition.');
+        }
+        chmod(file, mode);
+        if (change === 'writable-file' || directoryCase) chmod(file, 0o777);
+        return;
+      }
+      return chmod(file, mode);
+    };
+    assert.throws(() => {
+      audit = auditStageBeforePackaging(stage, {
+        authorizationRoot: root, env: { SCOUT_RELEASE_MARKERS: 'SyntheticSealTransitionMarker' },
+      });
+    }, /changed during sealing/);
+    assert.equal(injected, true);
+  });
+}
+
+test('sealed release authorization rejects the complete tamper matrix', () => {
+  const cases = [
+    ['content', ({ file }) => {
+      fs.chmodSync(file, 0o644);
+      fs.writeFileSync(file, 'changed-content');
+      fs.chmodSync(file, 0o444);
+    }],
+    ['mode', ({ file }) => fs.chmodSync(file, 0o644)],
+    ['path', ({ root, file }) => {
+      fs.chmodSync(root, 0o755);
+      fs.renameSync(file, path.join(root, 'renamed.txt'));
+      fs.chmodSync(root, 0o555);
+    }],
+    ['link', ({ root, file }) => {
+      fs.chmodSync(root, 0o755);
+      fs.unlinkSync(file);
+      fs.symlinkSync('b.txt', file, process.platform === 'win32' ? 'file' : undefined);
+      fs.chmodSync(root, 0o555);
+    }],
+    ['addition', ({ root }) => {
+      const added = path.join(root, 'added.txt');
+      fs.chmodSync(root, 0o755);
+      fs.writeFileSync(added, 'added');
+      fs.chmodSync(added, 0o444);
+      fs.chmodSync(root, 0o555);
+    }],
+    ['deletion', ({ root, file }) => {
+      fs.chmodSync(root, 0o755);
+      fs.unlinkSync(file);
+      fs.chmodSync(root, 0o555);
+    }],
+    ['replacement', ({ root, file, outside }) => {
+      const content = fs.readFileSync(file);
+      fs.chmodSync(root, 0o755);
+      fs.renameSync(file, path.join(outside, 'displaced.txt'));
+      fs.writeFileSync(file, content, { mode: 0o444 });
+      fs.chmodSync(file, 0o444);
+      fs.chmodSync(root, 0o555);
+    }],
+  ];
+
+  for (const [name, tamper] of cases) {
+    const authorizationRoot = fs.mkdtempSync(path.join(os.tmpdir(), `scout-audit-${name}-root-`));
+    const stageDir = path.join(authorizationRoot, 'stage');
+    fs.mkdirSync(stageDir);
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), `scout-audit-${name}-outside-`));
+    fs.writeFileSync(path.join(stageDir, 'a.txt'), 'audited-a');
+    fs.writeFileSync(path.join(stageDir, 'b.txt'), 'audited-b');
+    // Replacement preserves the sealed modes independently of the host umask.
+    fs.chmodSync(path.join(stageDir, 'a.txt'), 0o644);
+    fs.chmodSync(path.join(stageDir, 'b.txt'), 0o644);
+    const audit = auditStageBeforePackaging(stageDir, {
+      env: { ...process.env, SCOUT_RELEASE_MARKERS: 'SyntheticPackagingMarker' },
+      authorizationRoot,
+    });
+    try {
+      assert.doesNotThrow(() => assertAuditedStage(audit), `${name}: clean stage`);
+      tamper({ root: audit.stageDir, file: path.join(audit.stageDir, 'a.txt'), outside });
+      if (name === 'replacement') {
+        assert.equal(verifiedAuditTreeDigest(audit.stageDir), audit.treeDigest);
+      }
+      assert.throws(
+        () => assertAuditedStage(audit),
+        /privacy-authorized snapshot/,
+        `${name}: tampered stage`,
+      );
+    } finally {
+      removeAuditedStage(audit.stageDir, { expectedRecord: audit.stageRecord });
+      fs.rmSync(authorizationRoot, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  }
+});
+
+test('sealed release authorization rejects an active ancestor substitution', () => {
+  const top = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-audit-ancestor-'));
+  const releaseDir = path.join(top, 'release');
+  const heldDir = path.join(top, 'release-held');
+  const stageDir = path.join(releaseDir, 'stage');
+  fs.mkdirSync(stageDir, { recursive: true });
+  fs.writeFileSync(path.join(stageDir, 'a.txt'), 'audited-a');
+  const audit = auditStageBeforePackaging(stageDir, {
+    env: { ...process.env, SCOUT_RELEASE_MARKERS: 'SyntheticPackagingMarker' },
+  });
+  try {
+    assert.doesNotThrow(() => assertAuditedStage(audit));
+    fs.renameSync(releaseDir, heldDir);
+    fs.mkdirSync(releaseDir);
+    assert.throws(() => assertAuditedStage(audit), /privacy-authorized snapshot/);
+    fs.rmSync(releaseDir, { recursive: true, force: true });
+    fs.renameSync(heldDir, releaseDir);
+  } finally {
+    removeAuditedStage(audit.stageDir, { expectedRecord: audit.stageRecord });
+    fs.rmSync(top, { recursive: true, force: true });
+  }
+});
+
+test('a required packager directory mode keeps its files sealed and remains tamper-evident', {
+  skip: process.platform === 'win32' ? 'Debian directory modes are exercised on Linux release runners' : false,
+}, () => {
+  const authorizationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-audit-directory-mode-root-'));
+  const stageDir = path.join(authorizationRoot, 'stage');
+  fs.mkdirSync(stageDir);
+  const controlDir = path.join(stageDir, 'deb', 'DEBIAN');
+  fs.mkdirSync(controlDir, { recursive: true });
+  fs.writeFileSync(path.join(controlDir, 'control'), 'Package: scout\n');
+  fs.chmodSync(path.join(controlDir, 'control'), 0o644);
+  const audit = auditStageBeforePackaging(stageDir, {
+    env: { ...process.env, SCOUT_RELEASE_MARKERS: 'SyntheticPackagingMarker' },
+    authorizationRoot,
+    sealedDirectoryModes: { 'deb/DEBIAN': 0o755 },
+  });
+  try {
+    const sealedControlDir = path.join(audit.stageDir, 'deb', 'DEBIAN');
+    const sealedControl = path.join(sealedControlDir, 'control');
+    assert.equal(fs.statSync(sealedControlDir).mode & 0o777, 0o755);
+    assert.equal(fs.statSync(sealedControl).mode & 0o777, 0o444);
+    assert.doesNotThrow(() => assertAuditedStage(audit));
+    fs.renameSync(sealedControl, path.join(sealedControlDir, 'control-held'));
+    fs.renameSync(path.join(sealedControlDir, 'control-held'), sealedControl);
+    assert.throws(() => assertAuditedStage(audit), /privacy-authorized snapshot/);
+  } finally {
+    removeAuditedStage(audit.stageDir, { expectedRecord: audit.stageRecord });
+    fs.rmSync(authorizationRoot, { recursive: true, force: true });
+  }
+});
+
+test('audited stage cleanup preserves the primary error and reports retained payload safely', () => {
+  const primary = new Error('primary packaging failure');
+  assert.doesNotThrow(() => finishAuditedStageCleanup('/synthetic/audited-stage', {
+    primaryError: primary,
+    remove: () => { throw new Error('/private/path must not escape'); },
+  }));
+  assert.match(primary.message, /^primary packaging failure\nAudited release payload cleanup failed;/);
+  assert.doesNotMatch(primary.message, /private\/path/);
+
+  assert.throws(
+    () => finishAuditedStageCleanup('/synthetic/audited-stage', {
+      remove: () => { throw new Error('/private/path must not escape'); },
+    }),
+    (error) => error.message
+      === 'Audited release payload cleanup failed; the sealed payload was retained for runner cleanup.',
+  );
+});
+
+test('audit preparation cleanup preserves its primary error and reports retained payload safely', () => {
+  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-audit-cleanup-'));
+  fs.writeFileSync(path.join(stageDir, 'a.txt'), 'audited-a');
+  try {
+    assert.throws(
+      () => auditStageBeforePackaging(stageDir, {
+        env: { ...process.env, SCOUT_RELEASE_MARKERS: 'SyntheticPackagingMarker' },
+        sealedState: () => { throw new Error('primary authorization failure'); },
+        removeAuditedSnapshot: () => { throw new Error('/private/path must not escape'); },
+      }),
+      (error) => {
+        assert.equal(
+          error.message,
+          'primary authorization failure\nAudited release payload cleanup failed; the release-audit payload was retained for runner cleanup.',
+        );
+        assert.doesNotMatch(error.message, /private\/path/);
+        return true;
+      },
+    );
+  } finally {
+    fs.rmSync(stageDir, { recursive: true, force: true });
+  }
+});
+
+test('audit preparation never removes a pre-existing snapshot collision', () => {
+  const top = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-audit-collision-root-'));
+  const stageDir = path.join(top, 'stage');
+  const collisionId = '11111111-1111-4111-8111-111111111111';
+  const collision = `${stageDir}.audited-${collisionId}`;
+  fs.mkdirSync(stageDir);
+  fs.writeFileSync(path.join(stageDir, 'a.txt'), 'audited-a');
+  fs.mkdirSync(collision);
+  fs.writeFileSync(path.join(collision, 'sentinel'), 'pre-existing');
+  try {
+    assert.throws(() => auditStageBeforePackaging(stageDir, {
+      env: { ...process.env, SCOUT_RELEASE_MARKERS: 'SyntheticPackagingMarker' },
+      authorizationRoot: top,
+      randomUUID: () => collisionId,
+    }));
+    assert.equal(fs.readFileSync(path.join(collision, 'sentinel'), 'utf8'), 'pre-existing');
+  } finally {
+    try {
+      const cleanupAudit = fs.readdirSync(top).find((name) => name.includes('.audited-'));
+      if (cleanupAudit) fs.chmodSync(path.join(top, cleanupAudit), 0o700);
+    } catch {}
+    fs.rmSync(top, { recursive: true, force: true });
+  }
+});
+
+test('audited-stage cleanup quarantines before identity validation and preserves a substitute', () => {
+  const top = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-audit-cleanup-identity-root-'));
+  const stageDir = path.join(top, 'stage');
+  fs.mkdirSync(stageDir);
+  fs.writeFileSync(path.join(stageDir, 'a.txt'), 'audited-a');
+  const audit = auditStageBeforePackaging(stageDir, {
+    env: { ...process.env, SCOUT_RELEASE_MARKERS: 'SyntheticPackagingMarker' },
+    authorizationRoot: top,
+  });
+  const held = `${audit.stageDir}-held`;
+  const primary = new Error('packager failed');
+  try {
+    finishAuditedStageCleanup(audit.stageDir, {
+      primaryError: primary,
+      expectedRecord: audit.stageRecord,
+      remove: (entry, options) => removeAuditedStage(entry, {
+        ...options,
+        rename: (source, target) => {
+          fs.renameSync(source, held);
+          fs.mkdirSync(source);
+          fs.writeFileSync(path.join(source, 'sentinel'), 'replacement must survive');
+          fs.renameSync(source, target);
+        },
+      }),
+    });
+    assert.match(primary.message, /Audited release payload cleanup failed/);
+    const replacement = fs.readdirSync(top)
+      .find((name) => name.includes('.audited-') && name.includes('.cleanup-'));
+    assert.ok(replacement);
+    assert.equal(
+      fs.readFileSync(path.join(top, replacement, 'sentinel'), 'utf8'),
+      'replacement must survive',
+    );
+    assert.equal(fs.existsSync(held), true);
+  } finally {
+    if (fs.existsSync(held)) removeAuditedStage(held, { expectedRecord: audit.stageRecord });
+    fs.rmSync(top, { recursive: true, force: true });
+  }
+});
+
+test('audited-stage cleanup rechecks quarantine identity before recursive deletion', () => {
+  const top = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-audit-cleanup-quarantine-root-'));
+  const stageDir = path.join(top, 'stage');
+  fs.mkdirSync(stageDir);
+  fs.writeFileSync(path.join(stageDir, 'a.txt'), 'audited-a');
+  const audit = auditStageBeforePackaging(stageDir, {
+    env: { ...process.env, SCOUT_RELEASE_MARKERS: 'SyntheticPackagingMarker' },
+    authorizationRoot: top,
+  });
+  const primary = new Error('packager failed');
+  let held = null;
+  let replacement = null;
+  try {
+    finishAuditedStageCleanup(audit.stageDir, {
+      primaryError: primary,
+      expectedRecord: audit.stageRecord,
+      remove: (entry, options) => removeAuditedStage(entry, {
+        ...options,
+        empty: (quarantine) => {
+          held = `${quarantine}-held`;
+          fs.renameSync(quarantine, held);
+          fs.mkdirSync(quarantine);
+          fs.writeFileSync(path.join(quarantine, 'sentinel'), 'replacement must survive');
+          replacement = quarantine;
+        },
+      }),
+    });
+    assert.match(primary.message, /Audited release payload cleanup failed/);
+    assert.equal(fs.readFileSync(path.join(replacement, 'sentinel'), 'utf8'), 'replacement must survive');
+    assert.equal(fs.existsSync(held), true);
+  } finally {
+    if (held && fs.existsSync(held)) removeAuditedStage(held, { expectedRecord: audit.stageRecord });
+    fs.rmSync(top, { recursive: true, force: true });
+  }
 });
 
 test('public and release staging refuse allowlisted leaf symlinks', () => {
@@ -525,6 +981,16 @@ test('checksums use SHA-256 and do not hash the manifest into itself', () => {
   assert.equal(fs.readFileSync(manifest, 'utf8'), `${sha256(artifact)}  Scout.exe\n`);
   writeChecksums(output);
   assert.equal(fs.readFileSync(manifest, 'utf8'), `${sha256(artifact)}  Scout.exe\n`);
+});
+
+test('Windows packaging publishes only authorized private temporary output without overwrite', () => {
+  const source = fs.readFileSync(new URL('./build-release.mjs', import.meta.url), 'utf8');
+  const body = source.match(/export function buildInstaller[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(body, /createArtifactPublication/);
+  assert.match(body, /`\/DOutputDir=\$\{publication\.pendingDir\}`/);
+  assert.match(body, /writeArtifactChecksums[\s\S]*authorizeArtifactPublication[\s\S]*promoteArtifactPublication/);
+  assert.match(body, /finishArtifactPublication/);
+  assert.doesNotMatch(body, /rmSync\(outputDir/);
 });
 
 test('verified payload digests bind file paths, modes and bytes and reject links', () => {

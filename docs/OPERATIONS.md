@@ -329,12 +329,31 @@ Run it alongside the normal suite. The owner-only current-provider check is in
 4. Run the complete test suite, release privacy audit, packaging checks, and relevant manual acceptance. For a workspace-format release, also migrate a production-shaped synthetic workspace, materialise its beta.22 rollback into a separate directory, compare every manifest digest and prove the live synthetic workspace retained its newer data.
    Platform packagers consume only the audit-created content snapshot, recheck
    its privacy-authorized digest immediately before and after packaging, and
-   remove the sealed snapshot in a `finally` path.
+   prepare installable public payload permissions before that audit, including
+   generated platform metadata. The outer stage stays private; POSIX public
+   payload modes are independent of the host umask and Windows staging inherits
+   a verified owner-only DACL. Audited snapshots are never normalised afterward.
+   Packagers
+   remove the sealed snapshot in a `finally` path. Each native artifact is first
+   written inside a private, unpredictable directory on the destination
+   filesystem (`0700` on Unix and a protected current-user-only DACL on
+   Windows). Scout binds that privacy state, directory and every real ancestor to the
+   repository root, authorizes the temporary file after the payload postcheck,
+   then creates the final name atomically without overwrite. A destination
+   collision or changed output identity fails closed. Pre-publication crashes
+   can leave only the clearly named temporary directory and publication lock,
+   which are eligible for identity-checked runner cleanup; once the atomic link
+   succeeds, the authorized final inode exists even if temporary cleanup is
+   interrupted.
    Update downloads require an exact-version Ed25519 release manifest and
    detached signature trusted by the locally bundled public-key registry.
    Installer preflight uses the same verifier. CI uses generated temporary test
    keys; production signing requires owner public-key enrollment and the
-   protected `release-signing` environment. Candidate `-rc` tags do not deploy, upload artifacts
+   protected `release-signing` environment. Public-key readiness cleanly skips
+   production signing, tag deployment and publication until enrollment, with a
+   visible workflow summary; invalid trust still fails. CI explicitly verifies
+   all five synthetic artifact formats using temporary test keys on all four OS
+   runners. See [Release key enrollment](RELEASE_KEYS.md). Candidate `-rc` tags do not deploy, upload artifacts
    or publish. Signed metadata does not supersede the F-1 packaging gate.
    Workflow-policy tests check immutable action pins throughout every workflow
    receiving secrets. Allowlisted application and public-source trees exclude
@@ -361,6 +380,12 @@ Pushing or merging a branch does not by itself update the live VPS.
 
 Critical mutable workspace records are replaced atomically. Scout writes new contents to a temporary file in the same directory, flushes that file, and then renames it over the canonical path. This covers configuration, tracker state, chats, company timelines, CV-quality records, onboarding state, scan artifacts, recovery metadata, and imported CV text. Code that adds another critical workspace write must use the shared atomic-write helper; temporary files are never a source of truth.
 
+Managed instructions copied from a sealed installation are bounded, regular
+files atomically replaced only within the private workspace. Those copies have
+owner write permission so later scans can refresh them; the installed source
+stays sealed. Source and destination links, special files and shared destination
+inodes fail closed rather than redirecting a refresh outside its intended tree.
+
 Living CV source configuration, approved master replacements and content-addressed CV versions use the same workspace mutation authority. External files are read-only, explicitly selected Markdown or JSON, and are never included merely because their path is configured. Regular-file validation, non-blocking/no-follow open flags and descriptor identity checks reject pipes/devices and source replacement races before reading. Approved copies under `cv/` are private backup material. A prepared digest-bound approval intent precedes master/configuration replacement; startup, status and scan entry reconcile expected revisions only, preserving conflicting post-crash edits and both immutable versions. Pending approvals block evidence use. Source checking has no provider work or automatic approval; profile regeneration uses the approved version through the existing staged onboarding proposal. CV changes affect the existing assessment prompt digest and six-per-scan historical-rejection reassessment cap. Fresh workspaces use neutral language/time-zone defaults and no Adzuna country; first-run setup proposes browser-local settings for explicit review. Cover-letter Markdown uses the existing bounded Typst render operation with source-hash freshness checks and a visible DRAFT label. See [Living CV and drafts](LIVING_CV.md).
 
 Reviewed application drafts use bounded tool-free structured selection for local, Codex or Claude providers, with provider-work/auth fencing and close-gated cancellation. The provider may return only supplied CV evidence IDs; trusted runtime composition copies facts verbatim. Generation snapshots and rechecks CV, source, job and target revisions. The preview remains in a bounded one-hour in-memory store; operation projections retain an opaque preview ID rather than career text. Explicit reviewed save atomically writes only the selected job's Markdown source under workspace authority. Guided CVs keep a separate DRAFT Typst/PDF target. File read/edit/render paths revalidate physical workspace containment, including sibling-link guards. Profile rebuilds bind start/staging/activation evidence revisions and retain schedules; completed activation markers bind the approved CV for truthful reminder state.
@@ -373,8 +398,18 @@ Multi-file onboarding activation additionally writes a prepared intent before
 the first replacement and reconciles it at startup under the shared workspace
 mutation authority. Proposal staging and discard cannot erase that intent;
 conflicting post-crash bytes are preserved for review, and terminal marker
-cleanup is idempotent. Setup approval is valid only while every activated file
-matches the marker hash. Shutdown and restart synchronously gate HTTP, chat,
+cleanup is idempotent. Setup approval keeps exact hashes for the four reviewed evidence files and a
+versioned canonical binding for the reviewed configuration. The binding is
+minted only at successful activation. Mode, schedules, completed/deferred setup
+section bookkeeping, the published-profile identifier and internal mutation
+receipts are operational metadata; changing them does not revoke the reviewed
+evidence. Provider/model/endpoint, profile, search, calibration/triage, locale,
+currency, timezone, sources, commute and unknown configuration fields remain
+bound. These saves never rewrite an approval marker or approve unrelated edits.
+Legacy markers retain exact raw-config verification, or compare only against the
+original staged configuration whose bytes still match the recorded staged hash;
+missing or changed staged evidence fails closed. Activation transaction/recovery
+continues to verify full raw hashes of all five files. Shutdown and restart synchronously gate HTTP, chat,
 operation and startup-recovery admission, cancel managed child processes, await
 admitted handlers and settle checkpoint producers, then drain acknowledged
 backup batches and provider-health probes before process handoff. A failed

@@ -348,11 +348,12 @@ after(async () => {
   await removeTestWorkspace();
 });
 
-function request({ method = 'GET', path = '/', headers = {}, body = '' }) {
+function request({ method = 'GET', path = '/', headers = {}, body = '', signal }) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ hostname: '127.0.0.1', port, method, path, headers }, (res) => {
+    const req = http.request({ hostname: '127.0.0.1', port, method, path, headers, signal }, (res) => {
       let text = '';
       res.setEncoding('utf8');
+      res.on('error', reject);
       res.on('data', (chunk) => { text += chunk; });
       res.on('end', () => resolve({ status: res.statusCode, text, headers: res.headers }));
     });
@@ -2071,29 +2072,43 @@ test('CV index keeps legacy sources visible and describes missing derived files'
   });
 });
 
-test('a slow setup provider probe does not delay unrelated API requests', { concurrency: false }, async () => {
+test('a slow setup provider probe does not delay unrelated API requests', { concurrency: false, timeout: 5000 }, async (t) => {
   seedWorkspace(APP_ROOT, testWorkspace);
   const original = providerDetection.detect;
-  let release;
-  providerDetection.detect = () => new Promise((resolve) => { release = resolve; });
+  let markStarted; let release;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const outcome = new Promise((resolve) => { release = resolve; });
+  let probeSettled = false; let statusSettled = false; let probes = 0;
+  void outcome.then(() => { probeSettled = true; });
+  providerDetection.detect = () => { probes++; markStarted(); return outcome; };
+  const providerResult = {
+    codex: { installed: true, authenticated: true, capabilities: { structuredOutput: true } },
+    claude: { installed: false, authenticated: false },
+  };
+  let slowStatus; let unrelated;
   try {
-    const slowStatus = request({ path: '/api/setup/status' });
-    await assert.doesNotReject(async () => {
-      const deadline = Date.now() + 200;
-      while (!release && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 2));
-      if (!release) throw new Error('provider probe did not start');
-    });
-    const started = performance.now();
-    const appInfo = await request({ path: '/api/app-info' });
-    const elapsed = performance.now() - started;
+    slowStatus = request({ path: '/api/setup/status', signal: t.signal });
+    void slowStatus.then(() => { statusSettled = true; }, () => { statusSettled = true; });
+    // Entry and response ordering prove independence. The old 200/100 ms
+    // stopwatches also measured request dispatch and runner scheduling.
+    await Promise.race([started, slowStatus.then((response) => {
+      throw new Error(`setup status completed before provider entry (${response.status})`);
+    })]);
+    assert.equal(probeSettled, false);
+    unrelated = request({ path: '/api/app-info', signal: t.signal });
+    const appInfo = await unrelated;
     assert.equal(appInfo.status, 200);
-    assert.ok(elapsed < 100, `unrelated API took ${elapsed.toFixed(1)}ms while provider status was pending`);
-    release({
-      codex: { installed: true, authenticated: true, capabilities: { structuredOutput: true } },
-      claude: { installed: false, authenticated: false },
-    });
+    assert.equal(JSON.parse(appInfo.text).name, 'Scout');
+    assert.equal(probeSettled, false, 'the real unrelated response must complete before provider settlement');
+    assert.equal(statusSettled, false, 'the setup response must remain blocked on the held probe');
+    assert.equal(probes, 1);
+    release(providerResult);
     assert.equal((await slowStatus).status, 200);
   } finally {
+    // Releasing first also closes setup if readiness or the unrelated response
+    // failed. The case signal aborts its owned requests if the watchdog fires.
+    release(providerResult);
+    await Promise.allSettled([slowStatus, unrelated].filter(Boolean));
     providerDetection.detect = original;
   }
 });
@@ -2483,6 +2498,9 @@ test('source preview refuses loopback destinations before network access', { con
 });
 
 test('a UI mutation racing scan completion preserves every tracked user field', { concurrency: false }, async () => {
+  // Earlier HTTP cases can leave a coalesced checkpoint pending. Close this
+  // server's owned work before fixture writes and the intended scan admission.
+  await drainScheduledCheckpoints();
   seedWorkspace(APP_ROOT, testWorkspace);
   const trackerFile = path.join(testWorkspace, 'data', 'opportunities.json');
   const id = 'race-example-2026-07';
@@ -2498,7 +2516,9 @@ test('a UI mutation racing scan completion preserves every tracked user field', 
     }],
   };
   fs.writeFileSync(trackerFile, `${JSON.stringify(original, null, 2)}\n`);
-  const before = JSON.parse((await request({ path: '/api/opportunities' })).text);
+  const beforeResponse = await request({ path: '/api/opportunities' });
+  assert.equal(beforeResponse.status, 200, beforeResponse.text);
+  const before = JSON.parse(beforeResponse.text);
   const scanLock = acquireScanLock(testWorkspace, { agent: 'test-scan', mode: 'primary' });
   assert.equal(scanLock.ok, true);
 

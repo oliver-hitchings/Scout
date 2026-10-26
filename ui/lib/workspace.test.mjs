@@ -190,6 +190,78 @@ test('managed workspace upgrades keep chat transcripts out of Git without replac
   assert.match(value, /^data\/chats\/$/m);
 });
 
+test('managed instructions from a sealed install remain refreshable in the private workspace', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-sealed-managed-'));
+  const appRoot = path.join(root, 'app');
+  const workspace = path.join(root, 'workspace');
+  const source = path.join(appRoot, '.agents', 'skills', 'scan', 'SKILL.md');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, 'Synthetic managed scan instruction.');
+  fs.chmodSync(source, 0o400);
+  t.after(() => {
+    const writable = (entry) => {
+      const stat = fs.lstatSync(entry);
+      fs.chmodSync(entry, stat.isDirectory() ? 0o700 : 0o600);
+      if (stat.isDirectory()) for (const name of fs.readdirSync(entry)) writable(path.join(entry, name));
+    };
+    writable(root);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  syncManagedInstructions(appRoot, workspace);
+  // The installed package is immutable. A second real scan refreshes the same
+  // private instruction tree, rather than unsealing its application source.
+  assert.doesNotThrow(() => syncManagedInstructions(appRoot, workspace));
+  const installedCopy = path.join(workspace, '.agents/skills/scan/SKILL.md');
+  // Also repair the permissions left in an existing workspace by old packages.
+  fs.chmodSync(installedCopy, 0o400);
+  fs.chmodSync(path.dirname(installedCopy), 0o500);
+  assert.doesNotThrow(() => syncManagedInstructions(appRoot, workspace));
+  assert.equal(fs.readFileSync(installedCopy, 'utf8'), 'Synthetic managed scan instruction.');
+  assert.notEqual(fs.statSync(installedCopy).mode & 0o200, 0);
+  assert.equal(fs.statSync(source).mode & 0o222, 0);
+});
+
+for (const escape of ['source-link', 'destination-directory-link', 'destination-hardlink']) {
+  test(`managed instruction refresh rejects ${escape} without changing the outside file`, (t) => {
+    const root = temp();
+    const appRoot = path.join(root, 'app');
+    const workspace = path.join(root, 'workspace');
+    const source = path.join(appRoot, '.agents/skills/scan/SKILL.md');
+    const destination = path.join(workspace, '.agents/skills/scan/SKILL.md');
+    const outside = path.join(root, 'outside.txt');
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(source, 'Synthetic public managed instruction.');
+    fs.writeFileSync(outside, 'Synthetic outside file must remain intact.');
+    const outsideMode = fs.statSync(outside).mode;
+    if (escape === 'source-link') {
+      const external = path.join(root, 'outside-source');
+      fs.mkdirSync(path.join(external, 'skills/scan'), { recursive: true });
+      fs.writeFileSync(path.join(external, 'skills/scan/SKILL.md'), 'Synthetic outside instructions.');
+      fs.rmSync(path.join(appRoot, '.agents'), { recursive: true });
+      fs.symlinkSync(external, path.join(appRoot, '.agents'), process.platform === 'win32' ? 'junction' : 'dir');
+    } else if (escape === 'destination-directory-link') {
+      fs.rmSync(path.join(workspace, '.agents'), { recursive: true });
+      fs.symlinkSync(root, path.join(workspace, '.agents'), process.platform === 'win32' ? 'junction' : 'dir');
+    } else fs.linkSync(outside, destination);
+    assert.throws(() => syncManagedInstructions(appRoot, workspace), /symlink|junction|one link/);
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'Synthetic outside file must remain intact.');
+    assert.equal(fs.statSync(outside).mode, outsideMode);
+  });
+}
+
+test('managed instruction refresh rejects oversized content before reading it', () => {
+  const root = temp();
+  const appRoot = path.join(root, 'app');
+  const workspace = path.join(root, 'workspace');
+  const source = path.join(appRoot, 'templates/managed/AGENTS.md');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, '');
+  fs.truncateSync(source, 4 * 1024 * 1024 + 1);
+  assert.throws(() => syncManagedInstructions(appRoot, workspace), /exceeds its limit/);
+  assert.equal(fs.existsSync(path.join(workspace, 'AGENTS.md')), false);
+});
+
 import { spawnSync } from 'node:child_process';
 test('syncManagedInstructions migrates .scout/ to track cv-renders.json while ignoring the rest of .scout', () => {
   const appRoot = temp();

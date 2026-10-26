@@ -48,6 +48,7 @@ Read [CONTRIBUTING.md](../CONTRIBUTING.md), then use:
 - [provider acceptance](ACCEPTANCE.md) for synthetic expiry/recovery checks and the owner's real-account check;
 - [scan protocol](SCOUT_SCAN_PROTOCOL.md) for scan behaviour;
 - [release process](RELEASE.md) for packaging and publishing;
+- [release key enrollment](RELEASE_KEYS.md) for owner-controlled signing and rotation;
 - [release package verification and signing](SUPPLY_CHAIN_SECURITY.md) for checksums, attestations and platform-signing boundaries; and
 - [documentation maintenance](DOCUMENTATION.md) whenever a change affects users, setup, operations, security, or support.
 

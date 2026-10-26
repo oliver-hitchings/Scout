@@ -3,7 +3,25 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMainModule } from '../ui/lib/mainModule.mjs';
-import { encodeReleaseManifest, MAX_RELEASE_METADATA_BYTES, signingKeyId, verifyReleaseManifest } from '../ui/lib/releaseManifest.mjs';
+import { bundledReleaseTrust, encodeReleaseManifest, MAX_RELEASE_METADATA_BYTES, signingKeyId, verifyReleaseManifest } from '../ui/lib/releaseManifest.mjs';
+
+export function releaseSigningReadiness(trust = bundledReleaseTrust()) {
+  const exact = (value, names) => value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join() === [...names].sort().join();
+  const digest = /^[a-f0-9]{64}$/;
+  if (!exact(trust, ['schemaVersion', 'keys', 'revokedKeyIds']) || trust.schemaVersion !== 1
+    || !Array.isArray(trust.keys) || trust.keys.length > 32
+    || !Array.isArray(trust.revokedKeyIds) || trust.revokedKeyIds.length > 256
+    || trust.revokedKeyIds.some((id) => !digest.test(id))) throw new Error('Invalid release trust');
+  const seen = new Set();
+  for (const key of trust.keys) {
+    if (!exact(key, ['keyId', 'publicKey']) || !digest.test(key.keyId)
+      || typeof key.publicKey !== 'string' || key.publicKey.length > 2048
+      || signingKeyId(key.publicKey) !== key.keyId || seen.has(key.keyId)) throw new Error('Invalid release trust');
+    seen.add(key.keyId);
+  }
+  return { enrolled: trust.keys.some(({ keyId }) => !trust.revokedKeyIds.includes(keyId)) };
+}
 
 function readSmallRegularFile(file, maximum = MAX_RELEASE_METADATA_BYTES) {
   const stat = fs.lstatSync(file);
@@ -75,7 +93,13 @@ if (isMainModule(import.meta.url)) {
       if (!/^--[a-z-]+$/.test(args[index]) || !args[index + 1] || Object.hasOwn(options, args[index])) throw new Error('Invalid arguments');
       options[args[index]] = args[index + 1];
     }
-    if (command === 'sign' && Object.keys(options).sort().join() === '--directory,--key-file,--version') {
+    if (command === 'readiness' && Object.keys(options).every((key) => key === '--trust-file')) {
+      const trust = options['--trust-file'] ? JSON.parse(readSmallRegularFile(options['--trust-file']).toString('utf8')) : bundledReleaseTrust();
+      const { enrolled } = releaseSigningReadiness(trust);
+      process.stdout.write(`enrolled=${enrolled}\n`);
+      process.stderr.write(enrolled ? 'Release public-key enrollment is ready; protected signing still verifies the owner secret.\n'
+        : 'Release signing and publication skipped: no active release key is enrolled. The updater continues to reject all updates. See docs/RELEASE_KEYS.md.\n');
+    } else if (command === 'sign' && Object.keys(options).sort().join() === '--directory,--key-file,--version') {
       const result = await signRelease({ directory: options['--directory'], keyFile: options['--key-file'], version: options['--version'] });
       process.stdout.write(`Signed ${result.artifactCount} release artifacts.\n`);
     } else if (command === 'verify' && ['--package', '--manifest', '--signature', '--version'].every((key) => options[key])

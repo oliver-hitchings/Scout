@@ -2,6 +2,11 @@
 
 Scout application versions and workspace schema versions are separate. Installer upgrades replace application files and managed instructions; they must not delete the private workspace, its credentials or Git history.
 
+Installed application files remain read-only. Scout refreshes its managed
+instruction copies inside the private workspace with owner write permission,
+including copies made read-only by an older package. Scans and upgrades can
+refresh these copies without changing the installed application's permissions.
+
 The installer currently exposes the UI through shortcuts but does not add
 `scout` to `PATH`. Installer users can run diagnostics through the UI or use the
 explicit bundled CLI invocation in [Quick Start](QUICK_START.md).

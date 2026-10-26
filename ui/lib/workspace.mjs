@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { selectedHouseholdInstance } from './household.mjs';
 import { atomicWriteFile } from './atomicWrite.mjs';
+import { validatePhysicalWorkspacePath } from './physicalPath.mjs';
 import { normaliseScheduleDays } from './scheduler.mjs';
 import {
   withWorkspaceMutationAuthority, withWorkspaceMutationAuthorityAsync,
@@ -259,6 +260,77 @@ export function seedWorkspace(appRoot, root) {
   return workspacePaths(root);
 }
 
+function copyManagedInstructions(appRoot, workspaceRoot, source, target, budget, depth = 0) {
+  if (depth > 32 || ++budget.entries > 4096) throw new Error('managed instruction tree exceeds its limit');
+  validatePhysicalWorkspacePath(appRoot, source, 'managed instruction source');
+  const stat = fs.lstatSync(source, { bigint: true });
+  if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) {
+    throw new Error('managed instruction source must be a regular file or directory');
+  }
+  const ensureDirectory = (directory) => {
+    validatePhysicalWorkspacePath(workspaceRoot, directory, 'managed instruction destination');
+    let current = path.resolve(workspaceRoot);
+    for (const name of path.relative(current, directory).split(path.sep).filter(Boolean)) {
+      current = path.join(current, name);
+      validatePhysicalWorkspacePath(workspaceRoot, current, 'managed instruction destination');
+      if (!fs.existsSync(current)) fs.mkdirSync(current, { mode: 0o700 });
+      const existing = fs.lstatSync(current);
+      if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error('managed instruction destination is not a directory');
+      // Repair only private managed copies left read-only by an older install.
+      if ((existing.mode & 0o700) !== 0o700) fs.chmodSync(current, (existing.mode & 0o777) | 0o700);
+    }
+  };
+  if (stat.isDirectory()) {
+    ensureDirectory(target);
+    for (const name of fs.readdirSync(source).sort()) {
+      copyManagedInstructions(appRoot, workspaceRoot, path.join(source, name), path.join(target, name), budget, depth + 1);
+    }
+    const after = fs.lstatSync(source, { bigint: true });
+    if (after.dev !== stat.dev || after.ino !== stat.ino || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) {
+      throw new Error('managed instruction source changed while copying');
+    }
+    return;
+  }
+  if (stat.size > 4n * 1024n * 1024n || (budget.bytes += Number(stat.size)) > 32 * 1024 * 1024) {
+    throw new Error('managed instruction content exceeds its limit');
+  }
+  const descriptor = fs.openSync(source, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+  let bytes;
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size !== stat.size) {
+      throw new Error('managed instruction source changed before reading');
+    }
+    const buffer = Buffer.alloc(Number(stat.size) + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const count = fs.readSync(descriptor, buffer, offset, buffer.length - offset, offset);
+      if (!count) break;
+      offset += count;
+    }
+    bytes = buffer.subarray(0, offset);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    validatePhysicalWorkspacePath(appRoot, source, 'managed instruction source');
+    const named = fs.lstatSync(source, { bigint: true });
+    if (bytes.length !== Number(stat.size) || after.size !== stat.size || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs
+      || named.dev !== stat.dev || named.ino !== stat.ino || named.mtimeNs !== stat.mtimeNs || named.ctimeNs !== stat.ctimeNs) {
+      throw new Error('managed instruction source changed while reading');
+    }
+  } finally { fs.closeSync(descriptor); }
+  ensureDirectory(path.dirname(target));
+  validatePhysicalWorkspacePath(workspaceRoot, target, 'managed instruction destination');
+  let existing;
+  try { existing = fs.lstatSync(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (existing) {
+    if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink !== 1) {
+      throw new Error('managed instruction destination must be a regular file with one link');
+    }
+    if (process.platform === 'win32' && !(existing.mode & 0o200)) fs.chmodSync(target, 0o600);
+  }
+  validatePhysicalWorkspacePath(workspaceRoot, target, 'managed instruction destination');
+  atomicWriteFile(target, bytes, { mode: 0o600 | (Number(stat.mode) & 0o100) });
+}
+
 export function syncManagedInstructions(appRoot, workspaceRoot) {
   const ignore = path.join(workspaceRoot, '.gitignore');
   const ignoreText = fs.existsSync(ignore) ? fs.readFileSync(ignore, 'utf8') : '';
@@ -292,13 +364,13 @@ export function syncManagedInstructions(appRoot, workspaceRoot) {
     [path.join('skills', 'onboard-scout'), path.join('.claude', 'skills', 'onboard-scout')],
     [path.join('docs', 'SCOUT_SCAN_PROTOCOL.md'), path.join('docs', 'SCOUT_SCAN_PROTOCOL.md')],
   ];
+  const budget = { entries: 0, bytes: 0 };
   for (const [sourceRel, targetRel] of managed) {
     const source = path.join(appRoot, sourceRel);
     if (!fs.existsSync(source)) continue;
     const target = path.join(workspaceRoot, targetRel);
     if (path.resolve(source) === path.resolve(target)) continue;
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.cpSync(source, target, { recursive: true, force: true });
+    copyManagedInstructions(appRoot, workspaceRoot, source, target, budget);
   }
 }
 
