@@ -15,6 +15,7 @@ import {
 } from './providerAuthMutation.mjs';
 import { withWorkspaceMutationAuthority } from './workspaceMutationAuthority.mjs';
 import { validatePhysicalWorkspacePath } from './physicalPath.mjs';
+import { onboardingApprovalConfigDigest } from './setupReadiness.mjs';
 
 export const ONBOARDING_INPUT_LIMIT = 80_000;
 export const ONBOARDING_FILES = Object.freeze([
@@ -614,6 +615,7 @@ export function activateOnboardingProposal(root, proposalId, confirmed, {
         livingCvEvidenceDigest: proposal.livingCvEvidenceDigest || null,
         stagedHashes: proposal.stagedHashes,
         activatedHashes: Object.fromEntries(ONBOARDING_FILES.map((relative) => [relative, sha256(targetPath(root, relative))])),
+        configApproval: { schemaVersion: 1, digest: onboardingApprovalConfigDigest(stagedConfig) },
       };
       atomicWriteFile(activatedMarkerFile(root), `${JSON.stringify(marker, null, 2)}\n`);
       _testHooks.afterActivatedMarker?.();

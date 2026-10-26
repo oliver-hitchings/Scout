@@ -373,8 +373,18 @@ Multi-file onboarding activation additionally writes a prepared intent before
 the first replacement and reconciles it at startup under the shared workspace
 mutation authority. Proposal staging and discard cannot erase that intent;
 conflicting post-crash bytes are preserved for review, and terminal marker
-cleanup is idempotent. Setup approval is valid only while every activated file
-matches the marker hash. Shutdown and restart synchronously gate HTTP, chat,
+cleanup is idempotent. Setup approval keeps exact hashes for the four reviewed evidence files and a
+versioned canonical binding for the reviewed configuration. The binding is
+minted only at successful activation. Mode, schedules, completed/deferred setup
+section bookkeeping, the published-profile identifier and internal mutation
+receipts are operational metadata; changing them does not revoke the reviewed
+evidence. Provider/model/endpoint, profile, search, calibration/triage, locale,
+currency, timezone, sources, commute and unknown configuration fields remain
+bound. These saves never rewrite an approval marker or approve unrelated edits.
+Legacy markers retain exact raw-config verification, or compare only against the
+original staged configuration whose bytes still match the recorded staged hash;
+missing or changed staged evidence fails closed. Activation transaction/recovery
+continues to verify full raw hashes of all five files. Shutdown and restart synchronously gate HTTP, chat,
 operation and startup-recovery admission, cancel managed child processes, await
 admitted handlers and settle checkpoint producers, then drain acknowledged
 backup batches and provider-health probes before process handoff. A failed

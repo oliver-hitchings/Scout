@@ -10,6 +10,11 @@ Scout finds jobs for you to review. It keeps a separate private folder for your 
 6. Import your CV. Scout reads selectable-text PDF, Word, Markdown and plain text files. Check that the preview contains your words. Scanned pictures of a CV need text recognition first.
 7. Choose **Generate proposal**, read the proposed CV and preferences, and approve them only when the facts are correct. Review and publish the search rules, then choose **Run first scan now**.
 
+After approving your profile, you can change watch mode or scan schedules,
+finish setup and publish the reviewed search rules without generating the same
+profile again. Changes to career evidence, search preferences, scoring or the
+selected provider/model still require the appropriate review before a first scan.
+
 When the scan finishes, open **Jobs** and read a result. Scout shows what it found and what it could assess; a failed source or missing advert fact is shown as a limitation. Shortlist a role you want to consider. A zero-result scan can be a valid result: check your preferences before widening them.
 
 Use **Good fit** or **Poor fit** to explain a result. Feedback can stay with that job, or create a ranking suggestion for your review in **Settings → Feedback & learning**. A suggestion does not take effect until you publish it.
