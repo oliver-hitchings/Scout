@@ -786,6 +786,17 @@ function recoverClaims(root, options, revalidatedMetadata = null) {
   return 'wait';
 }
 
+// Reuse the process-start-aware guard and its crash-safe recovery for short
+// metadata changes in a dedicated lock root. This grants no workspace lease.
+export function withProcessDirectoryGuard(root, action) {
+  if (typeof action !== 'function') throw new TypeError('directory guard callback is required');
+  return withGuard(path.resolve(root), currentLeaseOwner(), timingOptions(), () => {
+    const result = action();
+    if (result && typeof result.then === 'function') throw new TypeError('directory guard callback must be synchronous');
+    return result;
+  }, { requireCleanupBeforeReturn: true });
+}
+
 function withGuard(root, owner, options, action, behavior = {}) {
   const directory = scoutDirectory(root);
   const guard = guardDirectory(root);

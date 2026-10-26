@@ -61,3 +61,10 @@ test('late native events retain their immutable notification owner across icon r
   assert.match(host, /Object\.ReferenceEquals\(notificationIcon, owner\)/);
   assert.doesNotMatch(host, /tray\.BalloonTipShown/);
 });
+
+test('Windows notification polling failures reach bounded local diagnostics', () => {
+  const poll = host.slice(host.indexOf('void PollNotifications()'), host.indexOf('void ShowStatusBalloon('));
+  assert.match(poll, /catch \(Exception error\)[\s\S]*notificationDiagnostics\.RecordPollFailure\(error\)/);
+  assert.match(host, /sealed class NotificationDiagnostics/);
+  assert.match(host, /host-notifications\.log/);
+});

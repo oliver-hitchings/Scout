@@ -32,4 +32,10 @@ The default workspace is `%USERPROFILE%\Documents\Scout Workspace`. It survives 
 
 On a new computer, choose **Restore my existing Scout workspace** on the first screen, paste the private repository's HTTPS URL, sign in through Git Credential Manager, and enter either the recovery passphrase or recovery key. Scout validates the restored workspace before installing it and will not overwrite an existing non-empty workspace. If Scout does not open, launch it again and use **Settings → Restart Scout**; diagnostic logs are in the workspace's `logs` folder and are never backed up.
 
+Tray notification delivery diagnostics are local to Windows in
+`%LOCALAPPDATA%\Scout\logs\host-notifications.log`. The file retains at most
+64 KiB of timestamps and bounded poll/receipt reason codes. It contains no
+notification text, provider output or raw exception details; pending delivery
+continues to retry normally.
+
 To upgrade, use the tray menu to quit Scout, then install a newer release over the existing application. To uninstall, use Windows Installed Apps; remove any scheduled scan first. The uninstaller removes Scout's exact remote mapping and both current and legacy startup registrations while preserving unrelated Tailscale mappings and your workspace.

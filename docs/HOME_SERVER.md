@@ -130,6 +130,15 @@ For a local executable:
 
 Scout invokes that absolute, protected executable with the fixed argument array followed by one JSON argument using the same payload. It never invokes a shell. The child receives a minimal environment without provider keys, a bounded lifetime/output, and this workspace as its working directory. The owner explicitly authorises that executable to run as the Scout account; keep it read-only to untrusted users and available inside the service sandbox. Configure paths rather than shell pipelines. On timeout Scout terminates the child process group and waits for it to close.
 
+The executable and its directory must also be protected against replacement.
+Unix commands require trusted ownership and no group/world write permission;
+ancestor checks allow a normal sticky temporary directory only when the owned
+child is protected. On Windows, Scout checks the executable and parent owner and
+DACL, including ancestor permissions that could replace the protected directory.
+Only the current user, SYSTEM, Administrators and TrustedInstaller may control
+these paths. Unverifiable ACLs fail closed; choose an administrator-managed or
+private user directory rather than a shared writable command folder.
+
 The headless web service checks the normal alert/digest outbox at startup and every five minutes. Standalone CLI scans also dispatch after completion or a failed preflight. Active-hunt digests become due under the normal notification policy even when no tray is running. A tick delivers at most 16 alerts, stopping on the first failure; unsent alerts remain pending for a later tick. Only successful command exit or HTTP 2xx records the normal delivery receipt. Acknowledgement remains a separate reviewed action in Scout.
 
 Run a delivery check explicitly (with an enabled configuration this sends pending alerts):
@@ -140,7 +149,7 @@ sudo -u scout env HOME=/srv/appdata/scout/workspace-person-a/.scout/provider-hom
   --workspace /srv/appdata/scout/workspace-person-a
 ```
 
-The command reports only enabled/busy and delivered/failed counts. Failures exit nonzero; raw command output and destination URLs are not printed. Set `enabled` to `false` or remove the configuration file to disable delivery. A workspace-local `outbound-dispatch.lock` prevents overlapping daemon/CLI sends. After a crash, stop that instance's web and scan services, verify no dispatcher remains, and remove only that empty lock directory before restarting. Never delete the notification files or receipts to clear a delivery lock.
+The command reports only enabled/busy and delivered/failed counts. Failures exit nonzero; raw command output and destination URLs are not printed. Set `enabled` to `false` or remove the configuration file to disable delivery. A workspace-local `outbound-dispatch.lock` prevents overlapping daemon/CLI sends. It records a random ownership token, acquisition time, host, PID and process-start identity. A proven-dead sender is reclaimed on the next delivery attempt. A live or unobservable sender remains protected regardless of age. Old empty lock directories from earlier versions become eligible after ten minutes; nonempty or unverifiable state is retained. Lock metadata remains after normal release for safe coordination. Never delete notification files, receipts or an active sender's lock state to clear a delivery failure.
 
 ## Upgrade, backup and restore
 
