@@ -122,6 +122,7 @@ function resolveTarget(root, key, kind) {
   else if (key === 'scan-log' && kind === 'run-log') file = paths.scanRuns;
   else if (key === 'search-lanes' && kind === 'json') file = paths.searchLanes;
   else if (key === 'employers' && kind === 'json') file = paths.employers;
+  else if (key === 'notifications' && kind === 'json') file = paths.notifications;
   else if (key === 'search-profile' && kind === 'json') file = paths.searchProfilePublished;
   else if (key === 'workspace-config' && kind === 'json') file = paths.config;
   else {

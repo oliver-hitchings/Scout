@@ -1,5 +1,27 @@
 # Troubleshooting
 
+## First-time setup is confusing
+
+Use the short [Getting started](GETTING_STARTED.md) walkthrough. Background watch is the quiet default; automatic scanning stays off until you enable a schedule. Language, currency and time zone are editable suggestions from the browser. Adzuna is optional and requires a chosen country; leave it off if your country is not supported. Existing workspace settings are preserved when you upgrade.
+
+## Living CV has changed or cannot be read
+
+Open **CV → Living CV → Check for changes**. The source path belongs to the computer running Scout. Check that the file exists, is readable by Scout, is outside the workspace and is Markdown or JSON containing only a `markdown` string. It must contain 500 bytes to 256 KiB of CV text. Scout keeps the saved CV if the source disappears, is incomplete or cannot be parsed.
+
+Review every added and removed line, tick the confirmation and approve the exact diff. If either file changed during review, refresh and review again. Save or discard unsaved editor changes first; retry after an active scan finishes. A damaged version digest fails closed: restore that version from your private backup, without editing the digest or deleting the only copy. See [Living CV](LIVING_CV.md) for history limits and rebuilding your profile.
+
+If an interrupted approval needs recovery, choose **Check for changes** again after any scan finishes. Scout can complete an unchanged approved replacement automatically. A post-crash edit is preserved and blocks automatic recovery; keep a private copy of that edit, restore the affected CV/configuration files from the approved version or a consistent private backup, then retry. Keep `cv/living-cv-approval.json` until recovery finishes; deleting it would discard the recovery boundary.
+
+## A cover-letter PDF is unavailable or stale
+
+Select the cover-letter draft in **CV**, save it, then choose **render PDF**. Cover letters use the same bundled Typst runtime as CVs and are always labelled **DRAFT**. An edit invalidates the old PDF until it is rendered again. If rendering fails, Scout keeps the previous file and shows the failure; repair or reinstall Scout if its Typst runtime is missing. Scout never sends the draft.
+
+If a local-model chat only returns text, use **Create reviewed CV draft** or **Create reviewed letter draft** in the CV library. Local models do not have file tools. The reviewed flow selects existing CV facts, lets you edit them, and requires confirmation before saving. If a preview expires or the CV/job/draft changes, generate it again. A source above 96 KiB or 128 evidence sections must be shortened before this bounded selection flow can run.
+
+## Feedback did not change the order of jobs
+
+Feedback stays with the job unless you request a ranking suggestion. Open **Settings → Feedback & learning**, inspect the pending suggestion and publish it explicitly. The effect applies to future deterministic ranking; historical assessment evidence remains unchanged. Undo restores the previous version; **Reset all learned ranking changes** restores your published search preferences and keeps the feedback history.
+
 Start with `scout doctor --workspace PATH`. Keep error reports synthetic and never attach a real workspace, `.env`, CV or provider log.
 
 ## Scout cannot find the workspace
@@ -24,7 +46,7 @@ workspace.
 
 ## Provider not found or not authenticated
 
-Run the provider's `--version` and authentication status command in a new PowerShell window. Restart Scout after `PATH` changes. Clear unsupported `ai.model` overrides. See [Providers](PROVIDERS.md).
+For Codex or Claude, run the provider's `--version` and authentication status command in a new PowerShell window. Restart Scout after `PATH` changes. For a local model, check the base URL, exact model name and service-account access to the optional API-key file in **Settings → AI providers**. A key rejection needs that file corrected; a network failure needs the server/private-network connection restored. Invalid structured output needs a model that can satisfy the schema. Clear unsupported model overrides. See [Providers](PROVIDERS.md).
 
 ## CV import fails
 
@@ -33,6 +55,14 @@ Files must be PDF, DOCX, Markdown or plain text and no larger than 10 MB. Passwo
 ## Adzuna is unavailable
 
 Confirm both variables exist in the selected workspace `.env`, without quotes accidentally becoming part of their values. Test `scout source adzuna`. Missing Adzuna credentials are non-fatal; invalid credentials, quota and network failures should be recorded as reduced coverage.
+
+## Earlier search settings are active
+
+This dashboard notice means an established workspace is still using its earlier
+search setup. Scans can continue, but the complete published-profile ranking
+path is not active yet. Choose **Review search profile**, inspect the complete
+draft in **Settings → Search & profile**, then explicitly publish it. The notice
+clears for later scans. Fresh workspaces must publish before their first scan.
 
 ## A promising vacancy was not assessed
 
@@ -53,7 +83,9 @@ If Scout reports a provider-health block, open **Settings -> AI providers**.
 `sign-in required`, `network unavailable`, `rate limited`, `CLI update
 required`, and `provider error` are distinct conditions. Fix only the named
 provider and retry explicitly; Scout does not substitute the other provider or
-automatically replay a missed scheduled window. Guided sign-in uses the fixed
+automatically replay a missed scheduled window. A dashboard notice follows an
+expired session and offers **Run missed scan now** once it is reconnected; see
+[reconnecting a provider](RECONNECT_PROVIDER.md). Guided sign-in uses the fixed
 Codex device flow or fixed Claude login flow. If it is unavailable, use the
 manual command shown in Settings. Claude credential clearing is offered only
 after a fresh expired-credential failure and always requires confirmation.
@@ -75,9 +107,11 @@ Do not delete `.scout/scan-lease.json`, `.scout/scan-queue.jsonl`, a run
 journal, or a legacy `.scout-scan.lock` to make work continue. A live,
 unexpired or unverifiable owner must be stopped and allowed to reach its
 takeover margin. Stop every older Scout process before the first fenced
-activation. Once activated, the fenced lease is authoritative; an older Scout
-binary or a new legacy lock is a downgrade/coexistence conflict, and Scout
-refuses to run until only the current version remains.
+activation and disable its schedules. Current Scout refuses a conflicting legacy
+lock after activation. Older binaries cannot see the fenced lease and may still
+write, so this check does not make old/new coexistence safe. Keep only the current
+version running against the live workspace; use a separate compatible snapshot
+for a reviewed rollback.
 
 If a terminal run remains visible because lease cleanup was interrupted, leave
 it in place. A successor validates the terminal journal and removes or
@@ -121,6 +155,10 @@ The same protection applies when a new service worker is ready: Scout keeps the 
 
 The header backup status opens **Backup details**. Use **Advanced backup settings** from there for configuration. The main **Settings** button opens the sectioned settings hub; first-run onboarding appears automatically only for an unfinished workspace.
 
+Search-profile loading and provider sign-in status updates preserve the settings
+you are editing. Choose a search mode or enter job-work models, then use that
+section's **Save** button; loading status alone does not save your changes.
+
 An authenticated remote owner can open Scout and review settings through the private Tailscale address. Scout does not request or display the emergency recovery key remotely; recovery-key handling remains available only on the Scout host and must not prevent the remote interface from loading.
 
 On macOS, use the Scout menu's **Open Scout** and **Show diagnostic log** actions. A packaged startup failure should display an alert naming the log. If Finder still does nothing, verify the DMG checksum, move Scout into Applications, use Control-click → Open once, and inspect `~/Documents/Scout Workspace/logs/ui-stdout.log` before reporting a synthetic error summary.
@@ -145,6 +183,10 @@ mutation share one coordinator and must not overlap.
 ## A scan reviewed candidates but kept zero
 
 This is not automatically a failed scan. Scout shows the number reviewed, number kept and the discard breakdown (hard exclusions, mandatory gates, below-threshold results and provider assessment discards), with links to the bounded candidate audit and dated report. Check source health first. If a first/manual primary scan keeps zero, Scout automatically runs one broader discovery pass while retaining every approved gate. If both passes keep zero, use **Review this scan** to inspect concise role-level reasons. Do not weaken a genuine hard gate merely to produce results.
+
+You can open that review while startup checks finish. Background configuration
+refreshes preserve unchanged review controls and open job feedback; they still
+update changed job facts, preferences and application-file actions.
 
 ## A PDF is missing, stale or blank
 

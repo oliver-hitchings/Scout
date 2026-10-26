@@ -6,6 +6,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { doctor, publicDoctor } from './doctor.mjs';
 import { seedWorkspace } from './workspace.mjs';
+import { recordProviderHealth } from './providerHealth.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const unavailableProviders = () => ({
@@ -13,6 +14,22 @@ const unavailableProviders = () => ({
   claude: { installed: false, authenticated: false },
 });
 const managedTypst = () => ({ available: true, source: 'managed', command: '/app/.scout-runtime/typst', version: 'typst 0.14.2' });
+
+test('doctor cannot advertise local credentials as signed in after a real remote auth failure', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-doctor-authority-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  seedWorkspace(APP_ROOT, root);
+  recordProviderHealth(root, 'codex', {
+    kind: 'remote-auth-failure', source: 'provider-operation',
+  }, { purpose: 'manual-run' });
+  const result = publicDoctor(doctor(root, {
+    providers: { codex: { installed: true, authenticated: true, capabilities: { structuredOutput: true } } },
+    typstResolver: managedTypst,
+  }));
+  assert.equal(result.checks.providers.codex.authenticated, false);
+  assert.equal(result.providerSetupRequired, true);
+  assert.equal(result.ok, false);
+});
 
 test('restore validation accepts a structurally valid workspace before provider setup', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-doctor-'));

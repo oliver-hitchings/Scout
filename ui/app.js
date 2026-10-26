@@ -1,5 +1,8 @@
+import { isSafeModelId } from './lib/modelIdentifier.mjs?v=__SCOUT_UI_BUILD__';
 import { createChatDrawerState, reduceChatDrawer } from './lib/chatDrawerState.mjs?v=__SCOUT_UI_BUILD__';
 import { openCodexTask as codexTaskLaunchView } from './lib/codexDeepLink.mjs?v=__SCOUT_UI_BUILD__';
+import { DURABLE_RUN_STATES, TERMINAL_RUN_STATES } from './lib/durableRunStates.mjs?v=__SCOUT_UI_BUILD__';
+import { jobFeedbackHtml, livingCvHtml } from './lib/standaloneUi.mjs?v=__SCOUT_UI_BUILD__';
 
 // Keep browser orchestration here while pure state machines live in /lib, where
 // deterministic unit tests exercise them without a DOM. Scout character data
@@ -7,12 +10,6 @@ import { openCodexTask as codexTaskLaunchView } from './lib/codexDeepLink.mjs?v=
 const SCOUT_UI_BUILD = typeof document !== 'undefined'
   ? document.querySelector?.('meta[name="scout-ui-build"]')?.content || null
   : null;
-const DURABLE_RUN_STATES = new Set([
-  'collecting', 'normalising', 'deduplicating', 'filtering', 'ranking', 'selecting',
-  'assessing', 'repairing', 'recovering', 'updating-tracker', 'writing-report',
-  'finalising', 'partial', 'abandoned', 'failed', 'complete',
-]);
-const TERMINAL_RUN_STATES = new Set(['partial', 'abandoned', 'failed', 'complete']);
 const ACTIVE_QUEUE_STATES = new Set(['queued', 'claimed', 'legacy-claimed']);
 const TERMINAL_QUEUE_STATES = new Set([
   'expired', 'stale', 'skipped', 'superseded', 'succeeded', 'succeeded-pending',
@@ -285,7 +282,7 @@ const Scout = {
   },
   categoryIds() { return this.categories().map((category) => category.id); },
   categoryLabel(id) { return this.categories().find((category) => category.id === id)?.label || id; },
-  triagePolicy() { return { actionScore: 70, checkScore: 55, ...(this.workspaceConfig?.triage || {}) }; },
+  triagePolicy() { return this.workspaceConfig?.modePolicy?.triage || { actionScore: 70, checkScore: 55, ...(this.workspaceConfig?.triage || {}) }; },
   categoryOf(e) {
     const raw = String(e.category || e.jobCategory || '').toLowerCase();
     const ids = this.categoryIds();
@@ -354,6 +351,8 @@ const Scout = {
   },
 
   async loadOpportunities({ durableRuns: suppliedRuns, durableQueue: suppliedQueue } = {}) {
+    const generation = (this.opportunitiesGeneration || 0) + 1;
+    this.opportunitiesGeneration = generation;
     const [data, cvFiles, latest, durableRuns, durableQueue, feedbackLearning] = await Promise.all([
       this.api('/api/opportunities'),
       this.api('/api/cv'),
@@ -366,6 +365,7 @@ const Scout = {
         : Promise.resolve(suppliedQueue),
       this.api('/api/feedback-learning').catch(() => null),
     ]);
+    if (this.opportunitiesGeneration !== generation) return;
     this.state.data = data;
     this.state.cvFiles = cvFiles;
     this.latestScan = latest?.scan || null;
@@ -376,18 +376,19 @@ const Scout = {
       : { state: 'waiting', requests: [] };
     this.feedbackLearning = feedbackLearning;
     this.applyWorkspaceConfig(this.state.data.workspaceConfig, { render: false });
+    this.renderDiscoveryMode();
     const h = this.state.data.scanHealth;
     const activeRun = this.scanRuns.find((run) => !['complete', 'partial', 'abandoned', 'failed'].includes(run.state));
     const queuedCount = this.scanQueue.requests.filter((request) => request.status === 'queued').length;
     const status = document.getElementById('scan-status');
     if (status && !this.scanRunning) {
-      status.textContent = activeRun
+      this.setScanStatus(activeRun
         ? `${activeRun.label || 'Scan in progress'}${activeRun.assessment?.totalBatches ? ` · batch ${activeRun.assessment.currentBatch} of ${activeRun.assessment.totalBatchesExact ? '' : 'at least '}${activeRun.assessment.totalBatches}` : ''}`
         : queuedCount
         ? `${queuedCount} queued ${queuedCount === 1 ? 'request' : 'requests'}`
         : h?.lastRunAt
         ? `Last scan: ${Number(h.funnel?.assessed ?? h.candidatesFound ?? 0)} assessed · ${Number(h.keepersAdded || 0)} kept`
-        : 'Waiting to scan';
+        : 'Waiting to scan');
       status.dataset.action = h?.lastRunAt ? 'open-scan-result' : '';
       status.tabIndex = h?.lastRunAt ? 0 : -1;
       status.setAttribute('role', h?.lastRunAt ? 'button' : 'status');
@@ -397,26 +398,43 @@ const Scout = {
     this.renderShortlist();
     this.renderPipeline();
     this.renderAll();
-    this.queueStrongMatches();
+    this.loadNotifications();
   },
 
-  async scanNow() {
+  renderDiscoveryMode() {
+    const banner = document.getElementById('discovery-mode-banner');
+    if (!banner) return;
+    const legacy = this.state.data?.discoveryEngine === 'legacy-discovery';
+    banner.classList.toggle('hidden', !legacy);
+    banner.innerHTML = legacy
+      ? '<p><strong>Earlier search settings are active.</strong> Scout can still scan using your earlier setup. It starts ranking the complete pool only after you review and publish your search profile.</p><button class="act" type="button" data-action="review-search-profile">Review search profile</button>'
+      : '';
+  },
+
+  setScanStatus(message) {
+    const status = document.getElementById('scan-status');
+    if (!status) return;
+    status.textContent = message;
+    status.title = message;
+  },
+
+  async scanNow({ provider } = {}) {
     if (this.scanRunning || this.chat?.streaming) return;
     const button = document.getElementById('scan-now');
     this.scanRunning = true;
     if (button) { button.disabled = true; button.textContent = 'Scanning…'; }
-    document.getElementById('scan-status').textContent = 'Scout is searching now…';
+    this.setScanStatus('Scout is searching now…');
     try {
       const response = await fetch('/api/scan', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ provider: this.workspaceConfig?.ai?.provider }),
+        body: JSON.stringify({ provider: provider || this.workspaceConfig?.ai?.provider }),
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || `Scan failed (${response.status})`);
       this.showOperation(result.operation);
       this.watchScanOperation(result.operation.id);
     } catch (error) {
-      document.getElementById('scan-status').textContent = error.message;
+      this.setScanStatus(error.message);
       this.scanRunning = false;
       if (button) { button.disabled = false; button.textContent = 'Scan now'; }
     }
@@ -444,10 +462,10 @@ const Scout = {
         remaining = lowMinutes < 1 ? `about ${highMinutes} min or less remaining` : `about ${lowMinutes}–${highMinutes} min remaining`;
       }
     }
-    status.textContent = operation.status === 'failed'
+    this.setScanStatus(operation.status === 'failed'
       ? `Scan needs attention: ${operation.error || 'unknown error'}`
       : operation.status === 'succeeded' ? 'Scan completed — refreshing results…'
-        : `${operation.phase || 'Scout is searching'} · ${step} · ${elapsed}${remaining ? ` · ${remaining}` : ''}`;
+        : `${operation.phase || 'Scout is searching'} · ${step} · ${elapsed}${remaining ? ` · ${remaining}` : ''}`);
   },
 
   discardBreakdown(scan = this.latestScan || this.state.data?.scanHealth) {
@@ -544,6 +562,7 @@ const Scout = {
         this.scanOperationTimer = null;
         this.scanRunning = false;
         if (button) { button.disabled = false; button.textContent = 'Scan now'; }
+        void this.loadProviderHealth();
         if (body.operation.status === 'succeeded') await this.loadOpportunities();
       } catch {
         // A transient transport or decoding failure is not evidence that the
@@ -647,6 +666,8 @@ const Scout = {
 
   uiReloadBlocker() {
     if (this.cvState.dirty) return 'Save or discard the open CV changes first.';
+    if (this.applicationDraft?.busy) return 'Wait for the application draft to finish first.';
+    if (typeof this.applicationDraft?.markdown === 'string') return 'Save or discard the application draft first.';
     if (this.chat?.streaming) return 'Wait for the current Scout response to finish first.';
     if (this.scanRunning) return 'Wait for the current scan to finish first.';
     if (Object.values(window.ScoutSetup?.operations || {}).some((operation) => ['queued', 'running'].includes(operation?.status))) {
@@ -866,6 +887,87 @@ const Scout = {
     </div>`;
   },
 
+  replaceOpportunityCards(target, html) {
+    const previous = new Map([...(target.querySelectorAll?.('.card[data-id]') || [])]
+      .map((card) => [card.dataset.id, card]));
+    const feedbackEditors = new Map([...previous].map(([id, card]) => [
+      id, card.querySelector('[data-feedback-form]'),
+    ]).filter(([, editor]) => editor));
+    const focused = target.contains?.(document.activeElement) ? document.activeElement : null;
+    const selection = focused && typeof focused.selectionStart === 'number'
+      ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+    // Keep identical nodes connected: a late setup/config refresh may finish
+    // between pointer-down and pointer-up on an unchanged scan-review button.
+    // Compare freshly rendered DOM rather than caching a subset of its inputs.
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    for (const card of template.content.querySelectorAll('.card[data-id]')) {
+      const old = previous.get(card.dataset.id);
+      if (!old) continue;
+      // Include the latest expanded facts/actions before comparing, so an open
+      // card can retain its controls without freezing a stale CV catalogue.
+      if (old.classList.contains('open')) this.expandCard(card.dataset.id, card, true);
+      const feedback = feedbackEditors.get(card.dataset.id);
+      if (feedback) card.append(feedback.cloneNode(true));
+    }
+    const identity = (node) => JSON.stringify([...node.attributes]
+      .filter(({ name }) => name.startsWith('data-'))
+      .map(({ name, value }) => [name, value]).sort());
+    const patchChildren = (parent, source) => {
+      const current = [...parent.childNodes];
+      const next = [...source.childNodes];
+      next.forEach((node, index) => {
+        if (current[index]) patchNode(current[index], node);
+        else parent.append(node);
+      });
+      for (const node of current.slice(next.length)) node.remove();
+    };
+    const patchNode = (current, next) => {
+      if (current.isEqualNode(next)) return;
+      if (current.nodeType !== 1 || next.nodeType !== 1
+        || current.nodeName !== next.nodeName || identity(current) !== identity(next)) {
+        current.replaceWith(next);
+        return;
+      }
+      for (const { name } of [...current.attributes]) {
+        if (!next.hasAttribute(name)) current.removeAttribute(name);
+      }
+      for (const { name, value } of [...next.attributes]) {
+        if (current.getAttribute(name) !== value) current.setAttribute(name, value);
+      }
+      patchChildren(current, next);
+    };
+    const previousChildren = [...target.childNodes];
+    const nextChildren = [...template.content.childNodes];
+    nextChildren.forEach((node, index) => {
+      const current = previousChildren[index];
+      if (current?.isEqualNode(node)) return;
+      // An updated score or fact must not remove an unchanged feedback action.
+      // Keep action identities bound to all their current data attributes.
+      if (current?.nodeType === 1 && node.nodeType === 1
+        && current.matches('.card[data-id]') && current.dataset.id === node.dataset.id) patchNode(current, node);
+      else if (current) current.replaceWith(node);
+      else target.append(node);
+    });
+    for (const node of previousChildren.slice(nextChildren.length)) node.remove();
+    for (const card of target.querySelectorAll?.('.card[data-id]') || []) {
+      const old = previous.get(card.dataset.id);
+      if (!old) continue;
+      // Keep the live editor and any pending save handler, while rebuilding
+      // the job's details from current facts, settings and CV catalogue.
+      const feedback = feedbackEditors.get(card.dataset.id);
+      const copy = card.querySelector('[data-feedback-form]');
+      if (feedback && copy !== feedback) {
+        if (copy) copy.replaceWith(feedback);
+        else card.append(feedback);
+      }
+    }
+    if (focused?.isConnected) {
+      focused.focus({ preventScroll: true });
+      if (selection) focused.setSelectionRange(...selection);
+    }
+  },
+
   renderJobs() {
     if (!this.state.data) return;
     const target = document.getElementById('tab-jobs');
@@ -876,9 +978,9 @@ const Scout = {
     const list = entries.length
       ? entries.map((e) => this.triageCardHtml(e)).join('')
       : (this.latestScanCard() || '<p class="inbox-empty">All caught up - nothing new to review.</p>');
-    target.innerHTML = this.filterBar()
+    this.replaceOpportunityCards(target, this.filterBar()
       + `<div class="label">${entries.length} new job${entries.length === 1 ? '' : 's'} to review</div>`
-      + list;
+      + list);
     this.updateJobsBadge(entries.length);
   },
 
@@ -900,9 +1002,9 @@ const Scout = {
       .filter(([, items]) => items.length)
       .map(([label, items]) => `<div class="label">${label} (${items.length})</div>${items.map((e) => this.cardHtml(e)).join('')}`)
       .join('');
-    target.innerHTML = this.filterBar()
+    this.replaceOpportunityCards(target, this.filterBar()
       + `<div class="label">Speculative opportunities (${entries.length})</div>`
-      + (list || '<p class="inbox-empty">No speculative opportunities match the current commute filter.</p>');
+      + (list || '<p class="inbox-empty">No speculative opportunities match the current commute filter.</p>'));
   },
 
   updateJobsBadge(count) {
@@ -978,9 +1080,9 @@ const Scout = {
     const list = entries.length
       ? entries.map((e) => this.shortlistCardHtml(e)).join('')
       : '<p class="inbox-empty">Nothing shortlisted yet. Tap "Yes" on a job to add it here.</p>';
-    target.innerHTML = this.filterBar()
+    this.replaceOpportunityCards(target, this.filterBar()
       + `<div class="label">Shortlist (${entries.length})</div>`
-      + list;
+      + list);
   },
 
   removeFromShortlist(id) { this.post('/api/status', { id, status: 'ignore' }).then((r) => { if (r && r.ok) this.showUndo(id); }); },
@@ -1039,6 +1141,7 @@ const Scout = {
       'below-relevance-threshold': 'Its deterministic relevance score was below the configured assessment threshold.',
       'diversity-limit': 'A stronger mix of employers, sources, role families, lanes or locations filled the assessment set.',
       'exploration-replacement': 'A seeded exploration place replaced this deterministic selection.',
+      'assessment-change-deferred': 'The assessment prompt, schema or model changed since its earlier rejection. Scout re-checks only a few earlier rejections per scan, strongest first, so this one waits for a later scan.',
       'unchanged-rejection': 'The advert and profile were unchanged since the previous rejection, so Scout did not repeat the assessment.',
       'unchanged-prior-assessment': 'The advert and profile were unchanged since the previous assessment.',
       'verification-scope': 'This verification pass was limited to vacancies requiring a second assessment.',
@@ -1076,7 +1179,7 @@ const Scout = {
     const overlay = document.getElementById('scan-result-overlay');
     document.getElementById('scan-result-body').innerHTML = `
       <p><strong>${this.esc(scan.funnel?.assessed ?? scan.candidatesFound)} assessed, ${this.esc(scan.keepersAdded)} kept</strong>${this.discardBreakdown(scan) ? ` — ${this.esc(this.discardBreakdown(scan))}` : ''}.</p>
-      ${scan.automaticBroadened ? '<div class="setup-callout"><strong>Discovery widened automatically</strong><p>Scout ran one broader query pass but kept every approved salary, location, commute, exclusion and evidence gate.</p></div>' : ''}
+      ${scan.automaticBroadened ? '<div class="setup-callout"><strong>Discovery widened automatically</strong><p>Scout ran one broader query pass but kept every approved salary, location, exclusion and evidence gate. Commute preferences guide assessments and dashboard display; they do not filter ranked discovery.</p></div>' : ''}
       ${coverage}
       ${coverageDimensions}
       ${failureReasons}
@@ -1311,49 +1414,61 @@ const Scout = {
           : `<button class="act bridge" data-action="open-chat" data-id="${this.esc(e.id)}" data-prefill="coverLetter">create custom cover letter</button>`}
         <button class="act" data-action="open-company-history" data-id="${this.esc(e.id)}">company history</button>
         <button class="act" data-action="record-feedback" data-id="${this.esc(e.id)}">record feedback</button>
+        <button class="act" data-action="record-feedback" data-decision="promising" data-id="${this.esc(e.id)}">👍 Good fit</button>
+        <button class="act" data-action="record-feedback" data-decision="not-interested" data-id="${this.esc(e.id)}">👎 Poor fit</button>
         <button class="act bridge" data-action="open-chat" data-id="${this.esc(e.id)}" data-prefill="fit">fit and evidence gaps</button>
         <button class="act bridge" data-action="open-chat" data-id="${this.esc(e.id)}" data-prefill="ask">ask about this job</button>
         <button class="act${prepRecommended ? ' bridge' : ''}" data-action="open-interview-prep" data-id="${this.esc(e.id)}">interview prep</button>
       </div>`;
   },
 
-  async recordJobFeedback(id, presetDecision = null) {
-    const decisions = [
-      'applied', 'interview', 'promising', 'saved', 'rejected',
-      'not-interested', 'duplicate', 'already-seen',
-    ];
-    const reasons = [
-      'location', 'salary', 'seniority', 'responsibilities', 'employer',
-      'role-family', 'other', 'positive', 'duplicate', 'already-seen',
-    ];
-    const decision = presetDecision || window.prompt?.(
-      `Decision (${decisions.join(', ')}):`,
-      'not-interested',
-    );
-    if (!decisions.includes(decision)) return null;
-    const reason = window.prompt?.(`Reason (${reasons.join(', ')}):`, decision === 'promising' ? 'positive' : 'other');
-    if (!reasons.includes(reason)) return null;
-    const explanation = window.prompt?.('Explain this job-specific feedback:', '');
-    if (!String(explanation || '').trim()) return null;
-    if (!this.feedbackLearning?.revision) {
-      this.feedbackLearning = await this.api('/api/feedback-learning');
-    }
-    const result = await this.api('/api/feedback', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        revision: this.feedbackLearning.revision,
-        opportunityId: id,
-        decision,
-        reason,
-        explanation: String(explanation).trim(),
-      }),
-    });
-    if (result?.ok) {
-      this.feedbackLearning = result.ledger;
-      window.alert?.('Job feedback recorded. Ranking did not change; any learned preference must be proposed and reviewed in Settings.');
-    }
-    return result;
+  recordJobFeedback(id, presetDecision = 'promising', sourceCard = null) {
+    const card = sourceCard || [...document.querySelectorAll('.card[data-id]')].find((item) => item.dataset.id === id && item.offsetParent !== null);
+    if (!card) return;
+    card.querySelector('.job-feedback')?.remove();
+    card.insertAdjacentHTML('beforeend', jobFeedbackHtml(id, presetDecision));
+    card.querySelector('[data-feedback-explanation]')?.focus();
+  },
+
+  async saveJobFeedback(element) {
+    const form = element.closest('[data-feedback-form]');
+    if (!form) return;
+    const id = form.dataset.feedbackForm;
+    const decision = form.querySelector('[data-feedback-decision]').value;
+    const reason = form.querySelector('[data-feedback-reason]').value;
+    const explanation = form.querySelector('[data-feedback-explanation]').value.trim();
+    const field = form.querySelector('[data-feedback-scope]').value;
+    const status = form.querySelector('[data-feedback-status]');
+    if (!explanation) { status.textContent = 'Add a reason in your own words before saving.'; return; }
+    element.disabled = true;
+    try {
+      if (!this.feedbackLearning?.revision) {
+        this.feedbackLearning = await this.api('/api/feedback-learning');
+      }
+      const result = await this.api('/api/feedback', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          revision: this.feedbackLearning.revision,
+          opportunityId: id,
+          decision,
+          reason,
+          explanation,
+          ...(field !== 'job' ? { learning: { field } } : {}),
+        }),
+      });
+      if (result?.ok) {
+        this.feedbackLearning = result.ledger;
+        status.textContent = result.proposed ? 'Feedback saved. A ranking suggestion is waiting for your review in Settings → Feedback & learning.' : 'Feedback saved for this job. Other jobs and ranking are unchanged.';
+      } else {
+        status.textContent = result?.error || 'Feedback could not be saved. Your explanation is still here; retry when the workspace is ready.';
+        if (result?.conflict) this.feedbackLearning = null;
+      }
+      return result;
+    } catch (error) {
+      status.textContent = error.message || 'Feedback could not be saved. Your explanation is still here.';
+      return null;
+    } finally { element.disabled = false; }
   },
 
   async post(pathname, payload, { retryTrackerConflict = true } = {}) {
@@ -1586,7 +1701,7 @@ const Scout = {
   async seeCoverLetter(slug) {
     this.showTab('cv');
     await this.waitFor('#cv-text');
-    this.openCv(`applications/${slug}/outreach.md`, null);
+    this.openCv(`applications/${slug}/outreach.md`, slug);
   },
 
   chooseCvOptions(id, artifactSlug = null) {
@@ -1637,16 +1752,24 @@ const Scout = {
       .sort((a, b) => `${a.company} ${a.role}`.localeCompare(`${b.company} ${b.role}`));
     const opportunityOptions = opportunities.map((entry) =>
       `<option value="${this.esc(entry.id)}">${this.esc(entry.company)} — ${this.esc(entry.role)}</option>`).join('');
+    const letterBtns = (list.outreach || []).map((slug) => `<button class="act cv-entry" data-action="open-cv" data-cv-path="applications/${this.esc(slug)}/outreach.md" data-slug="${this.esc(slug)}"><span class="cv-entry-label">${this.esc(this.opportunitiesForSlug(slug)[0]?.company || slug)} — cover letter</span><span class="chip">DRAFT</span></button>`).join('');
+    const guidedBtns = (list.draftCvs || []).map(({ slug }) => `<button class="act cv-entry" data-action="open-cv" data-cv-path="applications/${this.esc(slug)}/draft-cv.md" data-slug="${this.esc(slug)}"><span class="cv-entry-label">${this.esc(this.opportunitiesForSlug(slug)[0]?.company || slug)} — reviewed CV draft</span><span class="chip">DRAFT</span></button>`).join('');
     el.innerHTML = `
       <div class="cv-library-head"><div><h2>CV library</h2><div class="meta">Existing sources remain available even before a PDF or quality review exists.</div></div><button class="act bridge" data-action="toggle-cv-create">Review CV options</button></div>
+      <p class="meta">Application CVs and cover letters are DRAFTS for your review. Scout never sends them.</p>
+      <section id="living-cv-panel" aria-label="Living CV"></section>
       <div id="cv-create-panel" class="cv-create-panel hidden cv-create">
-        ${opportunityOptions ? `<label>Tracked opportunity<select id="cv-create-opportunity">${opportunityOptions}</select></label><button class="act primary" data-action="start-cv-create">Start tailored CV</button>` : '<div class="meta">Add a tracked opportunity before creating a tailored CV.</div>'}
+        ${opportunityOptions ? `<label>Tracked opportunity<select id="cv-create-opportunity">${opportunityOptions}</select></label><button class="act primary" data-action="start-cv-create">Start tailored CV</button><button class="act" data-action="start-cover-letter">Start cover-letter draft</button>` : '<div class="meta">Add a tracked opportunity before creating a tailored CV.</div>'}
+        ${opportunityOptions ? '<button class="act" data-action="start-reviewed-draft" data-kind="cv">Create reviewed CV draft</button><button class="act" data-action="start-reviewed-draft" data-kind="cover-letter">Create reviewed letter draft</button>' : ''}
       </div>
+      <section id="application-draft-panel" aria-label="Reviewed application draft">${this.applicationDraftHtml()}</section>
       <div class="cv-layout">
         <aside class="cv-sidebar">
           <div class="label">master</div>
           <button class="act" data-action="open-cv" data-cv-path="${this.esc('cv/master-cv.md')}">master-cv.md</button>
           <div class="label">applications</div>${appBtns}
+          <div class="label">cover-letter drafts</div>${letterBtns || '<div class="meta">No cover-letter drafts yet.</div>'}
+          <div class="label">reviewed CV drafts</div>${guidedBtns || '<div class="meta">No reviewed CV drafts yet.</div>'}
         </aside>
         <section class="cv-editor-panel">
           <div class="label"><span id="cv-editing">select a file</span> <span id="cv-dirty" style="color:var(--warn)"></span> <span id="cv-status" class="meta"></span></div>
@@ -1661,7 +1784,7 @@ const Scout = {
             <div class="label">request changes through the job chat</div>
             <div class="meta">This opens the same job-specific Codex or Claude conversation used to create the CV. Your request is placed in the message box for review; nothing is sent until you press Send in the chat drawer.</div>
             <div class="cv-chat-request-row">
-              <input id="cv-instruction" class="act" placeholder="e.g. lead with the drone/UAV angle and mention the composites oven rig">
+              <input id="cv-instruction" class="act" placeholder="e.g. lead with the most relevant confirmed experience">
               <button class="act bridge" data-action="open-chat-for-cv">open job chat with request</button>
             </div>
           </div>
@@ -1695,6 +1818,146 @@ const Scout = {
       await this.showStoredCv();
       await this.reattachCvRender();
     }
+    await this.refreshLivingCv();
+  },
+
+  async refreshLivingCv(force = false) {
+    const panel = document.getElementById('living-cv-panel');
+    if (!force && panel?.contains(document.activeElement)) return;
+    try {
+      const status = await this.api('/api/cv/living');
+      if (status.error) throw new Error(status.error);
+      const notice = document.getElementById('living-cv-notice');
+      if (notice) {
+        notice.classList.toggle('hidden', !['changed', 'unavailable', 'recovery-needed'].includes(status.state));
+        notice.textContent = status.state === 'changed' ? 'Your CV source changed. Review it before Scout uses the new facts. ' : status.state === 'recovery-needed' ? 'An interrupted CV approval needs attention. Scans wait until it is recovered. ' : 'Your CV source is unavailable. Scout is using your saved CV. ';
+        const button = document.createElement('button'); button.className = 'act'; button.textContent = 'Review CV source'; button.dataset.action = 'living-cv-open'; notice.append(button);
+      }
+      if (!panel) return;
+      const signature = JSON.stringify(status);
+      if (!force && panel.dataset.signature === signature) return;
+      const open = panel.querySelector('details')?.open || force;
+      panel.innerHTML = livingCvHtml(status);
+      panel.querySelector('details').open = open;
+      panel.dataset.signature = signature;
+      this.livingCv = status;
+    } catch (error) { if (panel) panel.textContent = error.message || 'Living CV status is unavailable. Your saved CV is unchanged.'; }
+  },
+
+  async openLivingCv() {
+    this.showTab('cv');
+    await this.waitFor('#living-cv');
+    document.getElementById('living-cv').open = true;
+    document.getElementById('living-cv').scrollIntoView?.({ block: 'start' });
+  },
+
+  async updateLivingCv(action) {
+    const endpoint = action === 'approve' ? 'approve' : 'source';
+    const payload = action === 'approve'
+      ? { confirmed: document.getElementById('living-cv-confirm')?.checked === true, revision: this.livingCv?.revision }
+      : { sourcePath: action === 'disconnect' ? null : document.getElementById('living-cv-source')?.value.trim() };
+    if (action === 'approve' && !payload.confirmed) return this.setCvStatus('Review and confirm the exact CV change first.');
+    if (action === 'approve' && this.cvState.dirty) return this.setCvStatus('Save or discard your editor changes before approving an external CV.');
+    const result = await this.api(`/api/cv/living/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    if (result.error) { this.setCvStatus(result.error); await this.refreshLivingCv(true); return; }
+    if (action === 'approve' && this.cvState.path === 'cv/master-cv.md') {
+      this.cvState.content = await this.api('/api/cv/file?path=cv%2Fmaster-cv.md');
+      document.getElementById('cv-text').value = this.cvState.content;
+      this.state.cvFiles = await this.api('/api/cv');
+      this.updateCvControls();
+      await this.showStoredCv();
+    }
+    this.setCvStatus(action === 'approve' ? 'Updated CV saved. Both versions kept; review search preferences when ready.' : 'Living CV source updated.');
+    await this.refreshLivingCv(true);
+  },
+
+  async openLivingCvVersion(id) {
+    const text = await this.api(`/api/cv/living/version?id=${encodeURIComponent(id)}`);
+    document.getElementById('living-cv-version-text').textContent = typeof text === 'string' ? text : text.error;
+  },
+
+  applicationDraftHtml() {
+    const draft = this.applicationDraft;
+    if (!draft) return '';
+    const title = draft.kind === 'cv' ? 'CV' : 'cover-letter';
+    return `<div class="setup-callout"><h3>Review ${title} draft</h3><p>Scout selects relevant confirmed CV passages and keeps their facts and headings. You can edit the draft below. Check the current advert and every fact; Scout never sends this material.</p>
+      <p role="status">${this.esc(draft.message || '')}</p>
+      ${typeof draft.markdown === 'string' ? `<label class="setup-field wide">Editable draft<textarea id="application-draft-text" class="cv-source" data-input-action="application-draft-dirty"${draft.busy ? ' readonly' : ''}>${this.esc(draft.markdown)}</textarea></label><label><input id="application-draft-confirm" type="checkbox"${draft.busy ? ' disabled' : ''}> I reviewed the facts and my edits and want to save this draft</label><p><button class="act primary" data-action="save-reviewed-draft"${draft.busy ? ' disabled' : ''}>Save reviewed draft</button> <button class="act" data-action="discard-reviewed-draft"${draft.busy ? ' disabled' : ''}>Discard unsaved draft</button></p>` : `<button class="act primary" data-action="generate-reviewed-draft"${draft.busy ? ' disabled' : ''}>Generate draft from confirmed CV facts</button>`}
+    </div>`;
+  },
+
+  renderApplicationDraft() {
+    const panel = document.getElementById('application-draft-panel');
+    if (panel) panel.innerHTML = this.applicationDraftHtml();
+  },
+
+  async startReviewedDraft(id, kind) {
+    id ||= document.getElementById('cv-create-opportunity')?.value;
+    if (!id) return;
+    if (this.applicationDraft?.busy) {
+      this.applicationDraft.message = 'Wait for the current application draft to finish before starting another.';
+      this.renderApplicationDraft();
+      return;
+    }
+    if (typeof this.applicationDraft?.markdown === 'string'
+      && !window.confirm('Discard this unsaved application draft and your edits before starting another?')) return;
+    this.applicationDraft = { opportunityId: id, kind, message: 'Generate a draft, then review it before saving. Your application CV and other drafts stay in place until you explicitly save.' };
+    this.showTab('cv');
+    await this.waitFor('#application-draft-panel');
+    this.renderApplicationDraft();
+    document.getElementById('application-draft-panel')?.scrollIntoView?.({ block: 'start' });
+  },
+
+  async generateReviewedDraft() {
+    const draft = this.applicationDraft;
+    if (!draft || draft.busy) return;
+    draft.busy = true; draft.message = 'Selecting confirmed facts with your chosen AI provider…'; this.renderApplicationDraft();
+    try {
+      const started = await this.api('/api/cv/drafts/generate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ opportunityId: draft.opportunityId, kind: draft.kind }) });
+      if (started.error || !started.operation?.id) throw new Error(started.error || 'Draft generation could not start.');
+      let operation = started.operation;
+      while (['queued', 'running'].includes(operation.status)) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        const value = await this.api(`/api/operations/${encodeURIComponent(operation.id)}`);
+        if (value.error || !value.operation) throw new Error(value.error || 'Draft status is unavailable.');
+        operation = value.operation;
+      }
+      if (operation.status !== 'succeeded') throw new Error(operation.error || 'Draft generation failed. Your saved files are unchanged.');
+      const preview = await this.api(`/api/cv/drafts/preview?id=${encodeURIComponent(operation.result.draftId)}`);
+      if (this.applicationDraft !== draft) return;
+      if (preview.error) throw new Error(preview.error);
+      this.applicationDraft = { ...preview, draftId: operation.result.draftId, message: 'DRAFT only. Edit and confirm the facts before saving. This preview expires after one hour or when Scout restarts.' };
+    } catch (error) {
+      if (this.applicationDraft !== draft) return;
+      draft.message = error.message; draft.busy = false;
+    }
+    this.renderApplicationDraft();
+  },
+
+  async saveReviewedDraft() {
+    const draft = this.applicationDraft;
+    if (!draft?.draftId || draft.busy) return;
+    if (!document.getElementById('application-draft-confirm')?.checked) { draft.message = 'Review and confirm the draft before saving.'; this.renderApplicationDraft(); return; }
+    draft.markdown = document.getElementById('application-draft-text').value;
+    draft.busy = true;
+    draft.message = 'Saving reviewed draft…';
+    this.renderApplicationDraft();
+    let saved;
+    try {
+      saved = await this.api('/api/cv/drafts/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ draftId: draft.draftId, markdown: draft.markdown, confirmed: true }) });
+      if (this.applicationDraft !== draft) return;
+      if (saved.error) throw new Error(saved.error);
+    } catch (error) {
+      if (this.applicationDraft !== draft) return;
+      draft.busy = false;
+      draft.message = error.message;
+      this.renderApplicationDraft();
+      return;
+    }
+    this.applicationDraft = null;
+    await this.renderCv();
+    await this.openCv(saved.path, saved.slug, draft.opportunityId);
+    this.setCvStatus('Reviewed draft saved. Render its DRAFT PDF when ready; nothing was sent.');
   },
 
   opportunityIdForSlug(slug) {
@@ -1724,6 +1987,7 @@ const Scout = {
   // generation as the artifact slug, so "start fresh" really does write to a new
   // per-role folder and the existing folder is never overwritten.
   reviewCvOptions(id) {
+    if (this.workspaceConfig?.ai?.provider === 'local') return this.startReviewedDraft(id, 'cv');
     const entry = (this.state.data?.opportunities || []).find((item) => item.id === id);
     if (!entry) return;
     const resolved = this.resolveArtifactFor(entry);
@@ -1762,7 +2026,9 @@ const Scout = {
       b.classList.toggle('active', b.dataset.cvPath === pathRel));
     this.updateCvControls();
     await this.showStoredCv();
-    if (slug) await this.refreshCvQuality(slug);
+    if (['cover-letter', 'draft-cv'].includes(this.currentCvRequest()?.target)) {
+      document.getElementById('cv-quality').innerHTML = '<b>DRAFT — for your review</b><p>Review every fact and edit the text before using it. The PDF is labelled DRAFT. Your full application CV and its separate quality review stay available. Scout never sends it.</p>';
+    } else if (slug) await this.refreshCvQuality(slug);
     else {
       const quality = document.getElementById('cv-quality');
       if (quality) quality.innerHTML = '<div class="label">Master reference</div><b>Evidence source</b><div class="meta">The reference PDF is for reviewing the approved master evidence. Tailored application PDFs keep their separate quality gate.</div>';
@@ -1771,11 +2037,17 @@ const Scout = {
 
   currentCvRequest() {
     if (!this.cvState.path) return null;
+    if (this.cvState.path.endsWith('/outreach.md')) return { target: 'cover-letter', slug: this.cvState.slug };
+    if (this.cvState.path.endsWith('/draft-cv.md')) return { target: 'draft-cv', slug: this.cvState.slug };
     return this.cvState.slug ? { target: 'application', slug: this.cvState.slug } : { target: 'master' };
   },
 
   currentCvRenderState() {
     if (!this.cvState.path) return { pdf: false, current: false, stale: false };
+    if (this.currentCvRequest()?.target === 'cover-letter') {
+      return this.state.cvFiles?.letters?.find((item) => item.slug === this.cvState.slug) || { pdf: false, current: false, stale: false };
+    }
+    if (this.currentCvRequest()?.target === 'draft-cv') return this.state.cvFiles?.draftCvs?.find((item) => item.slug === this.cvState.slug) || { pdf: false, current: false, stale: false };
     if (!this.cvState.slug) return this.state.cvFiles?.masterRender || { pdf: false, current: false, stale: false };
     const entry = this.state.cvFiles?.entries?.find((item) => item.slug === this.cvState.slug);
     if (!entry) return { pdf: false, current: false, stale: false };
@@ -1783,7 +2055,7 @@ const Scout = {
   },
 
   updateCvControls() {
-    const current = this.currentCvRenderState().current === true;
+    const current = !this.cvState.dirty && this.currentCvRenderState().current === true;
     for (const id of ['cv-download', 'cv-fullscreen', 'cv-open-pdf']) {
       const button = document.getElementById(id); if (button) button.disabled = !current;
     }
@@ -1806,12 +2078,20 @@ const Scout = {
     if (!this.cvState.path) return alert('Open a file first.');
     const content = document.getElementById('cv-text').value;
     this.setCvStatus('Saving…');
-    const save = await this.post('/api/cv/save', { path: this.cvState.path, content });
+    const save = await this.api('/api/cv/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: this.cvState.path, content }) });
     if (!(save && save.ok)) return this.setCvStatus('Save failed. Your changes are still in the editor.');
     this.cvState.dirty = false;
     this.cvState.content = content;
+    this.state.cvFiles = await this.api('/api/cv');
     const dirty = document.getElementById('cv-dirty');
     if (dirty) dirty.textContent = '';
+    const request = this.currentCvRequest();
+    const catalogue = this.state.cvFiles;
+    const rendered = request?.target === 'master' ? catalogue?.masterRender
+      : (request?.target === 'cover-letter' ? catalogue?.letters : request?.target === 'draft-cv' ? catalogue?.draftCvs : catalogue?.entries)?.find((entry) => entry.slug === request?.slug);
+    if (rendered) Object.assign(rendered, { current: false, pdfCurrent: false, stale: rendered.pdf === true, pdfStale: rendered.pdf === true });
+    this.updateCvControls();
+    await this.showStoredCv();
     this.setCvStatus('Saved. The PDF is out of date until you render it.');
   },
 
@@ -1869,7 +2149,7 @@ const Scout = {
           this.state.cvFiles = await this.api('/api/cv');
           this.updateCvControls();
           await this.showStoredCv();
-          if (this.cvState.slug) await this.refreshCvQuality(this.cvState.slug);
+          if (this.cvState.slug && this.currentCvRequest()?.target === 'application') await this.refreshCvQuality(this.cvState.slug);
         }
       } catch (error) {
         this.cvRenderTimer = null;
@@ -1931,7 +2211,7 @@ const Scout = {
   pdfUrl({ download = false } = {}) {
     const request = this.currentCvRequest();
     if (!request) return '';
-    const query = request.target === 'master' ? 'target=master' : `slug=${encodeURIComponent(request.slug)}`;
+    const query = request.target === 'master' ? 'target=master' : `target=${encodeURIComponent(request.target)}&slug=${encodeURIComponent(request.slug)}`;
     return `/api/cv/pdf?${query}${download ? '&download=1' : ''}&t=${Date.now()}#zoom=${encodeURIComponent(this.cvPreviewZoom)}`;
   },
 
@@ -1964,6 +2244,11 @@ const Scout = {
 
   async downloadCv() {
     if (!this.currentCvRenderState().current) return alert('Save and render a current PDF first.');
+    if (['cover-letter', 'draft-cv'].includes(this.currentCvRequest()?.target)) {
+      const a = document.createElement('a');
+      a.href = this.pdfUrl({ download: true }); a.download = `${this.cvState.slug}-${this.currentCvRequest().target}-DRAFT.pdf`;
+      document.body.appendChild(a); a.click(); a.remove(); return;
+    }
     if (!this.cvState.slug) {
       const a = document.createElement('a');
       a.href = this.pdfUrl({ download: true }); a.download = 'master-cv-reference.pdf';
@@ -2214,7 +2499,7 @@ const Scout = {
   },
 
   engineCardHtml(engine, info) {
-    const name = engine[0].toUpperCase() + engine.slice(1);
+    const name = engine === 'local' ? 'Local model' : engine[0].toUpperCase() + engine.slice(1);
     const models = info?.models || [];
     const selected = this.enginePicks?.[engine] ?? '';
     const effective = info?.effectiveModel || {
@@ -2229,7 +2514,7 @@ const Scout = {
       : effective.known ? `Provider default — ${effective.label}` : 'Provider default — model unknown';
     const option = (value, label, { disabled = false } = {}) =>
       `<option value="${this.esc(value)}" ${disabled ? 'disabled' : ''} ${String(selected) === String(value) ? 'selected' : ''}>${this.esc(label)}</option>`;
-    const catalogueLabel = info?.catalogue?.state === 'refreshed'
+    const catalogueLabel = engine === 'local' ? 'Your configured model · text chat' : info?.catalogue?.state === 'refreshed'
       ? 'refreshed catalogue'
       : 'bundled fallback · availability may be unknown';
     const modelLabel = (model) => [
@@ -2250,7 +2535,7 @@ const Scout = {
           ${option('__other__', 'Other…')}
         </select>
       </label>
-      <input class="engine-model-custom ${selected === '__other__' ? '' : 'hidden'}" data-engine-model-custom="${this.esc(engine)}" type="text" placeholder="Exact model id" maxlength="128" pattern="[A-Za-z0-9._:\-]{1,128}">
+      <input class="engine-model-custom ${selected === '__other__' ? '' : 'hidden'}" data-engine-model-custom="${this.esc(engine)}" type="text" placeholder="Exact model id" maxlength="128" pattern="[A-Za-z0-9._:/\-]{1,128}">
       <div class="engine-model-spend">${this.modelSpendHtml(engine, info?.usage, selected)}</div>
       ${unavailableExplanation}
       <div class="engine-model-status meta" role="status" aria-live="polite"></div>
@@ -2266,7 +2551,7 @@ const Scout = {
     return `<div class="chat-picker">
       <div class="label">choose an engine and model for ${onboarding ? 'setup' : prep ? 'interview prep' : 'this job'}</div>
       <div class="engine-cards">
-        ${['claude', 'codex'].map((engine) => this.engineCardHtml(engine, engines?.[engine])).join('')}
+        ${['claude', 'codex', 'local'].map((engine) => this.engineCardHtml(engine, engines?.[engine])).join('')}
       </div>
       ${engines ? '' : engineSlot?.status === 'error'
         ? '<p class="meta" role="status">Model choices unavailable. Provider defaults and safe custom IDs remain available.</p>'
@@ -2516,10 +2801,29 @@ const Scout = {
     const body = document.getElementById('chat-body');
     if (!body || !this.chat) return;
     body.innerHTML = this.chat.data.messages.map((m) => this.chatBubble(m.role, m.text)).join('')
+      + this.chatRetryHtml()
       + this.cvLinkHtml()
       + this.interviewPrepPackHtml()
       + (this.chat.engine ? '' : this.chatPickerHtml());
     body.scrollTop = body.scrollHeight;
+  },
+
+  chatRetryHtml() {
+    const retry = this.chat?.data?.retry;
+    const names = { codex: 'Codex', claude: 'Claude', local: 'Local model' };
+    if (!retry?.id || !Object.hasOwn(names, retry.engine)) return '';
+    const name = names[retry.engine];
+    const recovery = retry.engine === 'local'
+      ? 'Check the model server and API-key file in Settings → AI providers'
+      : `Reconnect ${name} in Settings`;
+    return `<div class="chat-msg system" role="status">Your failed message is saved. ${recovery}, then resend it when you are ready. Scout never resends automatically.
+      <button class="act" data-action="resend-chat"${this.chat.streaming ? ' disabled' : ''}>Resend with ${name}</button></div>`;
+  },
+
+  resendChat() {
+    const retry = this.chat?.data?.retry;
+    if (!retry?.id || this.chat.streaming) return;
+    return this.sendChat({ retryId: retry.id });
   },
 
   chatNearBottom(body, threshold = 80) {
@@ -2570,7 +2874,7 @@ const Scout = {
       return;
     }
     const model = this.selectedEngineModel(engine);
-    if (selection === '__other__' && !/^[A-Za-z0-9._:-]{1,128}$/.test(String(model || ''))) {
+    if (selection === '__other__' && !isSafeModelId(model)) {
       if (status) status.textContent = 'Enter a safe exact model ID.';
       return;
     }
@@ -2617,19 +2921,22 @@ const Scout = {
     }
   },
 
-  async sendChat() {
+  async sendChat({ retryId = null } = {}) {
     const c = this.chat;
     if (!c || c.streaming) return;
     if (!c.engine) return alert('Pick an engine first.');
     const input = document.getElementById('chat-input');
-    const text = input.value.trim();
+    const retry = retryId ? c.data.retry : null;
+    const text = retryId
+      ? c.data.messages?.[retry?.messageIndex]?.text || ''
+      : input.value.trim();
     if (!text) return;
     c.streaming = true;
     this.setChatScoutState('thinking', 'I’m thinking…');
-    input.value = '';
+    if (!retryId) input.value = '';
     this.setChatBusy(true);
     const body = document.getElementById('chat-body');
-    body.insertAdjacentHTML('beforeend', this.chatBubble('user', text));
+    if (!retryId) body.insertAdjacentHTML('beforeend', this.chatBubble('user', text));
     body.insertAdjacentHTML('beforeend', `<div class="chat-row assistant">${scoutMarkup('explaining', 'scout-chat-avatar')}<div class="chat-msg assistant" id="chat-live">&hellip;</div></div>`);
     this.initScoutSprites(body);
     body.scrollTop = body.scrollHeight;
@@ -2640,7 +2947,7 @@ const Scout = {
       const resp = await fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: c.id, purpose: c.purpose, engine: c.engine, model: c.model || null, text, mode: c.mode }),
+        body: JSON.stringify({ id: c.id, purpose: c.purpose, engine: c.engine, model: c.model || null, text, mode: c.mode, ...(retryId ? { retryId } : {}) }),
       });
       const ct = resp.headers.get('content-type') || '';
       if (!resp.ok || !ct.includes('event-stream')) {
@@ -2669,16 +2976,18 @@ const Scout = {
         if (event === 'done') {
           this.setChatScoutState('success', 'Done. Have a look.');
           c.data.messages.push(
-            { role: 'user', text },
+            ...(!retryId ? [{ role: 'user', text }] : []),
             ...(data.updates?.length ? data.updates : [data.text]).filter(Boolean).map((update) => ({ role: 'assistant', text: update })),
           );
+          delete c.data.retry;
           c.data.cliSessionId = data.sessionId;
           if (data.filesTouched) c.data.filesTouched = data.filesTouched;
         }
         if (event === 'error') {
           this.setChatScoutState('warning', 'I hit a problem, but your completed work is safe.');
           terminalError = data.message;
-          c.data.messages.push({ role: 'user', text }, { role: 'system', text: data.message });
+          c.data.messages.push(...(!retryId ? [{ role: 'user', text }] : []), { role: 'system', text: data.message });
+          if (data.retry) c.data.retry = data.retry;
           if (data.sessionId) c.data.cliSessionId = data.sessionId;
           if (data.filesTouched) c.data.filesTouched = data.filesTouched;
         }
@@ -2687,7 +2996,7 @@ const Scout = {
     } catch (e) {
       this.setChatScoutState('warning', 'I couldn’t complete that turn.');
       terminalError = e.message;
-      c.data.messages.push({ role: 'user', text }, { role: 'system', text: e.message });
+      c.data.messages.push(...(!retryId ? [{ role: 'user', text }] : []), { role: 'system', text: e.message });
     }
     c.streaming = false;
     c.mode = null;
@@ -2933,8 +3242,12 @@ const Scout = {
   },
 
   runAction(element) {
+    // Safari does not focus buttons on a mouse click. Capture the actual
+    // trigger before a modal's mutation observer records its return target.
+    element.focus?.({ preventScroll: true });
     const { action, id, key, tab, date, index, slug, prefill, prompt, engine } = element.dataset;
     switch (action) {
+      case 'review-search-profile': return window.ScoutSetup?.openSettings?.('search');
       case 'show-discovery': return this.showDiscovery();
       case 'dismiss-discoveries': return this.dismissDiscoveries();
       case 'sort': return this.setSort(key);
@@ -2951,7 +3264,7 @@ const Scout = {
       case 'see-cv': return this.seeCv(slug, id || null);
       case 'choose-cv-options': return this.reviewCvOptions(id);
       case 'see-cover-letter': return this.seeCoverLetter(slug);
-      case 'open-chat': return this.openChat(id, prefill);
+      case 'open-chat': return prefill === 'coverLetter' && this.workspaceConfig?.ai?.provider === 'local' ? this.startReviewedDraft(id, 'cover-letter') : this.openChat(id, prefill);
       case 'open-company-history': return this.openCompanyHistory(id);
       case 'open-interview-prep': return this.openInterviewPrep(id);
       case 'remove-company-communication': return this.removeCompanyCommunication(id);
@@ -2960,6 +3273,11 @@ const Scout = {
       case 'open-cv': return this.openCv(element.dataset.cvPath, slug || null, element.dataset.opportunityId || null);
       case 'toggle-cv-create': return this.toggleCvCreate();
       case 'start-cv-create': return this.startCvCreate();
+      case 'start-cover-letter': return this.workspaceConfig?.ai?.provider === 'local' ? this.startReviewedDraft(null, 'cover-letter') : this.openChat(document.getElementById('cv-create-opportunity')?.value, 'coverLetter');
+      case 'start-reviewed-draft': return this.startReviewedDraft(id, element.dataset.kind);
+      case 'generate-reviewed-draft': return this.generateReviewedDraft();
+      case 'save-reviewed-draft': return this.saveReviewedDraft();
+      case 'discard-reviewed-draft': if (this.applicationDraft?.busy) return; this.applicationDraft = null; return this.renderApplicationDraft();
       case 'save-cv': return this.saveCv();
       case 'render-cv': return this.renderCvOnly();
       case 'download-cv': return this.downloadCv();
@@ -2973,14 +3291,27 @@ const Scout = {
       case 'open-codex-task': return this.openCodexTask();
       case 'copy-codex-task': return this.copyCodexTask();
       case 'close-chat': return this.closeChat();
+      case 'acknowledge-notification': return this.acknowledgeNotification(id);
+      case 'review-notification': this.showTab('jobs'); return this.loadOpportunities();
       case 'send-chat': return this.sendChat();
+      case 'resend-chat': return this.resendChat();
       case 'stop-chat': return this.stopChat();
       case 'pick-engine': return this.pickEngine(engine);
       case 'triage-yes': return this.triageYes(id);
       case 'triage-no': return this.triageNo(id);
       case 'undo-dismiss': return this.undoDismiss(id);
       case 'remove-shortlist': return this.removeFromShortlist(id);
-      case 'record-feedback': return this.recordJobFeedback(id);
+      case 'record-feedback': return this.recordJobFeedback(id, element.dataset.decision || 'promising', element.closest('.card[data-id]'));
+      case 'save-feedback': return this.saveJobFeedback(element);
+      case 'cancel-feedback': return element.closest('[data-feedback-form]')?.remove();
+      case 'living-cv-connect': return this.updateLivingCv('connect');
+      case 'living-cv-disconnect': return this.updateLivingCv('disconnect');
+      case 'living-cv-approve': return this.updateLivingCv('approve');
+      case 'living-cv-refresh': return this.refreshLivingCv(true);
+      case 'living-cv-open': return this.openLivingCv();
+      case 'living-cv-profile': return window.ScoutSetup?.openSettings?.('search');
+      case 'living-cv-reprofile': return window.ScoutSetup?.resumeAt?.(5);
+      case 'living-cv-version': return this.openLivingCvVersion(element.dataset.version);
       case 'restore': return this.restoreEntry(id);
       default: return undefined;
     }
@@ -3011,6 +3342,7 @@ const Scout = {
         this.runAction(action);
         return;
       }
+      if (event.target.closest?.('input, select, textarea, label, form')) return;
       const card = event.target.closest?.('.card[data-id]');
       if (card) {
         event.preventDefault();
@@ -3026,9 +3358,11 @@ const Scout = {
       else if (element.dataset.engineModel) this.onEngineModelChange(element);
     });
     document.addEventListener?.('input', (event) => {
+      if (event.target.dataset.inputAction === 'application-draft-dirty' && this.applicationDraft) { this.applicationDraft.markdown = event.target.value; return; }
       if (event.target.dataset.inputAction !== 'cv-dirty') return;
       this.cvState.dirty = true;
       this.cvState.content = event.target.value;
+      this.updateCvControls();
       const dirty = document.getElementById('cv-dirty');
       if (dirty) dirty.textContent = 'unsaved';
     });
@@ -3123,6 +3457,135 @@ const Scout = {
     banner.append(actions);
   },
 
+  providerName(provider) { return provider === 'local' ? 'Local model' : provider === 'claude' ? 'Claude' : 'Codex'; },
+
+  async loadNotifications() {
+    try {
+      const body = await this.api('/api/notifications');
+      this.renderNotifications(body.alerts || []);
+    } catch {
+      const container = document.getElementById?.('scout-notifications');
+      if (container) {
+        container.classList.remove('hidden');
+        container.textContent = 'Scout notifications could not be loaded. Refresh Scout to retry.';
+      }
+    }
+  },
+
+  renderNotifications(alerts) {
+    const container = document.getElementById?.('scout-notifications');
+    if (!container) return;
+    container.classList.toggle('hidden', alerts.length === 0);
+    container.innerHTML = alerts.map((alert) => `<div class="provider-health-row"><strong>${this.esc(alert.title)}</strong><p>${this.esc(alert.body)}</p><button class="act" type="button" data-action="review-notification">Review in Scout</button> <button class="act" type="button" data-action="acknowledge-notification" data-id="${this.esc(alert.id)}">Acknowledge notification</button></div>`).join('');
+  },
+
+  async acknowledgeNotification(id) {
+    try {
+      const response = await fetch('/api/notifications/acknowledge', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }),
+      });
+      if (!response.ok) throw new Error('notification acknowledgement failed');
+      this.renderNotifications((await response.json()).alerts || []);
+    } catch {
+      document.getElementById?.('scout-notifications')?.insertAdjacentHTML('afterbegin', '<p role="status">The notification is still pending. Retry when the scan finishes.</p>');
+    }
+  },
+
+  async loadProviderHealth() {
+    let providers;
+    try {
+      const body = await this.api('/api/provider-health');
+      providers = Array.isArray(body?.providers) ? body.providers : [];
+    } catch { return; } // an unreachable host is already reported by the host-unavailable notice
+    // Re-rendering identical content would make screen readers announce it again.
+    if (JSON.stringify(providers) === JSON.stringify(this.providerHealth)) return;
+    this.providerHealth = providers;
+    this.renderProviderHealthBanner();
+  },
+
+  async providerHealthPost(pathname, payload) {
+    const response = await fetch(pathname, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+    return body;
+  },
+
+  renderProviderHealthBanner() {
+    const container = document.getElementById?.('provider-health-banner');
+    if (!container) return;
+    container.replaceChildren();
+    this.providerHealthDismissed = this.providerHealthDismissed || new Set();
+    for (const entry of this.providerHealth || []) {
+      // "Not now" and a started scan only hide the resume row for this page load.
+      if (entry.signInRequired || !this.providerHealthDismissed.has(entry.provider)) {
+        container.append(this.providerHealthRow(entry));
+      }
+    }
+    container.classList.toggle('hidden', !container.childElementCount);
+  },
+
+  providerHealthRow(entry) {
+    const name = this.providerName(entry.provider);
+    const row = document.createElement('aside');
+    row.className = 'update-banner provider-banner';
+    row.dataset.provider = entry.provider;
+    const copy = document.createElement('p');
+    const actions = document.createElement('div');
+    actions.className = 'update-banner-actions';
+    const add = (label, className, onClick) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = className;
+      button.textContent = label;
+      button.addEventListener('click', async () => {
+        const all = actions.querySelectorAll('button');
+        all.forEach((item) => { item.disabled = true; });
+        try { await onClick(); } catch (error) { copy.textContent = error.message; } finally {
+          all.forEach((item) => { item.disabled = false; });
+        }
+      });
+      actions.append(button);
+    };
+    const hideRow = () => { this.providerHealthDismissed.add(entry.provider); this.renderProviderHealthBanner(); };
+    if (entry.signInRequired) {
+      const waiting = entry.jobs.map((job) => `${job.id} (${job.time})`).join(', ');
+      copy.textContent = entry.acknowledged
+        ? `${name} still needs sign-in. Reconnect when you are ready.`
+        : `${name} sign-in has expired, so ${name} work cannot run until you reconnect.${waiting ? ` Scheduled scans waiting: ${waiting}.` : ''}`;
+      add(`Reconnect ${name}`, 'act primary', () => window.ScoutSetup?.openSettings?.('providers'));
+      if (!entry.acknowledged) {
+        add('Remind me later', 'act', async () => {
+          await this.providerHealthPost('/api/provider-health/acknowledge', { provider: entry.provider, alertId: entry.alertId });
+          await this.loadProviderHealth();
+        });
+      }
+    } else {
+      copy.textContent = `${name} is signed in again.${entry.missedJobIds.length ? ` Missed scheduled scan: ${entry.missedJobIds.join(', ')}.` : ''}${entry.manualBlocked ? ' Your last scan was blocked by the expired sign-in.' : ''}`;
+      if (entry.missedJobIds.length) {
+        add('Run missed scan now', 'act primary', async () => {
+          for (const id of entry.missedJobIds) {
+            await this.providerHealthPost('/api/schedule', { action: 'run-now', id, provider: entry.provider });
+          }
+          this.providerHealthDismissed.add(entry.provider);
+          copy.textContent = 'Missed scan started. Scout will show the result when it finishes.';
+          actions.replaceChildren();
+        });
+      }
+      if (entry.manualBlocked) {
+        add('Retry now', 'act primary', async () => {
+          if (this.scanRunning) throw new Error('A scan is already running.');
+          hideRow();
+          await this.scanNow({ provider: entry.provider });
+        });
+      }
+      add('Not now', 'act', async () => hideRow());
+    }
+    row.append(copy, actions);
+    return row;
+  },
+
   init() {
     ScoutModal.register(document.getElementById?.('cv-options-overlay'), {
       initialFocus: '#cv-options-title', onEscape: () => this.closeCvOptions(),
@@ -3141,32 +3604,43 @@ const Scout = {
     window.addEventListener?.('online', () => this.loadOpportunities().catch(() => this.setHostAvailable(false)));
     document.querySelectorAll('nav button').forEach((b) =>
       b.addEventListener('click', () => {
+        b.focus({ preventScroll: true });
         if (b.id === 'scout-settings') window.ScoutSetup?.openSettings?.();
         else if (b.dataset.tab) this.showTab(b.dataset.tab);
       }));
     document.getElementById?.('scan-now')?.addEventListener('click', () => this.scanNow());
-    document.getElementById?.('sync-status')?.addEventListener('click', () => window.ScoutSetup?.openBackupDetails?.());
+    document.getElementById?.('sync-status')?.addEventListener('click', (event) => {
+      event.currentTarget.focus({ preventScroll: true });
+      window.ScoutSetup?.openBackupDetails?.();
+    });
     document.getElementById?.('cv-options-cancel')?.addEventListener('click', () => this.closeCvOptions());
     document.getElementById?.('cv-options-continue')?.addEventListener('click', () => this.startCvFromOptions());
     this.bindDelegatedActions();
     window.addEventListener?.('focus', () => {
+      this.loadProviderHealth();
       this.refreshSyncStatus({ retry: true });
       this.serviceWorkerRegistration?.update?.();
       this.checkUiBuild();
     });
     document.addEventListener?.('visibilitychange', () => {
       if (!document.hidden) {
+        this.loadProviderHealth();
         this.refreshSyncStatus({ retry: true });
         this.serviceWorkerRegistration?.update?.();
         this.checkUiBuild();
       }
     });
     this.loadOpportunities();
+    this.loadProviderHealth();
+    this.refreshLivingCv();
     this.reattachScanOperation();
     this.refreshSyncStatus();
     this.checkUiBuild();
     window.setTimeout?.(() => this.checkForAppUpdate(false), 2500);
     window.setInterval?.(() => this.refreshSyncStatus(), 5 * 60 * 1000);
+    window.setInterval?.(() => this.loadProviderHealth(), 5 * 60 * 1000);
+    window.setInterval?.(() => this.refreshLivingCv(), 30 * 1000);
+    window.setInterval?.(() => this.loadNotifications(), 60 * 1000);
     window.setInterval?.(() => {
       this.serviceWorkerRegistration?.update?.();
       this.checkUiBuild();

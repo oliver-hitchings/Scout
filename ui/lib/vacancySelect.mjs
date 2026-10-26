@@ -108,17 +108,18 @@ function limitFor(limit, proportion) {
 }
 
 function constraintState(eligible, limit) {
+  const availableBudget = Math.min(limit, eligible.length);
   const employerCount = new Set(eligible.map(employerOf)).size;
   const sourceCount = new Set(eligible.map(sourceOf)).size;
   const laneCount = new Set(eligible.map(laneOf)).size;
   const roleFamilyCount = new Set(eligible.map(roleFamilyOf)).size;
   const locationCount = new Set(eligible.map(locationOf)).size;
   return {
-    lane: laneCount >= 3 ? limitFor(limit, 0.5) : null,
-    source: sourceCount >= 2 ? limitFor(limit, 0.6) : null,
-    roleFamily: roleFamilyCount >= 3 ? limitFor(limit, 0.5) : null,
-    location: locationCount >= 3 ? limitFor(limit, 0.5) : null,
-    employer: employerCount >= 4 ? limitFor(limit, 0.3) : null,
+    lane: laneCount >= 2 ? limitFor(availableBudget, 0.5) : null,
+    source: sourceCount >= 2 ? limitFor(availableBudget, 0.6) : null,
+    roleFamily: roleFamilyCount >= 2 ? limitFor(availableBudget, 0.5) : null,
+    location: locationCount >= 2 ? limitFor(availableBudget, 0.5) : null,
+    employer: employerCount >= 2 ? limitFor(availableBudget, 0.3) : null,
   };
 }
 

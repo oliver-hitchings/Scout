@@ -26,5 +26,6 @@ export function workspacePaths(root) {
     logs: path.join(workspaceRoot, 'logs'),
     backups: path.join(workspaceRoot, '.scout', 'backups'),
     runs: path.join(workspaceRoot, '.scout', 'runs'),
+    notifications: path.join(workspaceRoot, '.scout', 'notifications.json'),
   });
 }

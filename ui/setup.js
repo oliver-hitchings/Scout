@@ -1,13 +1,24 @@
+import { providerCardPresentation } from './lib/providerPresentation.mjs?v=__SCOUT_UI_BUILD__';
+export { providerCardPresentation };
+
 const STEPS = ['Welcome', 'AI provider', 'Your search', 'Adzuna', 'Import CV', 'AI hand-off', 'First scan'];
 // Keep the existing storage key so people who previously dismissed setup are
 // not forced back into it after upgrading. It now represents an intentional
 // decision to finish the optional AI enrichment later.
 const SETUP_DEFERRED_KEY = 'scout.setup.legacySkipped.v1';
 const SUPPORTED_CV = /\.(pdf|docx|md|markdown|txt)$/i;
+const ADZUNA_COUNTRIES = ['at', 'au', 'be', 'br', 'ca', 'ch', 'de', 'es', 'fr', 'gb', 'in', 'it', 'mx', 'nl', 'nz', 'pl', 'sg', 'us', 'za'];
+
+export function adzunaCountryField(config = {}) {
+  const proposed = firstRunPreferenceDefaults(config, { locale: config.locale || globalThis.navigator?.language || 'en' }).country;
+  const selected = config.sources?.adzuna?.country || (ADZUNA_COUNTRIES.includes(proposed) ? proposed : '');
+  const countries = [...new Set([...ADZUNA_COUNTRIES, selected].filter(Boolean))];
+  const names = new Intl.DisplayNames([config.locale || 'en'], { type: 'region' });
+  return `<label class="setup-field">Adzuna search country<select id="setup-adzuna-country"><option value=""${selected ? '' : ' selected'}>Choose a country</option>${countries.map((country) => `<option value="${escapeProfileText(country)}" ${selected === country ? 'selected' : ''}>${escapeProfileText(names.of(country.toUpperCase()) || country)}</option>`).join('')}</select></label><p class="meta">Adzuna searches this country's vacancies. Salary currencies come from that country, independently of your preferred currency.</p>`;
+}
 const DISMISSIBLE_VIEWS = new Set(['hub', 'section', 'retune', 'backup-details']);
 // Sunday = 0, matching ui/lib/scheduler.mjs. Kept as a literal here because
-// setup.js stays self-contained so a browser attached to a pre-update server
-// can still boot.
+// importing the scheduler would bring Node-specific code into the browser.
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
 // Alternating splits the week so the two providers never scan on the same day.
@@ -85,19 +96,30 @@ export function providerLoginPanelHtml(
   };
   const state = session?.provider === provider ? session.state : null;
   const active = ['starting', 'awaiting-code', 'authenticating', 'validating'].includes(state);
-  const retryable = ['failed', 'cancelled', 'expired'].includes(state);
-  const reauthenticationRequired = providerStatus.healthState === 'sign-in-required';
-  const authenticated = providerStatus.authenticated === true && !reauthenticationRequired;
+  const presentation = providerCardPresentation(providerStatus);
+  const authenticated = presentation.available;
+  const needsSignIn = providerStatus.healthState === 'sign-in-required'
+    || (providerStatus.authenticated !== true
+      && [undefined, 'ready', 'credentials-present-unverified'].includes(providerStatus.healthState));
+  const retryable = ['failed', 'cancelled', 'expired'].includes(state)
+    || (state === 'succeeded' && !authenticated);
   const canStart = providerStatus.installed === true
     && !authenticated
+    && needsSignIn
     && !state
     && !active
     && !retryable;
-  const statusText = stateLabels[state]
+  const statusText = (state === 'succeeded' && !authenticated
+    ? `Sign-in still needs verification. ${presentation.label}. ${presentation.help}`
+    : stateLabels[state])
     || (authenticated
-      ? `${name} is signed in.`
+      ? providerStatus.healthState === 'credentials-present-unverified'
+        ? `${name} sign-in was found but has not yet been verified with the provider.`
+        : `${name} is signed in.`
       : providerStatus.installed
-        ? `${name} needs sign-in.`
+        ? needsSignIn
+          ? `${name} needs sign-in. ${presentation.help}`
+          : `${name}: ${presentation.label}. ${presentation.help}`
         : `${name} is not installed.`);
   const sessionId = escapeProfileText(session?.sessionId || '');
   const disabled = pending ? ' disabled aria-disabled="true"' : '';
@@ -131,75 +153,39 @@ export function providerLoginPanelHtml(
     <p class="meta" role="status" aria-live="polite">${statusText}</p>
     ${device}${verification}
     <div class="provider-login-actions">${code}${start}${cancel}${retry}${clear}</div>
-    ${authenticated ? '' : `<p class="meta">Manual fallback: open your terminal and run <code>${command}</code>. <a href="${guide}" target="_blank" rel="noreferrer">Official ${name} login guide</a>. Retry only checks sign-in; it does not rerun a missed scan.</p>`}
+    ${authenticated ? '' : `<p class="meta">Manual fallback: open your terminal and run <code>${command}</code>. <a href="${guide}" target="_blank" rel="noreferrer">Official ${name} login guide</a>. Retry starts a new sign-in attempt. After reconnecting, close Settings and choose which blocked work to retry.</p>`}
   </section>`;
 }
 
-export function providerCardPresentation(provider = {}) {
-  if (provider.installed !== true) {
-    return {
-      available: false,
-      label: 'Not installed',
-      help: 'Install this provider CLI from its official guide, then refresh provider status.',
-    };
-  }
-  const blocked = {
-    checking: {
-      label: 'Installed; checking provider status',
-      help: 'Wait for the bounded provider check to finish, then refresh if needed.',
-    },
-    'sign-in-required': {
-      label: 'Installed; sign-in required',
-      help: 'Sign in with Scout or use the manual provider command, then refresh.',
-    },
-    'login-in-progress': {
-      label: 'Installed; sign-in in progress',
-      help: 'Wait for the current sign-in flow to finish before selecting this provider.',
-    },
-    'network-unavailable': {
-      label: 'Installed; network unavailable',
-      help: 'Restore provider network access, then refresh. Scout will not replay blocked work automatically.',
-    },
-    'rate-limited': {
-      label: 'Installed; provider rate limited',
-      help: 'Wait for the provider rate limit to clear, then retry explicitly.',
-    },
-    'cli-update-required': {
-      label: 'Installed and signed in; CLI update required',
-      help: 'Update this CLI from its official installation guide, then refresh.',
-    },
-    'provider-error': {
-      label: 'Installed; provider error',
-      help: 'Resolve the provider error and refresh status before selecting it.',
-    },
-  };
-  if (Object.hasOwn(blocked, provider.healthState)) {
-    return { available: false, ...blocked[provider.healthState] };
-  }
-  if (!['ready', 'credentials-present-unverified'].includes(provider.healthState)) {
-    return {
-      available: false,
-      label: 'Installed; provider status unavailable',
-      help: 'Refresh provider status. Scout will keep this provider disabled until its state is known.',
-    };
-  }
-  if (provider.authenticated !== true) return { available: false, ...blocked['sign-in-required'] };
-  if (provider.capabilities?.structuredOutput === false) {
-    return { available: false, ...blocked['cli-update-required'] };
-  }
-  return {
-    available: true,
-    label: 'Installed, signed in and compatible',
-    help: '',
-  };
+
+export function searchModeQuestionHtml(mode = 'background') {
+  return `<label class="setup-field wide">How should Scout help you?
+    <select id="setup-mode">
+      <option value="background"${mode === 'background' ? ' selected' : ''}>Background watch — only exceptional matches</option>
+      <option value="active"${mode === 'active' ? ' selected' : ''}>Active job hunt — daily new matches</option>
+    </select></label>
+    <p class="meta">Background watch stays quiet unless an assessed match is exceptional. Active job hunt brings you a daily summary of new good matches and invites your feedback. Provider problems are reported in both modes. You can change this later in Settings.</p>`;
+}
+
+export function firstRunPreferenceDefaults(current = {}, {
+  locale = globalThis.navigator?.language || 'en',
+  timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  established = false,
+} = {}) {
+  if (established) return { locale: current.locale || 'en', currency: current.currency || '', timezone: current.timezone || 'UTC', country: current.sources?.adzuna?.country || '' };
+  let country = '';
+  try { country = new Intl.Locale(locale).region?.toLowerCase() || ''; } catch { locale = 'en'; }
+  const currencies = { us: 'USD', ca: 'CAD', au: 'AUD', nz: 'NZD', gb: 'GBP', jp: 'JPY', in: 'INR', sg: 'SGD', za: 'ZAR', ch: 'CHF', br: 'BRL', mx: 'MXN', pl: 'PLN', cn: 'CNY', se: 'SEK', no: 'NOK', dk: 'DKK', at: 'EUR', be: 'EUR', de: 'EUR', es: 'EUR', fi: 'EUR', fr: 'EUR', ie: 'EUR', it: 'EUR', nl: 'EUR', pt: 'EUR', gr: 'EUR' };
+  return { locale, currency: currencies[country] || '', timezone: timeZone, country };
 }
 
 export function buildConfig(form, current = {}) {
   const salary = String(form.salaryMinimum || '').trim();
   return {
-    locale: String(form.locale || current.locale || 'en-GB').trim(),
-    currency: String(form.currency || current.currency || 'GBP').trim().toUpperCase(),
-    timezone: String(form.timezone || current.timezone || 'Europe/London').trim(),
+    mode: form.mode || current.mode || 'background',
+    locale: String(form.locale ?? current.locale ?? 'en').trim(),
+    currency: String(form.currency ?? current.currency ?? 'USD').trim().toUpperCase(),
+    timezone: String(form.timezone ?? current.timezone ?? 'UTC').trim(),
     profile: {
       ...(current.profile || {}),
       displayName: String(form.displayName || '').trim(),
@@ -455,6 +441,7 @@ export function employerRegistryHtml(registry = null) {
     )).join('') || '<li>No completed monitoring check yet.</li>';
     return `<section class="setup-callout" data-employer="${id}">
       <h3>${escapeProfileText(employer.canonicalName)}</h3>
+      <label class="setup-field wide">Private notes<textarea data-employer-notes="${id}" maxlength="4000" rows="3">${escapeProfileText(employer.notes || '')}</textarea></label>
       <p class="meta">Health: ${escapeProfileText(employer.health?.status || 'unknown')}
       ${employer.health?.reasonCode ? `(${escapeProfileText(employer.health.reasonCode)})` : ''}.
       Last checked: ${escapeProfileText(employer.monitoring?.lastCheckedAt || 'not yet')}.
@@ -583,6 +570,7 @@ export function feedbackLearningHtml(ledger = null) {
       <label class="setup-field wide">Undo explanation<textarea id="learning-undo-explanation" maxlength="1000"></textarea></label>
       <label><span><input id="learning-undo-confirm" type="checkbox"> I reviewed this rollback and want to restore the previous published behavior</span></label>
       <p><button id="learning-undo" class="act" type="button">Undo active learned version</button></p>
+      ${activeChanges.length ? '<p><button id="learning-reset" class="act" type="button">Reset all learned ranking changes</button></p><p class="meta">Reset returns to your published search preferences, keeps feedback and version history, and can be undone.</p>' : ''}
     </section>` : ''}
   </section>`;
 }
@@ -854,6 +842,7 @@ const Setup = {
     this.providerLoginPollTimer = null;
     this.el('setup-close').classList.add('hidden');
     this.el('setup-overlay').classList.add('hidden');
+    void window.Scout?.loadProviderHealth?.();
   },
 
   async restartServer() {
@@ -1090,13 +1079,36 @@ const Setup = {
       <p>Locations: ${this.escape((search.locations || []).join(', ') || 'Not configured')}</p>
       <p>Minimum salary: ${search.salaryMinimum == null ? 'Not set' : `${this.escape(config.currency || '')} ${this.escape(search.salaryMinimum)}`}</p>
       <p>Hard exclusions: ${this.escape((search.exclusions || []).join(', ') || 'None')}</p></div>
-      ${searchProfileReviewHtml(this.searchProfile)}
+      ${searchModeQuestionHtml(config.mode || 'background')}
+      <p><button id="settings-mode-save" class="act" type="button">Save search mode</button></p>
+      <div id="settings-search-profile"></div>
       <p><button id="settings-retune-search" class="act primary" type="button">Retune my search</button></p>
       <p class="meta">Retuning stages evidence-led changes for review. It does not reset tracker, application, report or chat history.</p>`;
+    this.el('settings-mode-save').addEventListener('click', async () => {
+      try {
+        const result = await requestJson('/api/setup/config', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: this.el('setup-mode').value }),
+        });
+        this.status.config = result.config;
+        await window.Scout?.loadOpportunities?.();
+        this.setMessage('Search mode saved.', 'good');
+      } catch { this.setMessage('Search mode could not be saved. Try again when the scan finishes.', 'error'); }
+    });
     this.el('settings-retune-search').addEventListener('click', () => {
       this.enterRetune('search');
       this.focusDialogTitle();
     });
+    this.renderSearchProfileSettings();
+    if (!this.searchProfile) void this.loadSearchProfileReview();
+  },
+
+  renderSearchProfileSettings() {
+    const panel = this.el('settings-search-profile');
+    if (!panel) return;
+    // Profile requests and reviewed profile actions finish independently of the
+    // mode form. Refresh their panel without replacing an unsaved mode choice.
+    panel.innerHTML = searchProfileReviewHtml(this.searchProfile);
     this.el('search-profile-adaptive-save')?.addEventListener('click', () => this.saveAdaptiveSearchAnswers());
     this.el('search-profile-save')?.addEventListener('click', () => this.saveSearchProfileDraft());
     this.el('search-profile-publish')?.addEventListener('click', () => this.publishSearchProfile());
@@ -1104,7 +1116,6 @@ const Setup = {
     this.el('setup-body').querySelectorAll('[data-search-lane-restore]').forEach((button) => {
       button.addEventListener('click', () => this.restoreSearchLane(button.dataset.searchLaneRestore));
     });
-    if (!this.searchProfile) void this.loadSearchProfileReview();
   },
 
   renderSearchProfileContext() {
@@ -1112,7 +1123,7 @@ const Setup = {
       this.renderFirstScan();
       return;
     }
-    this.renderSearchSettings();
+    this.renderSearchProfileSettings();
   },
 
   async loadSearchProfileReview() {
@@ -1122,7 +1133,7 @@ const Setup = {
         requestJson('/api/search-profile/adaptive'),
       ]);
       this.searchProfile = { ...profile, adaptive };
-      if (this.view === 'section' && this.settingsSection === 'search') this.renderSearchSettings();
+      if (this.view === 'section' && this.settingsSection === 'search') this.renderSearchProfileSettings();
       else if (this.view === 'onboarding' && this.step === STEPS.length - 1) this.renderFirstScan();
     } catch (error) {
       this.setMessage(error.message, 'error');
@@ -1276,6 +1287,7 @@ const Setup = {
       button.addEventListener('click', () => this.publishLearning(button.dataset.learningPublish));
     });
     this.el('learning-undo')?.addEventListener('click', () => this.undoLearning());
+    this.el('learning-reset')?.addEventListener('click', () => this.resetLearning());
     if (!this.feedbackLearning) void this.loadFeedbackLearning();
   },
 
@@ -1373,6 +1385,19 @@ const Setup = {
     }
   },
 
+  async resetLearning() {
+    if (!this.el('learning-undo-confirm')?.checked) return this.setMessage('Review and confirm the rollback before resetting learned ranking.', 'error');
+    try {
+      const result = await requestJson('/api/learning/reset', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ revision: this.feedbackLearning.revision, versionId: this.feedbackLearning.active.id, confirmed: true, explanation: this.el('learning-undo-explanation').value.trim() }),
+      });
+      this.feedbackLearning = result.ledger;
+      this.renderFeedbackLearningSettings();
+      this.setMessage('Learned ranking reset. Your search preferences and history are kept.', 'good');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+  },
+
   async loadEmployerRegistry() {
     try {
       this.employerRegistry = await requestJson('/api/employers');
@@ -1398,6 +1423,7 @@ const Setup = {
     const employer = id ? {
       id,
       userPriority: read('priority').value,
+      notes: read('notes').value,
       reason: read('reason').value.trim() || null,
       careersUrl: read('url').value.trim() || null,
       aliases: list(read('aliases').value),
@@ -1463,18 +1489,92 @@ const Setup = {
     }
   },
 
+  localProviderFieldsHtml() {
+    const local = this.localProviderDraft || this.status?.config?.ai?.local || {};
+    return `<fieldset class="setup-callout"><legend>Local OpenAI-compatible model</legend>
+      <p>Use a model server you control. Scout connects directly; no Codex or Claude installation is needed.</p>
+      <div class="setup-grid">
+        <label class="setup-field">Server base URL<input id="setup-local-url" type="url" value="${this.escape(local.baseUrl || '')}" placeholder="http://localhost:8000/v1"></label>
+        <label class="setup-field">Model name<input id="setup-local-model" type="text" maxlength="128" value="${this.escape(local.model || '')}" placeholder="Exact name served by your model server"></label>
+        <label class="setup-field">API-key file (optional)<input id="setup-local-key-file" type="text" value="${this.escape(local.apiKeyFile || '')}" placeholder="File on the Scout host"></label>
+      </div><p class="meta">Enter a file path, never the key itself. Leave blank if your local server does not require a key. Use HTTPS for a model on another computer unless your private network protects the connection. Local chat answers questions; it cannot edit files or run tools.</p>
+      <button id="setup-local-check" class="act" type="button">Save and check local model</button>
+      </fieldset>`;
+  },
+
+  bindLocalProviderControls() {
+    for (const id of ['setup-local-url', 'setup-local-model', 'setup-local-key-file']) {
+      this.el(id)?.addEventListener('input', () => {
+        this.localProviderDraft = {
+          ...(this.status?.config?.ai?.local || {}),
+          baseUrl: this.el('setup-local-url').value,
+          model: this.el('setup-local-model').value,
+          apiKeyFile: this.el('setup-local-key-file').value || null,
+        };
+      });
+    }
+    for (const radio of document.querySelectorAll('input[name="setup-provider"]')) {
+      radio.addEventListener('change', () => { this.providerChoiceDraft = radio.value; });
+    }
+    this.el('setup-local-check')?.addEventListener('click', () => this.checkLocalProvider());
+  },
+
+  async checkLocalProvider() {
+    try {
+      this.setBusy(true);
+      const local = this.readLocalProviderSettings() || {};
+      if (!local.baseUrl || !local.model) throw new Error('Enter the local server URL and model name.');
+      const saved = await requestJson('/api/setup/config', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ai: { local } }),
+      });
+      this.status.config = saved.config;
+      const health = await requestJson('/api/provider-health/check', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: 'local' }),
+      });
+      await this.refreshStatus({ keepOpen: true });
+      if (this.view === 'section') this.renderProviderSettings();
+      else this.renderProviders();
+      this.setMessage(health.ok ? 'Local model connection verified.' : `Local model check: ${health.state}. Check the server and settings.`, health.ok ? 'good' : 'error');
+    } catch (error) { this.setMessage(error.message, 'error'); }
+    finally { this.setBusy(false); }
+  },
+
+  readLocalProviderSettings() {
+    const current = this.status?.config?.ai?.local || {};
+    if (!this.el('setup-local-url')) return current;
+    const local = {
+      ...current,
+      baseUrl: this.el('setup-local-url').value.trim(),
+      model: this.el('setup-local-model').value.trim(),
+      apiKeyFile: this.el('setup-local-key-file').value.trim() || null,
+    };
+    if (this.selectedProvider() === 'local' && (!local.baseUrl || !local.model)) throw new Error('Enter the local server URL and model name.');
+    // Saving Codex/Claude preferences must not create empty local settings.
+    // A previously configured local provider can still be cleared explicitly.
+    if (!local.baseUrl && !local.model && !local.apiKeyFile && !Object.keys(current).length) return undefined;
+    return local;
+  },
+
   renderProviderSettings() {
-    const models = this.status?.config?.ai?.models || {};
+    const configuredModels = this.status?.config?.ai?.models || {};
+    // Sign-in status can arrive after this form is usable. Keep the values
+    // being edited in this dialog when its provider cards need a fresh render.
+    const models = Object.fromEntries(['codex', 'claude'].map((provider) => [
+      provider, this.el(`setup-chat-model-${provider}`)?.value ?? configuredModels[provider],
+    ]));
     this.el('setup-body').innerHTML = `
-      <div class="setup-provider-list">${this.providerCard('codex')}${this.providerCard('claude')}</div>
+      <div class="setup-provider-list">${this.providerCard('codex')}${this.providerCard('claude')}${this.providerCard('local')}</div>
+      ${this.localProviderFieldsHtml()}
       <div class="setup-callout"><strong>Models for individual job work</strong>
       <p>Choose an optional model for each provider when asking about a specific job, tailoring a CV or preparing for an interview. Leave blank to use that provider's default.</p>
       <div class="setup-grid">
-        <label class="setup-field">Codex model<input id="setup-chat-model-codex" type="text" value="${this.escape(models.codex || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:\\-]+"></label>
-        <label class="setup-field">Claude model<input id="setup-chat-model-claude" type="text" value="${this.escape(models.claude || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:\\-]+"></label>
+        <label class="setup-field">Codex model<input id="setup-chat-model-codex" type="text" value="${this.escape(models.codex || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:/\\-]+"></label>
+        <label class="setup-field">Claude model<input id="setup-chat-model-claude" type="text" value="${this.escape(models.claude || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:/\\-]+"></label>
       </div></div>
       <p><button id="settings-save-provider" class="act primary" type="button">Save AI settings</button>
       <button id="settings-refresh-providers" class="act" type="button">Refresh status</button></p>`;
+    this.bindLocalProviderControls();
     this.el('settings-save-provider').addEventListener('click', () => this.saveProviderSetting());
     this.el('settings-refresh-providers').addEventListener('click', () => this.refreshStatus({ keepOpen: true }));
     this.bindProviderLoginControls();
@@ -1511,6 +1611,10 @@ const Setup = {
       this.providerLoginState[provider] = { ...result, loading: false };
       const sessionChanged = JSON.stringify(current?.session || null)
         !== JSON.stringify(result.session || null);
+      if (sessionChanged && result.session?.state === 'succeeded') {
+        await this.refreshStatus({ keepOpen: true });
+        if (this.providerLoginGeneration[provider] !== generation) return;
+      }
       if (sessionChanged && this.providerLoginVisible()) {
         if (this.view === 'section') this.renderProviderSettings();
         else this.renderProviders();
@@ -1598,6 +1702,10 @@ const Setup = {
       if (this.providerLoginGeneration[provider] !== generation) return;
       const session = result.session || null;
       this.providerLoginState[provider] = { ...entry, mutating: false, session };
+      if (session?.state === 'succeeded') {
+        await this.refreshStatus({ keepOpen: true });
+        if (this.providerLoginGeneration[provider] !== generation) return;
+      }
       if (action === 'clear') {
         if (result.result?.state !== 'cleared') {
           throw new Error('Claude credential clearing did not complete');
@@ -1635,7 +1743,7 @@ const Setup = {
       };
       const result = await requestJson('/api/setup/config', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ai: { provider, model: null, models } }),
+        body: JSON.stringify({ ai: { provider, model: null, models, local: this.readLocalProviderSettings() } }),
       });
       this.status.config = result.config;
       window.Scout?.applyWorkspaceConfig?.(result.config);
@@ -1647,11 +1755,22 @@ const Setup = {
     this.el('setup-body').innerHTML = `
       <div class="setup-callout"><strong>Public sources</strong><p>Scout uses its configured public job sources without requiring credentials.</p></div>
       <div class="setup-callout"><strong>Adzuna: ${this.status?.adzunaConfigured ? 'configured' : 'not configured'}</strong>
-      <p>Saved credentials are never displayed. Use Retune my search to add or replace them.</p></div>
+      <p>Saved credentials are never displayed. Use Retune my search to add or replace them.</p>
+      ${adzunaCountryField(this.status?.config)}<button id="settings-save-adzuna-country" class="act" type="button">Save search country</button></div>
       <p><button id="settings-retune-sources" class="act" type="button">Retune search and sources</button></p>`;
     this.el('settings-retune-sources').addEventListener('click', () => {
       this.enterRetune('sources');
       this.focusDialogTitle();
+    });
+    this.el('settings-save-adzuna-country').addEventListener('click', async () => {
+      try {
+        const result = await requestJson('/api/setup/config', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sources: { adzuna: { country: this.el('setup-adzuna-country').value } } }),
+        });
+        this.status.config = result.config;
+        this.setMessage('Adzuna search country saved.', 'good');
+      } catch (error) { this.setMessage(error.message, 'error'); }
     });
   },
 
@@ -1678,6 +1797,7 @@ const Setup = {
       <label class="setup-field"><span><input id="setup-auto-download-updates" type="checkbox" ${device.updates?.policy === 'download' ? 'checked' : ''}> Download verified update packages automatically</span></label>
       ${device.startupStatus?.supported ? `<label class="setup-field"><span><input id="setup-start-with-windows" type="checkbox" ${device.startWithWindows ? 'checked' : ''}> Start Scout when I sign into Windows</span></label>` : ''}
       <p><button id="setup-save-device" class="act primary" type="button">Save device settings</button></p></div>
+      ${this.status?.platform === 'linux' ? '<div class="setup-callout"><strong>Always-on server</strong><p>Scout can run scheduled scans and deliver owner-configured alerts without a desktop. External alerts stay off until the server owner configures them. Each person needs a separate workspace and private address.</p><p><a href="https://github.com/oliver-hitchings/Scout/blob/main/docs/HOME_SERVER.md" target="_blank" rel="noreferrer">Home server guide</a></p></div>' : ''}
       <p><button id="setup-restart" class="act" type="button">Restart Scout</button></p>` :
       '<p>Device settings are unavailable on this host.</p>';
     this.el('setup-save-device')?.addEventListener('click', () => this.saveDeviceSetting());
@@ -1704,7 +1824,9 @@ const Setup = {
     const restored = this.restoredPreferences;
     const schedule = this.status?.schedule || {};
     const scheduleRuns = schedule.runs || [];
-    const scheduleText = schedule.enabled
+    const scheduleText = schedule.managedExternally
+      ? this.escape(schedule.managementMessage || 'Your server owner manages per-person system timers. Desktop schedule controls are unavailable here.')
+      : schedule.enabled
       ? `${scheduleRuns.map((run) => `${this.escape(run.provider)} ${this.escape(run.mode)} at ${this.escape(run.time)}`).join('; ')}; next run ${this.escape(formatLocalDateTime(schedule.nextRunAt, this.status?.config?.locale))}; last result ${this.escape(schedule.lastResult || 'unknown')}`
       : schedule.configured
         ? 'A daily scan is saved in the workspace, but this computer’s scheduler is not active.'
@@ -1721,7 +1843,7 @@ const Setup = {
         ${this.status?.device ? `<div class="setup-callout"><strong>Application updates</strong><p>Scout checks its official GitHub releases. Notifications are on; package downloads are optional and verified against the release SHA-256 manifest.</p><label class="setup-field"><span><input id="setup-auto-download-updates" type="checkbox" ${this.status.device.updates?.policy === 'download' ? 'checked' : ''}> Download verified update packages automatically</span></label>${this.status.device.startupStatus?.supported ? `<label class="setup-field"><span><input id="setup-start-with-windows" type="checkbox" ${this.status.device.startWithWindows ? 'checked' : ''}> Start Scout when I sign into Windows</span></label>` : ''}<p><button id="setup-save-device" class="act" type="button">Save device settings</button></p><p class="meta">Installation always asks first. Updates never replace your separate workspace, provider sign-ins or Tailscale Serve mapping.</p></div>` : ''}
       </div>
       ${this.remoteAccessPanelHtml()}
-      ${restored ? `<div class="setup-callout"><strong>Choose settings for this computer</strong><p>Your work has been restored. Device integrations stay off until you confirm them here.</p>${this.status?.device && restored.startWithWindows ? '<label class="setup-field"><span><input id="restore-start-with-windows" type="checkbox"> Start Scout with Windows on this computer</span></label>' : ''}${this.status?.schedule?.configured ? `<label class="setup-field"><span><input id="restore-daily-schedule" type="checkbox"> Enable the saved ${this.escape(this.status.schedule.time || '')} daily scan on this computer</span></label>` : ''}<p><button id="restore-apply-device" class="act primary" type="button">Apply selected settings</button> <button id="restore-keep-device-local" class="act" type="button">Keep them off</button></p></div>` : ''}
+      ${restored ? `<div class="setup-callout"><strong>Choose settings for this computer</strong><p>Your work has been restored. Device integrations stay off until you confirm them here.</p>${this.status?.device && restored.startWithWindows ? '<label class="setup-field"><span><input id="restore-start-with-windows" type="checkbox"> Start Scout with Windows on this computer</span></label>' : ''}${this.status?.schedule?.configured && !this.status?.schedule?.managedExternally ? `<label class="setup-field"><span><input id="restore-daily-schedule" type="checkbox"> Enable the saved ${this.escape(this.status.schedule.time || '')} daily scan on this computer</span></label>` : ''}<p><button id="restore-apply-device" class="act primary" type="button">Apply selected settings</button> <button id="restore-keep-device-local" class="act" type="button">Keep them off</button></p></div>` : ''}
       <p>You can move or back up the workspace independently. API credentials stay in its ignored <code>.env</code> file and are never shown again here.</p>
       <p class="meta">Something stuck? <button id="setup-restart" class="act" type="button">Restart Scout</button> restarts the local server and reloads this page.</p></div></div>
       ${established ? this.backupPanelHtml() : ''}`;
@@ -1822,8 +1944,14 @@ const Setup = {
   },
 
   providerCard(name) {
+    if (name === 'local') {
+      const provider = this.status?.providers?.local || {};
+      const selected = (this.providerChoiceDraft || this.status?.config?.ai?.provider) === 'local';
+      const labels = { ready: 'Connection verified', 'credentials-present-unverified': 'Configured; connection not verified', checking: 'Connection not yet verified', 'sign-in-required': 'Check the API-key file', 'network-unavailable': 'Model server unreachable', 'rate-limited': 'Model server is busy', 'provider-error': 'Check the model server and settings' };
+      return `<section class="setup-provider available"><label><input type="radio" name="setup-provider" value="local" ${selected ? 'checked' : ''}><strong>Local OpenAI-compatible</strong><span class="meta">${provider.installed ? labels[provider.healthState] || 'Configured; connection not verified' : 'Enter your local model settings below'}</span></label></section>`;
+    }
     const provider = this.status?.providers?.[name] || {};
-    const selected = (this.status?.config?.ai?.provider || '') === name;
+    const selected = (this.providerChoiceDraft || this.status?.config?.ai?.provider || '') === name;
     const presentation = providerCardPresentation(provider);
     return `<section class="setup-provider ${presentation.available ? 'available' : ''}">
       <label>
@@ -1845,10 +1973,12 @@ const Setup = {
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame" role="img" aria-label="Scout is ready"></span></div><div class="scout-bubble tail-left">
       <h2>Choose an AI provider</h2>
-      <p>Scout uses the provider's official CLI and account login. Scout does not ask for or store an AI password or API key.</p>
-      <div class="setup-provider-list">${this.providerCard('codex')}${this.providerCard('claude')}</div>
+      <p>Choose Codex or Claude with its account sign-in, or connect a local model server you control. Local models use the settings below.</p>
+      <div class="setup-provider-list">${this.providerCard('codex')}${this.providerCard('claude')}${this.providerCard('local')}</div>
+      ${this.localProviderFieldsHtml()}
       <button id="setup-provider-refresh" class="act" type="button">Refresh provider status</button>
-      <p class="meta">One signed-in provider is required. A second provider is optional and can later perform a verification pass.</p></div></div>`;
+      <p class="meta">One configured provider is required. A second provider is optional and can later perform a verification pass.</p></div></div>`;
+    this.bindLocalProviderControls();
     this.el('setup-provider-refresh').addEventListener('click', async () => {
       this.setBusy(true);
       this.setMessage('Checking providers…');
@@ -1862,11 +1992,13 @@ const Setup = {
 
   renderPreferences() {
     const c = this.status?.config || {};
+    const localDefaults = firstRunPreferenceDefaults(c, { established: this.status?.established === true });
     if (!this.preferenceDraft) this.preferenceDraft = {
+      mode: c.mode || 'background',
       displayName: c.profile?.displayName || '', tone: c.profile?.tone || '',
       roleFamilies: (c.search?.roleFamilies || []).join(', '), sectors: (c.search?.sectors || []).join(', '),
       locations: (c.search?.locations || []).join(', '), exclusions: (c.search?.exclusions || []).join(', '),
-      salaryMinimum: c.search?.salaryMinimum ?? '', currency: c.currency || 'GBP', locale: c.locale || 'en-GB', timezone: c.timezone || 'Europe/London',
+      salaryMinimum: c.search?.salaryMinimum ?? '', currency: localDefaults.currency, locale: localDefaults.locale, timezone: localDefaults.timezone,
       commuteOrigin: c.commute?.origin || '', commuteMode: c.commute?.mode || 'either', commuteMax: c.commute?.maxMinutes ?? 180,
       includeUnknown: c.commute?.includeUnknown !== false,
     };
@@ -1874,11 +2006,12 @@ const Setup = {
     const option = (value, label) => `<option value="${value}" ${d.commuteMode === value ? 'selected' : ''}>${label}</option>`;
     const questions = [
       ['First, what should I call you?', 'I’ll also match the tone you want in CVs and outreach drafts.', `<label class="setup-field">Your name<input id="setup-name" autocomplete="name" value="${this.escape(d.displayName)}" required></label><label class="setup-field">Writing tone<input id="setup-tone" value="${this.escape(d.tone)}" placeholder="Natural, direct and evidence-led"></label>`],
-      ['What kind of work should I look for?', 'Use job titles or role families you would genuinely consider. These answers become search queries after you approve the setup.', `<label class="setup-field wide">Role families <span>comma-separated</span><input id="setup-roles" value="${this.escape(d.roleFamilies)}" placeholder="Software engineer, product manager, data analyst"></label><label class="setup-field wide">Sectors <span>comma-separated</span><input id="setup-sectors" value="${this.escape(d.sectors)}" placeholder="Developer tools, climate, healthcare"></label>`],
-      ['Where can the right role be?', 'I use travel time rather than simple mileage when commute information is available.', `<label class="setup-field wide">Locations <span>comma-separated</span><input id="setup-locations" value="${this.escape(d.locations)}"></label><label class="setup-field wide">Commute origin<input id="setup-commute-origin" value="${this.escape(d.commuteOrigin)}" placeholder="Town, city or postcode"></label><label class="setup-field">Mode<select id="setup-commute-mode">${option('either','Car or public transport')}${option('car','Car')}${option('public','Public transport')}${option('any','No filter')}</select></label><label class="setup-field">Maximum minutes<input id="setup-commute-max" type="number" min="0" max="1440" value="${this.escape(d.commuteMax)}"></label><label class="setup-field wide"><span><input id="setup-include-unknown" type="checkbox" ${d.includeUnknown ? 'checked' : ''}> Include roles with unknown commute</span></label>`],
-      ['What compensation makes a move worthwhile?', 'This guides the search; it is not inserted into applications.', `<label class="setup-field">Minimum base salary<input id="setup-salary" type="number" min="0" step="1000" value="${this.escape(d.salaryMinimum)}"></label><label class="setup-field">Currency<input id="setup-currency" maxlength="3" value="${this.escape(d.currency)}"></label>`],
+      ['What kind of work should I look for?', 'List job titles you would consider. Separate each answer with a comma. You review the search rules before Scout uses them.', `<label class="setup-field wide">Job titles<input id="setup-roles" value="${this.escape(d.roleFamilies)}" placeholder="Titles you would consider"></label><label class="setup-field wide">Industries (optional)<input id="setup-sectors" value="${this.escape(d.sectors)}" placeholder="Industries that interest you"></label>`],
+      ['Where can the right role be?', 'Travel settings guide assessments and filter your dashboard. They do not filter newly discovered jobs.', `<label class="setup-field wide">Locations <span>comma-separated</span><input id="setup-locations" value="${this.escape(d.locations)}"></label><label class="setup-field wide">Commute origin<input id="setup-commute-origin" value="${this.escape(d.commuteOrigin)}" placeholder="Town, city or postcode"></label><label class="setup-field">Mode<select id="setup-commute-mode">${option('either','Car or public transport')}${option('car','Car')}${option('public','Public transport')}${option('any','No filter')}</select></label><label class="setup-field">Maximum minutes<input id="setup-commute-max" type="number" min="0" max="1440" value="${this.escape(d.commuteMax)}"></label><label class="setup-field wide"><span><input id="setup-include-unknown" type="checkbox" ${d.includeUnknown ? 'checked' : ''}> Include roles with unknown commute</span></label>`],
+      ['What pay and local settings should I use?', 'Leave pay blank if you are unsure. Check the currency, language and time zone below; they are suggestions from this browser. The full review also supports hourly pay and other pay periods.', `<label class="setup-field">Preferred minimum yearly base pay (optional)<input id="setup-salary" type="number" min="0" step="any" value="${this.escape(d.salaryMinimum)}"></label><label class="setup-field">Currency code<input id="setup-currency" maxlength="3" value="${this.escape(d.currency)}" placeholder="Three-letter currency code"></label><label class="setup-field">Language and region<input id="setup-locale" value="${this.escape(d.locale)}"></label><label class="setup-field">Time zone<input id="setup-timezone" value="${this.escape(d.timezone)}"></label>`],
       ['What should I rule out immediately?', 'Keep these to genuine dealbreakers so I don’t hide an unusual but excellent role.', `<label class="setup-field wide">Hard exclusions <span>comma-separated</span><textarea id="setup-exclusions">${this.escape(d.exclusions)}</textarea></label>`],
     ];
+    questions.push(['Are you looking for a new job now?', 'Choose how often Scout should bring matches to your attention.', searchModeQuestionHtml(d.mode)]);
     const q = questions[this.preferenceStep];
     this.el('setup-body').innerHTML = `
       <div class="setup-conversation"><div class="setup-scout"><span class="setup-scout-frame" role="img" aria-label="Scout is asking a question"></span></div><div class="scout-bubble tail-left"><div class="meta">Question ${this.preferenceStep + 1} of ${questions.length}</div><h2>${q[0]}</h2><p>${q[1]}</p><div class="setup-grid">${q[2]}</div></div></div>`;
@@ -1888,7 +2021,7 @@ const Setup = {
   capturePreferenceQuestion() {
     const d = this.preferenceDraft;
     const value = (id, key) => { const el = this.el(id); if (el) d[key] = el.value; };
-    [['setup-name','displayName'],['setup-tone','tone'],['setup-roles','roleFamilies'],['setup-sectors','sectors'],['setup-locations','locations'],['setup-commute-origin','commuteOrigin'],['setup-commute-mode','commuteMode'],['setup-commute-max','commuteMax'],['setup-salary','salaryMinimum'],['setup-currency','currency'],['setup-exclusions','exclusions']].forEach(([id,key]) => value(id,key));
+    [['setup-mode','mode'],['setup-name','displayName'],['setup-tone','tone'],['setup-roles','roleFamilies'],['setup-sectors','sectors'],['setup-locations','locations'],['setup-commute-origin','commuteOrigin'],['setup-commute-mode','commuteMode'],['setup-commute-max','commuteMax'],['setup-salary','salaryMinimum'],['setup-currency','currency'],['setup-locale','locale'],['setup-timezone','timezone'],['setup-exclusions','exclusions']].forEach(([id,key]) => value(id,key));
     const unknown = this.el('setup-include-unknown'); if (unknown) d.includeUnknown = unknown.checked;
   },
 
@@ -1898,6 +2031,7 @@ const Setup = {
       <p>Register for an Adzuna developer account, then paste the application ID and API key below. Scout saves them only to the private workspace's ignored <code>.env</code> file.</p>
       ${this.status?.adzunaConfigured ? '<div class="setup-callout"><strong>Adzuna is configured</strong><p>The saved values are deliberately not displayed. Leave both fields empty to keep them unchanged.</p></div>' : ''}
       <div class="setup-grid">
+        ${adzunaCountryField(this.status?.config)}
         <label class="setup-field">Application ID<input id="setup-adzuna-id" type="password" autocomplete="off" spellcheck="false"></label>
         <label class="setup-field">API key<input id="setup-adzuna-key" type="password" autocomplete="off" spellcheck="false"></label>
       </div>
@@ -1909,7 +2043,7 @@ const Setup = {
     const imported = this.imported;
     this.el('setup-body').innerHTML = `
       <h2>Import your existing CV (optional)</h2>
-      <p>Scout accepts PDF, DOCX, Markdown and plain text up to 10 MB. Text extraction happens locally. Scanned PDFs need OCR before they can be used.</p>
+      <p>Scout accepts PDF, DOCX, Markdown and plain text up to 10 MB. Text extraction happens locally. Scanned PDFs need OCR before they can be used. Importing another CV disconnects a Living CV source and keeps its saved versions.</p>
       <label class="setup-field"><span>CV file</span><input id="setup-cv-file" type="file" accept=".pdf,.docx,.md,.markdown,.txt"></label>
       ${imported ? `<h3>Extracted preview</h3><div id="setup-cv-preview" class="setup-preview"></div><p class="meta">Saved locally as ${this.escape(imported.extracted)}</p>` : ''}`;
     if (imported) this.el('setup-cv-preview').textContent = imported.text || '';
@@ -1955,7 +2089,7 @@ const Setup = {
     const operation = this.operations.scan;
     const scanning = operation && ['queued', 'running'].includes(operation.status);
     const outcome = health.lastRunAt ? scanOutcomeSummary(health) : null;
-    const other = ['codex', 'claude'].find((name) => name !== provider
+    const other = ['codex', 'claude', 'local'].find((name) => name !== provider
       && this.status?.providers?.[name]?.authenticated
       && this.status?.providers?.[name]?.capabilities?.structuredOutput !== false);
     const secondRun = (schedule.runs || []).find((run) => run.mode === 'second-pass');
@@ -1967,7 +2101,7 @@ const Setup = {
       <label class="setup-field">${this.escape(name[0].toUpperCase() + name.slice(1))} ${mode === 'primary' ? 'scan' : 'verification pass'} time<input data-schedule-time type="time" value="${this.escape(run?.time || defaultTime)}"></label>
       <label class="setup-field">Days<select data-schedule-preset>${DAY_PRESETS.map(([value, label]) => `<option value="${value}" ${preset === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <fieldset class="setup-schedule-days" data-schedule-days ${preset === 'custom' ? '' : 'hidden'}><legend>Days this job runs</legend>${DAY_LABELS.map((label, day) => `<label><input type="checkbox" data-schedule-day="${day}" ${days.includes(day) ? 'checked' : ''}> ${label}</label>`).join('')}</fieldset>
-      <label class="setup-field">Scan model <span>Optional; used for this scan job. Blank uses the provider default</span><input data-schedule-model type="text" value="${this.escape(run?.model || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:\\-]+"></label>
+      <label class="setup-field">Scan model <span>Optional; used for this scan job. Blank uses the provider default</span><input data-schedule-model type="text" value="${this.escape(run?.model || '')}" placeholder="Provider default" pattern="[A-Za-z0-9._:/\\-]+"></label>
       <p><button class="act" data-schedule-enable="${this.escape(id)}" data-provider="${this.escape(name)}" data-mode="${this.escape(mode)}" type="button" ${(healthy || run?.configured) ? '' : 'disabled'}>${run?.configured ? 'Save scan settings' : `Enable ${name} ${mode === 'primary' ? 'scan' : 'verification pass'}`}</button>${run?.configured ? ` <button class="act" data-schedule-disable="${this.escape(id)}" type="button">Disable</button>` : ''}</p>
       ${run?.configured ? `<p class="meta">Currently runs: ${this.escape(run.daysLabel || 'Every day')} at ${this.escape(run.time || defaultTime)}.</p>` : ''}
     </div>`;
@@ -1986,10 +2120,11 @@ const Setup = {
       <div class="setup-callout"><strong>${hasHistory ? 'Supervised scan completed' : 'Supervised first scan'}</strong><p>${healthy ? `Last run: ${this.escape(formatLocalDateTime(health.lastRunAt, this.status?.config?.locale))}.` : 'A full source check can take several minutes and no application will be sent.'}</p>${outcome ? `<p><strong>${this.escape(outcome.headline)}</strong>${outcome.breakdown.length ? ` — ${this.escape(outcome.breakdown.join(', '))}` : ''}. Zero keepers can be a valid strict result.</p><p><a href="#reports" data-report-date="${this.escape(String(health.lastRunAt).slice(0, 10))}">Review the dated scan report</a></p>` : ''}</div>
       ${this.operationPanelHtml('scan')}
       <p><button id="setup-run-scan" class="act primary" type="button" ${(scanning || !profileReady) ? 'disabled' : ''}>${scanning ? 'Scan running…' : hasHistory ? 'Scan now' : 'Run first scan now'}</button></p>
-      <div class="setup-callout"><strong>Daily scan schedule</strong><p>Each provider job is independent. First-run setup only offers your selected provider.</p>
+      <div class="setup-callout"><strong>Daily scan schedule</strong>
+      ${schedule.managedExternally ? `<p>${this.escape(schedule.managementMessage || 'Your server owner manages per-person system timers. Desktop schedule controls are unavailable here.')}</p><p><a href="https://github.com/oliver-hitchings/Scout/blob/main/docs/HOME_SERVER.md" target="_blank" rel="noreferrer">Home server guide</a></p>` : `<p>Each provider job is independent. First-run setup only offers your selected provider.</p>
       ${scheduleRow(primaryId, provider, 'primary', primaryRun, '07:30')}
       ${this.view === 'section' && other && !showSecond ? '<p><button id="setup-add-verification" class="act" type="button">Add verification pass</button></p>' : ''}
-      ${showSecond ? scheduleRow(secondRun?.id || `${other}-second-pass`, secondRun?.provider || other, 'second-pass', secondRun, '08:30') : ''}
+      ${showSecond ? scheduleRow(secondRun?.id || `${other}-second-pass`, secondRun?.provider || other, 'second-pass', secondRun, '08:30') : ''}`}
       </div></div>
       ${includeBackup ? this.backupPanelHtml() : ''}`;
     this.el('setup-run-scan').addEventListener('click', () => this.runSupervisedScan());
@@ -2462,13 +2597,13 @@ const Setup = {
           : 'Sign in to Codex or Claude, refresh the status, then choose it.');
         const result = await requestJson('/api/setup/config', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ai: { provider, model: null } }),
+          body: JSON.stringify({ ai: { provider, model: null, local: this.readLocalProviderSettings() } }),
         });
         this.status.config = result.config;
       }
       if (this.step === 2) {
         this.capturePreferenceQuestion();
-        if (this.preferenceStep < 4) {
+        if (this.preferenceStep < 5) {
           this.preferenceStep += 1;
           this.renderPreferences();
           return;
@@ -2486,9 +2621,15 @@ const Setup = {
         window.Scout?.applyWorkspaceConfig?.(result.config);
       }
       if (this.step === 3) {
+        const country = fieldValue('setup-adzuna-country');
         const appId = fieldValue('setup-adzuna-id').trim();
         const apiKey = fieldValue('setup-adzuna-key').trim();
         if ((appId && !apiKey) || (!appId && apiKey)) throw new Error('Enter both Adzuna values, or leave both blank to skip.');
+        if ((appId || this.status.adzunaConfigured) && !country) throw new Error('Choose the country to search before enabling Adzuna. You can skip this optional source.');
+        if (country) {
+          const result = await requestJson('/api/setup/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sources: { adzuna: { country } } }) });
+          this.status.config = result.config;
+        }
         if (appId && apiKey) {
           const result = await requestJson('/api/setup/credentials', {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ appId, apiKey }),

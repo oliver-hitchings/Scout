@@ -1,14 +1,15 @@
 {
   "schemaVersion": 1,
-  "locale": "en-GB",
-  "currency": "GBP",
-  "timezone": "Europe/London",
+  "mode": "background",
+  "locale": "en",
+  "currency": "USD",
+  "timezone": "UTC",
   "profile": { "displayName": "", "tone": "natural, direct and evidence-led" },
   "searchProfile": { "publishedId": null, "schemaVersion": 1 },
   "search": { "roleFamilies": [], "sectors": [], "locations": [], "exclusions": [], "salaryMinimum": null },
   "triage": { "actionScore": 70, "checkScore": 55, "nudgeDays": 8, "closeoutDays": 10, "staleDays": 10, "decisionDays": 2 },
   "sources": {
-    "adzuna": { "country": "gb", "where": "", "distanceKm": null, "resultsPerPage": 50 },
+    "adzuna": { "country": null, "where": "", "distanceKm": null, "resultsPerPage": 50 },
     "hiringCafe": {}
   },
   "commute": { "origin": "", "mode": "either", "maxMinutes": 180, "includeUnknown": true },

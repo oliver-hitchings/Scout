@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { atomicWriteFile } from './atomicWrite.mjs';
 import { withWorkspaceMutationAuthorityAsync } from './workspaceMutationAuthority.mjs';
 import { resolveTypstRuntime } from './typstRuntime.mjs';
+import { validatePhysicalWorkspacePath } from './physicalPath.mjs';
 
 const SLUG = /^[a-z0-9-]+$/;
 const DEFAULT_APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -14,7 +15,7 @@ const RENDER_TIMEOUT_MS = 60_000;
 export function safeCvPath(repoRoot, relPath) {
   const rel = String(relPath).replace(/\\/g, '/');
   if (rel === 'cv/master-cv.md') return path.resolve(repoRoot, rel);
-  const m = rel.match(/^applications\/([^/]+)\/(cv\.typ|outreach\.md)$/);
+  const m = rel.match(/^applications\/([^/]+)\/(cv\.typ|draft-cv\.md|outreach\.md)$/);
   if (m && SLUG.test(m[1])) return path.resolve(repoRoot, rel);
   throw new Error(`invalid CV path: ${relPath}`);
 }
@@ -39,8 +40,16 @@ function checkedTarget(root, { target = 'application', slug = '' } = {}) {
       pdf: path.join(root, '.scout', 'rendered', 'master-cv.pdf'),
     };
   }
-  if (target !== 'application') throw new Error(`invalid CV render target: ${target}`);
+  if (target !== 'application' && target !== 'cover-letter' && target !== 'draft-cv') throw new Error(`invalid CV render target: ${target}`);
   if (!SLUG.test(String(slug))) throw new Error(`invalid slug: ${slug}`);
+  if (target === 'cover-letter') return {
+    target, key: `cover-letter:${slug}`, slug, source: safeCvPath(root, `applications/${slug}/outreach.md`),
+    typst: path.join(root, 'applications', slug, 'outreach.typ'), pdf: path.join(root, 'applications', slug, 'outreach.pdf'),
+  };
+  if (target === 'draft-cv') return {
+    target, key: `draft-cv:${slug}`, slug, source: safeCvPath(root, `applications/${slug}/draft-cv.md`),
+    typst: path.join(root, 'applications', slug, 'draft-cv.typ'), pdf: path.join(root, 'applications', slug, 'draft-cv.pdf'),
+  };
   safeCvPath(root, `applications/${slug}/cv.typ`);
   return {
     target, key: `application:${slug}`, slug, source: path.join(root, 'applications', slug, 'cv.typ'),
@@ -78,9 +87,12 @@ export function masterMarkdownToTypst(markdown) {
 }
 
 function prepareTarget(root, descriptor) {
+  for (const key of ['source', 'typst', 'pdf']) validatePhysicalWorkspacePath(root, descriptor[key], 'CV render path');
   if (!fs.existsSync(descriptor.source)) throw new Error(descriptor.target === 'master' ? 'The master CV does not exist.' : `CV source does not exist: applications/${descriptor.slug}/cv.typ`);
   const source = fs.readFileSync(descriptor.source, 'utf8');
   if (descriptor.target === 'master') atomicWriteFile(descriptor.typst, masterMarkdownToTypst(source));
+  if (descriptor.target === 'cover-letter') atomicWriteFile(descriptor.typst, masterMarkdownToTypst('# DRAFT — cover letter for your review\n\n' + source));
+  if (descriptor.target === 'draft-cv') atomicWriteFile(descriptor.typst, masterMarkdownToTypst('# DRAFT — CV for your review\n\n' + source));
   fs.mkdirSync(path.dirname(descriptor.pdf), { recursive: true });
   return { ...descriptor, sourceSha256: sha256(source) };
 }
@@ -99,6 +111,7 @@ function validPdf(file) {
 }
 
 function finishRender(root, descriptor, temp, now = () => new Date().toISOString()) {
+  for (const file of [descriptor.source, descriptor.typst, descriptor.pdf, temp, manifestFile(root)]) validatePhysicalWorkspacePath(root, file, 'CV render path');
   if (!validPdf(temp)) throw new Error('Typst did not produce a valid PDF. The previous PDF was kept.');
   fs.renameSync(temp, descriptor.pdf);
   const manifest = readManifest(root);
@@ -207,6 +220,7 @@ export function renderCv(root, slug, {
 
 export function cvRenderState(root, request) {
   const descriptor = checkedTarget(root, request);
+  for (const file of [descriptor.source, descriptor.pdf, manifestFile(root)]) validatePhysicalWorkspacePath(root, file, 'CV render path');
   if (!fs.existsSync(descriptor.source)) return { pdf: false, current: false, stale: false, restored: false, renderedAt: null };
   let record = readManifest(root).renders?.[descriptor.key];
   const pdf = fs.existsSync(descriptor.pdf);
@@ -247,10 +261,12 @@ export function listCvFiles(root) {
   const appsDir = path.join(root, 'applications');
   let applications = [];
   let outreach = [];
+  let draftCvs = [];
   if (fs.existsSync(appsDir)) {
     const dirs = fs.readdirSync(appsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && SLUG.test(entry.name)).map((entry) => entry.name).sort();
     applications = dirs.filter((slug) => fs.existsSync(path.join(appsDir, slug, 'cv.typ')));
     outreach = dirs.filter((slug) => fs.existsSync(path.join(appsDir, slug, 'outreach.md')));
+    draftCvs = dirs.filter((slug) => fs.existsSync(path.join(appsDir, slug, 'draft-cv.md'))).map((slug) => ({ slug, ...cvRenderState(root, { target: 'draft-cv', slug }) }));
   }
   const entries = applications.map((slug) => {
     const directory = path.join(appsDir, slug);
@@ -261,5 +277,9 @@ export function listCvFiles(root) {
       quality: fs.existsSync(path.join(directory, 'cv-quality.json')),
     };
   });
-  return { master: 'cv/master-cv.md', masterRender: cvRenderState(root, { target: 'master' }), applications, outreach, entries };
+  const letters = outreach.map((slug) => {
+    const state = cvRenderState(root, { target: 'cover-letter', slug });
+    return { slug, ...state, pdfCurrent: state.current, pdfStale: state.stale };
+  });
+  return { master: 'cv/master-cv.md', masterRender: cvRenderState(root, { target: 'master' }), applications, outreach, entries, letters, draftCvs };
 }

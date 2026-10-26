@@ -102,7 +102,7 @@ function mixedContender(root, kind) {
   });
 }
 
-function temporaryLiveGuard(root, holdMs = 100) {
+function temporaryLiveGuard(root, holdMs = 100, { replaceDuringCleanup = false, retireFailures = 0 } = {}) {
   const scanLeaseUrl = new URL('./scanLease.mjs', import.meta.url).href;
   const source = `
     import fs from 'node:fs';
@@ -114,13 +114,58 @@ function temporaryLiveGuard(root, holdMs = 100) {
       token: String(['temporary', 'live', 'guard', '0001'].join('-')),
       owner: currentLeaseOwner(), acquiredAt: Date.now(),
     }));
+    if (process.env.REPLACE_DURING_CLEANUP === 'true') {
+      const originalRemove = fs.rmSync;
+      fs.rmSync = (target, options) => {
+        if (fs.existsSync(guard)) fs.renameSync(guard, guard + '.injected-retired');
+        fs.mkdirSync(guard);
+        fs.writeFileSync(path.join(guard, 'owner.json'), JSON.stringify({
+          token: String(['synthetic', 'successor', 'guard'].join('-')), owner: currentLeaseOwner(), acquiredAt: Date.now(),
+        }));
+        return originalRemove(target, options);
+      };
+    }
+    let retireFailures = Number(process.env.RETIRE_FAILURES || 0);
+    const originalRename = fs.renameSync;
+    fs.renameSync = (source, target) => {
+      if (source === guard && String(target).includes('.fixture-retired-') && retireFailures-- > 0) {
+        throw Object.assign(new Error('synthetic transient sharing violation'), { code: 'EPERM' });
+      }
+      return originalRename(source, target);
+    };
     process.stdout.write('ready\\n');
-    setTimeout(() => fs.rmSync(guard, { recursive: true, force: true }), Number(process.env.HOLD_MS));
+    setTimeout(() => {
+      const retired = guard + '.fixture-retired-' + process.pid;
+      const deadline = Date.now() + 1000;
+      const retire = () => {
+        try {
+          const record = JSON.parse(fs.readFileSync(path.join(guard, 'owner.json'), 'utf8'));
+          if (record.token !== ['temporary', 'live', 'guard', '0001'].join('-')) return;
+          fs.renameSync(guard, retired);
+        } catch (error) {
+          if (error.code === 'ENOENT') return;
+          if (['EPERM', 'EACCES', 'EBUSY'].includes(error.code) && Date.now() < deadline) {
+            setTimeout(retire, 5);
+            return;
+          }
+          throw error;
+        }
+        // Only this detached fixture directory is removed. Windows can hold
+        // short-lived sharing handles while the real contender reads it.
+        fs.rmSync(retired, { recursive: true, force: true, maxRetries: 10, retryDelay: 10 });
+      };
+      retire();
+    }, Number(process.env.HOLD_MS));
   `;
   const child = spawn(process.execPath, ['--input-type=module', '--eval', source], {
-    env: { ...process.env, SCOUT_AUTH_ROOT: root, HOLD_MS: String(holdMs) },
+    env: { ...process.env, SCOUT_AUTH_ROOT: root, HOLD_MS: String(holdMs), REPLACE_DURING_CLEANUP: String(replaceDuringCleanup), RETIRE_FAILURES: String(retireFailures) },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+  });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-4_096); });
+  child.fixtureClosed = new Promise((resolve) => {
+    child.once('close', (status) => resolve({ status, stderr }));
   });
   return new Promise((resolve, reject) => {
     child.once('error', reject);
@@ -254,10 +299,28 @@ test('release waits for a temporary live guard instead of abandoning durable aut
   });
   const child = await temporaryLiveGuard(root);
   assert.equal(releaseProviderAuthMutation(root, auth), true);
-  await new Promise((resolve, reject) => {
-    child.once('close', (status) => (status === 0 ? resolve() : reject(new Error(`guard child exited ${status}`))));
-  });
+  const closed = await child.fixtureClosed;
+  assert.equal(closed.status, 0, closed.stderr || 'guard child must close successfully');
   assert.equal(readProviderAuthMutation(root, 'codex'), null);
+});
+
+test('the temporary live guard fixture cannot remove a successor during cleanup', async (t) => {
+  const root = workspace(t);
+  const child = await temporaryLiveGuard(root, 100, { replaceDuringCleanup: true });
+  const closed = await child.fixtureClosed;
+  assert.equal(closed.status, 0, closed.stderr || 'guard child must close successfully');
+  const file = path.join(root, '.scout', 'provider-auth', 'v1', 'codex.guard', 'owner.json');
+  assert.equal(fs.existsSync(file), true, 'fixture cleanup must preserve the successor guard');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, 'synthetic-successor-guard');
+});
+
+test('the temporary guard fixture settles after a transient Windows sharing violation', async (t) => {
+  const root = workspace(t);
+  const child = await temporaryLiveGuard(root, 100, { retireFailures: 1 });
+  const closed = await child.fixtureClosed;
+  assert.equal(closed.status, 0, closed.stderr || 'fixture retirement must tolerate a transient sharing violation');
+  const work = acquireProviderWork(root, 'codex', { owner, durationMs: 5_000, workId: 'after-sharing-failure' });
+  assert.equal(releaseProviderWork(root, work), true);
 });
 
 test('release reports bounded guard timeout and preserves durable authority', (t) => {
@@ -547,9 +610,8 @@ test('provider work retries bounded guard contention before reporting semantic b
   const work = acquireProviderWork(root, 'codex', {
     owner, now: Date.now(), durationMs: 5_000, workId: 'retry-contention-work1',
   });
-  await new Promise((resolve, reject) => {
-    child.once('close', (status) => (status === 0 ? resolve() : reject(new Error(`guard child exited ${status}`))));
-  });
+  const closed = await child.fixtureClosed;
+  assert.equal(closed.status, 0, closed.stderr || 'guard child must close successfully');
   assert.equal(work.workId, 'retry-contention-work1');
   assert.equal(releaseProviderWork(root, work), true);
 });

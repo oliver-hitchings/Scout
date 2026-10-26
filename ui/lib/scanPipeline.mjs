@@ -1,6 +1,8 @@
+import { notificationsForAssessment, readNotifications } from './notifications.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { atomicWriteFile } from './atomicWrite.mjs';
 import { serializeTracker } from './tracker.mjs';
 import { workspacePaths } from './workspace.mjs';
@@ -17,7 +19,7 @@ import {
 } from './vacancyObservation.mjs';
 import { rankVacancies, vacancyNoveltyComparison } from './vacancyRank.mjs';
 import { selectVacancies } from './vacancySelect.mjs';
-import { partitionVacanciesForAssessment } from './vacancyLifecycle.mjs';
+import { lifecycleRecords, normaliseVacancyOutcome, partitionVacanciesForAssessment, rejected } from './vacancyLifecycle.mjs';
 import {
   buildCoverageRollups, buildVacancyExplanations, reconcileCoverageFunnel,
 } from './scanCoverage.mjs';
@@ -47,7 +49,7 @@ import {
   applyPreparedMutation, loadPreparedMutation, markerFreeMutationContent, prepareMutation,
 } from './mutationCoordinator.mjs';
 import {
-  jsonReplaceRecipe, renderMutationRecipe, runLogAppendRecipe, scanReportRecipe, trackerMergeRecipe,
+  jsonReplaceRecipe, renderMutationRecipe, runLogAppendRecipe, scanReportRecipe, trackerFirstSeenDate, trackerMergeRecipe,
 } from './scanMutationProjection.mjs';
 import {
   deriveSearchLaneResults, loadSearchLanePlan, recordSearchLaneRun,
@@ -1212,6 +1214,69 @@ export function assessmentCandidatesForSelection(selected) {
 }
 
 const VACANCY_DECISION_HISTORY_LIMIT = 512;
+const REJECTION_MEMORY_LIMIT = 4096;
+
+// `assessed` is false for a vacancy that never reached the assessment prompt, so it has no assessment version.
+function decisionRecord(item, run, assessed = true) {
+  if (!item?.company || !item?.role || !item?.outcome) return null;
+  return {
+    vacancyId: boundedText(item.vacancyId, 160) || null,
+    company: boundedText(item.company, 120),
+    role: boundedText(item.role, 160),
+    source: boundedText(item.source, 80),
+    url: safeSourceUrl(item.sourceUrl),
+    sourceReferences: sourceReferencesOf({
+      sourceReferences: Array.isArray(item.sourceReferences) ? item.sourceReferences : [],
+    }).slice(0, 8),
+    outcome: normaliseVacancyOutcome(boundedText(item.outcome, 80)),
+    contentFingerprint: /^[a-f0-9]{64}$/.test(String(item.contentFingerprint || ''))
+      ? item.contentFingerprint
+      : null,
+    profileId: boundedText(item.profileId || run.profile_id, 80),
+    learningVersionId: boundedText(
+      item.learningVersionId || run.learning_version_id || 'learning-baseline',
+      80,
+    ),
+    assessedAt: boundedText(run.timestamp, 80),
+    assessmentVersion: assessed ? run.assessment_version || null : null,
+  };
+}
+
+// The newest assessed decision for each distinct vacancy, kept only while it is still a rejection. The recent-history
+// window above holds a few hundred assessed records, so without this an unchanged rejected advert would be assessed
+// again once newer assessments push it out of that window. shortcut: reads the whole run log each scan; keep a
+// compact rejection ledger instead if the log grows beyond tens of megabytes.
+export function readRejectedVacancyMemory(root, { limit = REJECTION_MEMORY_LIMIT } = {}) {
+  const file = workspacePaths(root).scanRuns;
+  const boundedLimit = Math.max(0, Math.min(REJECTION_MEMORY_LIMIT, Math.floor(Number(limit) || 0)));
+  if (!boundedLimit || !fs.existsSync(file)) return [];
+  const remembered = [];
+  const decided = new Set();
+  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).reverse()) {
+    let run;
+    try {
+      run = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    for (const item of [...(Array.isArray(run?.reviewed) ? run.reviewed : [])].reverse()) {
+      const record = decisionRecord(item, run);
+      if (!record) continue;
+      const keys = [
+        record.vacancyId && `id:${record.vacancyId}`,
+        record.url && `url:${record.url}`,
+        ...record.sourceReferences.map(({ source, providerId }) => source && providerId && `ref:${source}|${providerId}`),
+      ].filter(Boolean);
+      if (!keys.length) keys.push(`job:${record.company}|${record.role}`);
+      if (keys.some((key) => decided.has(key))) continue;
+      keys.forEach((key) => decided.add(key));
+      if (!rejected(record)) continue;
+      remembered.push(record);
+      if (remembered.length >= boundedLimit) return remembered;
+    }
+  }
+  return remembered;
+}
 
 export function readVacancyDecisionHistory(root, { limit = VACANCY_DECISION_HISTORY_LIMIT } = {}) {
   const file = workspacePaths(root).scanRuns;
@@ -1240,32 +1305,12 @@ export function readVacancyDecisionHistory(root, { limit = VACANCY_DECISION_HIST
         sourceReferences: item.sourceReferences,
         outcome: item.reason_code || item.assessment_status,
       }));
-    const append = (item, records) => {
-      if (!item?.company || !item?.role || !item?.outcome) return;
-      if (records.length >= boundedLimit) return;
-      records.push({
-        vacancyId: boundedText(item.vacancyId, 160) || null,
-        company: boundedText(item.company, 120),
-        role: boundedText(item.role, 160),
-        source: boundedText(item.source, 80),
-        url: safeSourceUrl(item.sourceUrl),
-        sourceReferences: sourceReferencesOf({
-          sourceReferences: Array.isArray(item.sourceReferences) ? item.sourceReferences : [],
-        }).slice(0, 8),
-        outcome: boundedText(item.outcome, 80),
-        contentFingerprint: /^[a-f0-9]{64}$/.test(String(item.contentFingerprint || ''))
-          ? item.contentFingerprint
-          : null,
-        profileId: boundedText(item.profileId || run.profile_id, 80),
-        learningVersionId: boundedText(
-          item.learningVersionId || run.learning_version_id || 'learning-baseline',
-          80,
-        ),
-        assessedAt: boundedText(run.timestamp, 80),
-      });
+    const append = (item, records, assessedItem = true) => {
+      const record = decisionRecord(item, run, assessedItem);
+      if (record && records.length < boundedLimit) records.push(record);
     };
     for (const item of [...assessed].reverse()) append(item, reviewedRecords);
-    for (const item of [...preAssessment].reverse()) append(item, preAssessmentRecords);
+    for (const item of [...preAssessment].reverse()) append(item, preAssessmentRecords, false);
     if (reviewedRecords.length >= boundedLimit && preAssessmentRecords.length >= boundedLimit) break;
   }
   if (!reviewedRecords.length) return preAssessmentRecords.slice(0, boundedLimit);
@@ -1316,13 +1361,19 @@ function observationInputs(sources) {
   return { observations, funnelSources };
 }
 
+// The artifact keeps only what explanations and reports need about skipped vacancies. A long rejection memory can skip
+// thousands of them, and their full ranked objects would push the select-stage artifact past its 16 MiB limit.
+function skippedRecords(skipped) {
+  return skipped.map(({ vacancyId, company, role, lifecycle }) => ({ vacancyId, company, role, lifecycle }));
+}
+
 // The deterministic discovery boundary deliberately evaluates every
 // normalised, canonical vacancy before it applies the bounded assessment set.
 // Candidate identifiers are generated only after selection, so a source's
 // response order cannot leak into provider-facing identities.
 export function prepareRankedDiscovery({
   sources, profile, tracker = { opportunities: [] }, runId = '', limit = DEFAULT_CANDIDATE_LIMIT,
-  relevanceThreshold, decisionHistory = [], learningPolicy = null,
+  relevanceThreshold, decisionHistory = [], rejectionMemory = [], learningPolicy = null, assessmentVersion = null,
 } = {}) {
   if (!profile || profile.status !== 'published') throw new Error('ranked discovery requires a published search profile');
   const input = observationInputs(sources);
@@ -1334,7 +1385,9 @@ export function prepareRankedDiscovery({
   const discoveryCounts = laneDiscoveryCounts(vacancies, profile, reviewedHistory);
   const filtered = filterVacancies(vacancies, profile, { learningPolicy });
   const ranked = rankVacancies(filtered.eligible, profile, reviewedHistory, { learningPolicy });
-  const lifecycle = partitionVacanciesForAssessment(ranked, decisionHistory, { profileId: profile.id });
+  const lifecycle = partitionVacanciesForAssessment(ranked, [...rejectionMemory, ...decisionHistory], {
+    profileId: profile.id, learningVersionId: learningPolicy?.id || 'learning-baseline', assessmentVersion,
+  });
   const configuredThreshold = Number(relevanceThreshold ?? profile?.selection?.relevanceThreshold ?? 1);
   const threshold = Number.isFinite(configuredThreshold) ? Math.max(Number.EPSILON, configuredThreshold) : 1;
   const selection = selectVacancies(lifecycle.eligible, {
@@ -1343,7 +1396,8 @@ export function prepareRankedDiscovery({
     exploration: Number(profile?.selection?.exploration || 0),
     seed: runId,
   });
-  selection.assessmentSkipped = lifecycle.skipped;
+  selection.assessmentSkipped = skippedRecords(lifecycle.skipped);
+  selection.lifecycle = lifecycleRecords(lifecycle);
   const funnel = assertDiscoveryFunnel(advanceDiscoveryFunnel(initialFunnel, 'selection', {
     parsed: initialFunnel.sourceRecords,
     normalised: observations.length,
@@ -1745,7 +1799,9 @@ export function createRankedDiscoveryStages({
   profile,
   tracker = { opportunities: [] },
   decisionHistory = [],
+  rejectionMemory = [],
   learningPolicy = null,
+  assessmentVersion = null,
   limit = DEFAULT_CANDIDATE_LIMIT,
   relevanceThreshold,
 } = {}) {
@@ -1832,8 +1888,8 @@ export function createRankedDiscoveryStages({
       const threshold = Number.isFinite(configuredThreshold) ? Math.max(Number.EPSILON, configuredThreshold) : 1;
       const lifecycle = partitionVacanciesForAssessment(
         priorArtifact.ranked,
-        decisionHistory,
-        { profileId: profile.id },
+        [...rejectionMemory, ...decisionHistory],
+        { profileId: profile.id, learningVersionId: learningPolicy?.id || 'learning-baseline', assessmentVersion },
       );
       const selection = selectVacancies(lifecycle.eligible, {
         limit,
@@ -1841,7 +1897,8 @@ export function createRankedDiscoveryStages({
         exploration: Number(profile?.selection?.exploration || 0),
         seed: run.runId,
       });
-      selection.assessmentSkipped = lifecycle.skipped;
+      selection.assessmentSkipped = skippedRecords(lifecycle.skipped);
+      selection.lifecycle = lifecycleRecords(lifecycle);
       const funnel = assertDiscoveryFunnel(advanceDiscoveryFunnel(priorArtifact.initialFunnel, 'selection', {
         parsed: priorArtifact.initialFunnel.sourceRecords,
         normalised: priorArtifact.normalisedCount,
@@ -2169,8 +2226,8 @@ export function gateAssessment(assessment, policy, candidate = {}) {
   const rankedScore = Number(candidate?.preRankScore);
   const total = Number.isFinite(rankedScore)
     ? Math.round(rankedScore * 100) / 100
-    : assessment.recommendation === 'keep' ? actionScore
-      : assessment.recommendation === 'check' ? checkScore : 0;
+    : assessment.recommendation === 'keep' ? 70
+      : assessment.recommendation === 'check' ? 55 : 0;
   const unmet = (assessment.mandatoryRequirements || []).filter((item) => item.status === 'unmet');
   const unknown = (assessment.mandatoryRequirements || []).filter((item) => item.status === 'unknown');
   if (assessment.recommendation === 'discard' || unmet.length) {
@@ -2194,6 +2251,14 @@ function sourceHealth(sources) {
   }]));
 }
 
+function keeperContent(entry, identityLimit = 80) {
+  const encoded = JSON.stringify({ opportunities: [entry] });
+  const content = trackerMergeRecipe(encoded, encoded).upserts[0];
+  for (const key of ['lastChecked', 'rankingHistory', 'notificationState', 'firstSeen']) delete content[key];
+  content.jobIdentity.evidenceTokenDigests = content.jobIdentity.evidenceTokenDigests.slice(0, identityLimit);
+  return content;
+}
+
 function mergeTracker(
   existing,
   candidates,
@@ -2208,6 +2273,7 @@ function mergeTracker(
   const reviewed = [];
   let keepersAdded = 0;
   let keepersUpdated = 0;
+  let keepersUnchanged = 0;
   for (const assessment of assessments) {
     const candidate = candidates.find((item) => item.candidateId === assessment.candidateId);
     if (!candidate) continue;
@@ -2237,16 +2303,16 @@ function mergeTracker(
       outcome, score: gate.score,
       reasons: reasons.map((reason) => boundedText(reason)).filter(Boolean).slice(0, REVIEW_REASON_LIMIT),
     };
+    const previous = existing.opportunities.find((entry) => sameUnderlyingJob(entry, candidate));
     if (!gate.keep) {
-      reviewed.push(review);
+      reviewed.push({ ...review, ...(previous ? { trackerId: previous.id } : {}) });
       continue;
     }
     const baseId = `${slug(candidate.company)}-${slug(candidate.role)}-${date.slice(0, 7)}`;
-    const previous = existing.opportunities.find((entry) => sameUnderlyingJob(entry, candidate));
     let id = previous?.id || baseId;
     for (let suffix = 2; !previous && byId.has(id); suffix += 1) id = `${baseId}-${suffix}`;
     const changedAdvert = Boolean(previous && advertMateriallyChanged(previous, candidate));
-    reviewed.push({ ...review, trackerOutcome: previous ? 'updated' : 'added' });
+
     const references = mergeSourceReferences(previous || {}, candidate);
     const urls = references.map((reference) => reference.url).filter(Boolean);
     const deterministicDimensions = Array.isArray(candidate.dimensions) ? candidate.dimensions : [];
@@ -2280,14 +2346,26 @@ function mergeTracker(
         ))
       )).slice(-32),
       notes: previous && Object.hasOwn(previous, 'notes') ? previous.notes : assessment.summary,
+      firstSeen: previous ? trackerFirstSeenDate(previous.firstSeen) : trackerFirstSeenDate(date),
       lastChecked: date, foundVia: candidate.source, contacts: previous?.contacts || [], log: previous?.log || [],
       ...(changedAdvert ? { advertUpdate: { detectedAt: date, previousFingerprint: previous.jobIdentity?.advertFingerprint || '', currentFingerprint: jobIdentity(candidate).advertFingerprint } } : {}),
     };
-    if (previous) { Object.assign(previous, generated); keepersUpdated += 1; }
+    // Verification dates and ranking history advance even when the keeper's
+    // job content is unchanged; they are not a newly updated opportunity.
+    const identityLimit = previous?.jobIdentity?.evidenceTokenDigests?.length === 32 ? 32 : 80;
+    const changed = previous && !isDeepStrictEqual(
+      keeperContent(previous, identityLimit), keeperContent({ ...previous, ...generated }, identityLimit),
+    );
+    reviewed.push({ ...review, trackerId: id, trackerOutcome: previous ? changed ? 'updated' : 'unchanged' : 'added' });
+    if (previous) {
+      Object.assign(previous, generated);
+      if (changed) keepersUpdated += 1;
+      else keepersUnchanged += 1;
+    }
     else { existing.opportunities.push(generated); byId.set(generated.id, generated); keepersAdded += 1; }
   }
   existing.updated = date;
-  return { tracker: existing, keepersAdded, keepersUpdated, discarded, reviewed };
+  return { tracker: existing, keepersAdded, keepersUpdated, keepersUnchanged, discarded, reviewed };
 }
 
 function reportText({ date, degraded, source_health, kept, discarded, reviewed, errors }) {
@@ -2328,7 +2406,7 @@ function buildScanArtifacts(root, {
   assessmentFailures = [],
   livenessSummary = { checked: 0, gone: 0, unverified: 0 }, verificationScoped = false,
   staleInboxEntries = [], inboxRechecked = 0, funnel = null, selection = [], discoveryEngine = 'legacy-discovery', profileId = null,
-  learningVersionId = 'learning-baseline',
+  learningVersionId = 'learning-baseline', assessmentVersion = null,
   ranked = [], selectionDecision = null, runId = null,
   timestamp: requestedTimestamp = null,
 }) {
@@ -2367,7 +2445,7 @@ function buildScanArtifacts(root, {
     ...funnel,
     added: merged.keepersAdded,
     updated: merged.keepersUpdated,
-    unchanged: 0,
+    unchanged: merged.keepersUnchanged || 0,
     ...(error ? {
       assessed: Number(assessmentResult?.assessments?.length || 0),
       assessmentFailed: Math.max(
@@ -2429,6 +2507,7 @@ function buildScanArtifacts(root, {
     adverts_unverified: livenessSummary.unverified, verification_scoped: verificationScoped,
     inbox_rechecked: inboxRechecked, inbox_archived: inboxArchived,
     profile_id: profileId, learning_version_id: learningVersionId,
+    ...(assessmentResult && assessmentVersion ? { assessment_version: assessmentVersion } : {}),
     discovery_engine: discoveryEngine,
     ...(reconciledFunnel ? { funnel: reconciledFunnel } : {}),
     ...(selection_summary ? { selection_summary } : {}),
@@ -2565,6 +2644,12 @@ export function coordinateScanArtifacts(root, input, { run, lease, hooks = {} })
       || input.startedAt;
     const artifacts = buildScanArtifacts(root, { ...input, timestamp });
     const date = artifacts.run.timestamp.slice(0, 10);
+    const notifications = input.notificationConfig ? notificationsForAssessment(
+      readNotifications(root), input.notificationConfig, artifacts.run.reviewed, timestamp, { tracker: artifacts.tracker },
+    ) : null;
+    if (notifications && artifacts.contents.tracker !== undefined) {
+      artifacts.contents.tracker = serializeTracker(artifacts.tracker);
+    }
     const hasTracker = artifacts.contents.tracker !== undefined;
     const selectedLanes = Array.isArray(input.lanes) ? input.lanes : [];
     const currentLanePlan = selectedLanes.length ? loadSearchLanePlan(root) : null;
@@ -2644,6 +2729,7 @@ export function coordinateScanArtifacts(root, input, { run, lease, hooks = {} })
         { kind: 'run-log', key: 'scan-log' },
         ...(updatedLanePlan ? [{ kind: 'json', key: 'search-lanes' }] : []),
         ...(updatedEmployerRegistry ? [{ kind: 'json', key: 'employers' }] : []),
+        ...(notifications ? [{ kind: 'json', key: 'notifications' }] : []),
       ],
     };
     plan = prepareMutation({ handle: run, lease }, target, {
@@ -2653,6 +2739,7 @@ export function coordinateScanArtifacts(root, input, { run, lease, hooks = {} })
           artifacts.contents.tracker,
         ),
       } : {}),
+      ...(notifications ? { notifications: jsonReplaceRecipe(notifications) } : {}),
       [`report:${date}`]: artifacts.recipes.report,
       'scan-log': artifacts.recipes.runLog,
       ...(updatedLanePlan ? { 'search-lanes': jsonReplaceRecipe(updatedLanePlan) } : {}),

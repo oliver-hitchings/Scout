@@ -1,0 +1,32 @@
+[Unit]
+Description=Scout private web service (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scout
+Group=scout
+WorkingDirectory=/srv/apps/scout/app
+Environment=NODE_ENV=production
+Environment=SCOUT_HEADLESS=1
+Environment=SCOUT_WORKSPACE=/srv/appdata/scout/workspace-%i
+Environment=SCOUT_DEVICE_SETTINGS=/srv/appdata/scout/workspace-%i/.scout/device-settings.json
+Environment=HOME=/srv/appdata/scout/workspace-%i/.scout/provider-home
+EnvironmentFile=/etc/scout/%i.env
+ExecStart=/usr/bin/node /srv/apps/scout/app/ui/server.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=180
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Hide all sibling workspaces, then expose only this instance's private state.
+TemporaryFileSystem=/srv/appdata/scout:ro
+BindPaths=/srv/appdata/scout/workspace-%i
+
+[Install]
+WantedBy=multi-user.target

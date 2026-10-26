@@ -1455,3 +1455,20 @@ test('legacy adoption validation failure leaves the original workspace installed
   assert.equal(fs.readdirSync(f.base).some((name) => name.startsWith('.scout-adopt-')), false);
   fs.rmSync(f.base, { recursive: true, force: true });
 });
+
+test('a rejected queued backup resolution returns its error without crashing the server process', () => {
+  const moduleUrl = new URL('./workspaceSync.mjs', import.meta.url).href;
+  const source = `
+    import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+    import { queueWorkspaceResolution } from ${JSON.stringify(moduleUrl)};
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-resolution-rejection-'));
+    try {
+      try { await queueWorkspaceResolution(root, 'synthetic-analysis', null); }
+      catch { process.stdout.write('caller received resolution failure\\n'); }
+      await new Promise(resolve => setImmediate(resolve));
+    } finally { fs.rmSync(root, {recursive:true,force:true}); }
+  `;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /caller received resolution failure/);
+});

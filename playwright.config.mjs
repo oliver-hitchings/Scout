@@ -10,9 +10,13 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:8461',
     trace: 'retain-on-failure',
+    // API-route fixtures must not be bypassed by a controlling service worker.
+    // Dedicated worker tests opt back in to exercise the real worker lifecycle.
+    serviceWorkers: 'block',
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
 });

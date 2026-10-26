@@ -4,6 +4,44 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { artifactNames, verifiedMacDmgRootDigest } from './build-platform.mjs';
+import { auditStageBeforePackaging, removeAuditedStage } from './build-release.mjs';
+
+test('native pre-package audits accept the reviewed vendor bytes in each complete platform layout', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-native-vendor-audit-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const version = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  const payload = fs.readFileSync(new URL('../node_modules/ajv/dist/refs/json-schema-secure.json', import.meta.url));
+  const layouts = [
+    ['linux', ['app', 'deb/opt/scout/app', `Scout-${version}-linux-x64/app`]],
+    ['macos', ['app', 'dmg-root/Scout.app/Contents/Resources/app']],
+    ['windows', ['app']],
+  ];
+  for (const [platform, apps] of layouts) {
+    const stage = path.join(root, platform);
+    for (const app of apps) {
+      for (const directory of ['dist', 'lib']) {
+        const file = path.join(stage, app, 'node_modules/ajv', directory, 'refs/json-schema-secure.json');
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, payload);
+      }
+    }
+    // An unrelated staged file is included in the same packaging authorization.
+    fs.writeFileSync(path.join(stage, 'package-input.txt'), 'Synthetic public package input.');
+    const env = { SCOUT_RELEASE_MARKERS: 'Synthetic Native Packaging Marker' };
+    const audit = auditStageBeforePackaging(stage, { env });
+    try {
+      assert.match(audit.output, new RegExp(`scanned ${apps.length * 2 + 1} files with 1 configured`));
+      for (const app of apps) {
+        assert.deepEqual(fs.readFileSync(path.join(audit.stageDir, app, 'node_modules/ajv/dist/refs/json-schema-secure.json')), payload);
+      }
+    } finally {
+      removeAuditedStage(audit.stageDir);
+    }
+    fs.writeFileSync(path.join(stage, 'package-input.txt'), env.SCOUT_RELEASE_MARKERS);
+    assert.throws(() => auditStageBeforePackaging(stage, { env }), /package-input\.txt:1 personal-marker-1/);
+    assert.deepEqual(fs.readdirSync(root).filter((name) => name.includes('.audited-')), []);
+  }
+});
 test('cross-platform artifacts are versioned and architecture-specific', () => {
   assert.deepEqual(artifactNames('1.2.3-beta.1'), {
     macArm: 'Scout-1.2.3-beta.1-macos-arm64.dmg', macIntel: 'Scout-1.2.3-beta.1-macos-x64.dmg',

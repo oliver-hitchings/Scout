@@ -1229,6 +1229,9 @@ export function queueWorkspaceSync(root, reason, options = {}) {
   const previous = QUEUES.get(key) || Promise.resolve();
   const next = previous.catch(() => {}).then(() => runWorkspaceSync(root, reason, options));
   const tracked = next.finally(() => { if (QUEUES.get(key) === tracked) QUEUES.delete(key); });
+  // The caller owns `next` and receives its rejection. The internal queue tail
+  // must also be observed so one failed resolution cannot crash the server.
+  void tracked.catch(() => {});
   QUEUES.set(key, tracked);
   return next;
 }
@@ -1333,6 +1336,7 @@ export function queueWorkspaceResolution(root, analysisToken, lease, options = {
     () => resolveBackupDivergence(root, analysisToken, lease, options),
   );
   const tracked = next.finally(() => { if (QUEUES.get(key) === tracked) QUEUES.delete(key); });
+  void tracked.catch(() => {});
   QUEUES.set(key, tracked);
   return next;
 }

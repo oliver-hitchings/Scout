@@ -1,3 +1,4 @@
+import { isSafeModelId } from './modelIdentifier.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -62,11 +63,11 @@ function checkedRequest(input) {
       : ['mode', 'model', 'provider', 'schemaVersion'];
     exactKeys(request.execution, executionFields, 'scan queue execution');
     if (![1, 2].includes(request.execution.schemaVersion)
-      || !['codex', 'claude'].includes(request.execution.provider)
+      || !['codex', 'claude', 'local'].includes(request.execution.provider)
       || !['primary', 'second-pass', 'broadened'].includes(request.execution.mode)
       || (request.execution.model !== null
         && (typeof request.execution.model !== 'string'
-          || !/^[A-Za-z0-9._:-]{1,96}$/.test(request.execution.model)))) {
+          || !isSafeModelId(request.execution.model)))) {
       throw new TypeError('scan queue execution is invalid');
     }
     if (request.execution.schemaVersion === 2) {

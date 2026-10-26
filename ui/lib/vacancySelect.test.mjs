@@ -232,3 +232,18 @@ test('stable vacancy identifiers use code-unit order rather than the host locale
     String.prototype.localeCompare = original;
   }
 });
+
+test('small plural pools try diversity before explicitly relaxing caps to fill the available budget', () => {
+  const jobs = [
+    ...Array.from({ length: 3 }, (_, index) => ranked({ vacancyId: `dominant-${index}`, score: 95 - index, employerId: 'dominant' })),
+    ranked({ vacancyId: 'alternative', score: 90, employerId: 'alternative' }),
+  ];
+  const limited = selectVacancies(jobs, { limit: 3, threshold: 80 });
+  assert.equal(limited.selected.length, 3);
+  assert.equal(new Set(limited.selected.map(job => job.employerId)).size, 2);
+  assert.ok(limited.constraintsRelaxed.includes('employer'));
+  const all = selectVacancies(jobs, { limit: 60, threshold: 80 });
+  assert.equal(all.selected.length, 4, 'soft diversity must never starve a small above-threshold pool');
+  assert.ok(all.constraintsRelaxed.includes('employer'));
+  assert.equal(selectVacancies([jobs[0]], { limit: 60, threshold: 80 }).selected.length, 1);
+});

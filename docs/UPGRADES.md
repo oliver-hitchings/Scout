@@ -42,12 +42,12 @@ proves exact equivalence for every protected live path. If tracker, report, CV,
 configuration or another protected file changed, Scout creates a new
 current-state snapshot before migration.
 
-The first fenced scan-lease activation is a one-way execution boundary, not a
-manual workspace-data conversion. Once activated, the fenced lease is
-authoritative and Scout refuses a downgrade or old/new coexistence against the
-same workspace. Stop the older application completely before the first new
-scan; restoring only an older executable is not a safe rollback after fenced
-activation.
+Fenced scan-lease activation changes the execution contract used by current
+Scout. Current Scout rejects a conflicting legacy lock after activation, but
+older binaries do not understand the new lease and cannot be prevented from
+writing by that check. Stop every older process and disable its schedules before
+the first new scan. Restoring only an older executable is not a safe rollback;
+use a separately materialised compatible snapshot with all other processes stopped.
 
 VPS source checkouts continue to use the protected release workflow described in
 [VPS installation](INSTALL_VPS.md). It refuses dirty or unexpected checkouts,
@@ -78,9 +78,10 @@ a public repository safe: old mixed Git history must remain private.
 If an upgrade fails, stop Scout, preserve the failed workspace and logs, and
 restore only a version and workspace snapshot that are mutually compatible.
 After fenced-lease activation, do not restart an older Scout binary against
-that workspace: downgrade/coexistence is refused to protect it from two
-writers. Restore a copied pre-activation snapshot only when a reviewed rollback
-requires it. Do not overwrite newer workspace history casually.
+that workspace: the old binary cannot honour the current fencing protocol.
+Current Scout can reject a legacy lock, but cannot make an older binary safe.
+Restore a copied pre-activation snapshot only when a reviewed rollback requires
+it. Do not overwrite newer workspace history casually.
 
 To rehearse or perform a reviewed beta.22 rollback, materialise the verified
 snapshot into a new, absent directory:

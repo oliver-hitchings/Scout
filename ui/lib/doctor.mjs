@@ -4,6 +4,8 @@ import { loadEnv } from './env.mjs';
 import { commandInvocation, detectProviders } from './providers.mjs';
 import { loadWorkspaceConfig, workspacePaths } from './workspace.mjs';
 import { resolveTypstRuntime } from './typstRuntime.mjs';
+import { publicProviderStatuses } from './providerStatuses.mjs';
+import { providerCardPresentation } from './providerPresentation.mjs';
 
 function binary(name) {
   const invocation = commandInvocation(name, ['--version']);
@@ -21,6 +23,7 @@ export function doctor(workspaceRoot, {
   requireProvider = true,
   providerDetector = detectProviders,
   providers = null,
+  healthGated = false,
   appRoot,
   typstResolver = resolveTypstRuntime,
 } = {}) {
@@ -36,10 +39,13 @@ export function doctor(workspaceRoot, {
   const typst = typstResolver({ appRoot });
   checks.git = { ok: git.available, ...git, optional: true };
   checks.typst = { ok: typst.available, ...typst, optional: false };
-  checks.providers = providers || providerDetector();
+  const detected = providers || providerDetector({ local: checks.config.value?.ai?.local, root: workspaceRoot });
+  // The HTTP response passes its already gated snapshot so every projection
+  // in that response describes the same provider evidence.
+  checks.providers = healthGated ? detected : publicProviderStatuses(detected, workspaceRoot);
   const env = { ...loadEnv(workspaceRoot), ...process.env };
   checks.adzuna = { ok: !!(env.ADZUNA_APP_ID && env.ADZUNA_API_KEY), optional: true };
-  const providerReady = Object.values(checks.providers).some((p) => p.installed && p.authenticated);
+  const providerReady = Object.values(checks.providers).some((p) => providerCardPresentation(p).available);
   const required = checks.config.ok && checks.tracker.ok && checks.typst.ok && (!requireProvider || providerReady);
   return { ok: required, workspaceRoot, checks, providerSetupRequired: !providerReady };
 }
@@ -54,7 +60,7 @@ function publicCheck(check) {
 export function publicDoctor(result) {
   const checks = result?.checks || {};
   const providers = {};
-  for (const provider of ['codex', 'claude']) {
+  for (const provider of ['codex', 'claude', 'local']) {
     const value = checks.providers?.[provider];
     if (!value) continue;
     providers[provider] = {

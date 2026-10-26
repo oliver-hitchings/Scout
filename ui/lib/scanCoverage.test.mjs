@@ -5,6 +5,7 @@ import {
   buildVacancyExplanations,
   reconcileCoverageFunnel,
 } from './scanCoverage.mjs';
+import { rankVacancies } from './vacancyRank.mjs';
 
 function vacancy(vacancyId, {
   source = 'ats', score = 80, employer = 'Acme', role = 'Engineer',
@@ -241,4 +242,61 @@ test('joins assessed outcomes by canonical URL when a legacy reviewed ID was tru
 
   assert.equal(explanations[0].outcome, 'kept');
   assert.equal(explanations[0].reason_code, 'kept');
+});
+
+test('explanations say why a vacancy ranked: dimension, score and evidence of the strongest contributions', () => {
+  const profile = {
+    id: 'profile-explain', version: 1,
+    target: {
+      primaryTitles: [{ value: 'Data Analyst', strength: 'mandatory' }],
+      locations: [{ value: 'Manchester', strength: 'strong-preference' }],
+    },
+    negative: {},
+    compensation: { currency: null, period: 'year', minimum: null, minimumStrength: 'neutral', unknownPolicy: 'include' },
+    unknownPolicies: { location: 'penalise' },
+    selection: { breadth: 'balanced' },
+  };
+  const field = (value) => ({ value, provenance: 'explicit-source' });
+  const ranked = rankVacancies([{
+    vacancyId: 'why-1', canonicalUrl: 'https://example.test/why-1', description: '',
+    postedAt: '2026-07-20T00:00:00.000Z', firstSeenAt: '2026-07-20T00:00:00.000Z',
+    lastSeenAt: '2026-07-20T00:00:00.000Z',
+    employer: field('Acme'), title: field('Data Analyst'), location: field(null),
+  }], profile);
+
+  const [explanation] = buildVacancyExplanations({ ranked, candidates: [], selectionDecision: { threshold: 1 } });
+
+  assert.deepEqual(explanation.pre_rank.positive[0], {
+    code: explanation.pre_rank.positive[0].code, score: 1, dimension: 'title', evidence: 'matched: Data Analyst',
+  });
+  assert.match(explanation.pre_rank.positive[0].code, /^rule-target-primary-titles-/);
+  assert.deepEqual(explanation.pre_rank.negative.map(({ dimension, evidence }) => ({ dimension, evidence })), [
+    { dimension: 'location', evidence: 'unknown: unknown location policy: penalise' },
+  ]);
+  assert.ok(explanation.pre_rank.positive.some(({ dimension }) => dimension === 'freshness'));
+});
+
+test('explanations carry the lifecycle change and reason for ranked vacancies only, treating an unrecorded one as new', () => {
+  const ranked = [vacancy('changed-advert'), vacancy('rejected-before'), vacancy('first-seen')];
+  const explanations = buildVacancyExplanations({
+    ranked,
+    exclusions: [vacancy('excluded', { score: 0 })],
+    candidates: [{ ...ranked[0], candidateId: 'candidate-001' }],
+    selectionDecision: {
+      threshold: 40,
+      selected: [ranked[0]],
+      lifecycle: [
+        { vacancyId: 'changed-advert', change: 'material', reason: 'material-change' },
+        { vacancyId: 'rejected-before', change: 'unchanged', reason: 'unchanged-rejection' },
+      ],
+      assessmentSkipped: [{ ...ranked[1], lifecycle: { reason: 'unchanged-rejection' } }],
+    },
+    deterministicExclusions: [{ vacancyId: 'excluded', code: 'mandatory-location-unmet' }],
+  });
+  const lifecycle = (id) => explanations.find(({ vacancy_id }) => vacancy_id === id).lifecycle;
+
+  assert.deepEqual(lifecycle('changed-advert'), { change: 'material', reason: 'material-change' });
+  assert.deepEqual(lifecycle('rejected-before'), { change: 'unchanged', reason: 'unchanged-rejection' });
+  assert.deepEqual(lifecycle('first-seen'), { change: 'new', reason: 'new-vacancy' });
+  assert.equal(lifecycle('excluded'), null);
 });

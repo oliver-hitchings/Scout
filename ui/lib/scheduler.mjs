@@ -41,7 +41,7 @@ const HEALTH_REASON_CODES = new Set([
 ]);
 
 function validateScheduledProvider(value) {
-  if (!['codex', 'claude'].includes(value)) throw new Error('schedule provider is unsupported');
+  if (!['codex', 'claude', 'local'].includes(value)) throw new Error('schedule provider is unsupported');
   return value;
 }
 

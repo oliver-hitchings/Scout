@@ -1,0 +1,30 @@
+[Unit]
+Description=Scout scheduled scan (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=scout
+Group=scout
+WorkingDirectory=/srv/apps/scout/app
+Environment=NODE_ENV=production
+Environment=SCOUT_HEADLESS=1
+Environment=SCOUT_WORKSPACE=/srv/appdata/scout/workspace-%i
+Environment=SCOUT_DEVICE_SETTINGS=/srv/appdata/scout/workspace-%i/.scout/device-settings.json
+Environment=HOME=/srv/appdata/scout/workspace-%i/.scout/provider-home
+Environment=SCOUT_SCAN_PROVIDER=local
+Environment=SCOUT_SCAN_MODE=primary
+Environment=SCOUT_SCAN_JOB=%i-primary
+EnvironmentFile=/etc/scout/%i.env
+ExecStart=/usr/bin/node /srv/apps/scout/app/tools/scout.mjs scan --workspace /srv/appdata/scout/workspace-%i --provider ${SCOUT_SCAN_PROVIDER} --mode ${SCOUT_SCAN_MODE} --scheduled --schedule-id ${SCOUT_SCAN_JOB}
+TimeoutStartSec=3h
+TimeoutStopSec=180
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+TemporaryFileSystem=/srv/appdata/scout:ro
+BindPaths=/srv/appdata/scout/workspace-%i

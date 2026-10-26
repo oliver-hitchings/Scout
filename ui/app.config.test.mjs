@@ -5,12 +5,13 @@ import { test } from 'node:test';
 import { CATEGORY_PALETTE } from './lib/categoryColor.mjs';
 import { createChatDrawerState, reduceChatDrawer } from './lib/chatDrawerState.mjs';
 import { codexDeepLinkCapability, openCodexTask } from './lib/codexDeepLink.mjs';
+import { DURABLE_RUN_STATES, TERMINAL_RUN_STATES } from './lib/durableRunStates.mjs';
 
 function loadScout() {
   const context = {
     URL,
     window: {},
-    document: { querySelectorAll: () => [] },
+    document: { querySelectorAll: () => [], getElementById: () => null },
     fetch: () => new Promise(() => {}),
     console,
     matchMedia: () => ({ matches: false }),
@@ -18,6 +19,8 @@ function loadScout() {
     codexDeepLinkCapability,
     codexTaskLaunchView: openCodexTask,
     reduceChatDrawer,
+    DURABLE_RUN_STATES,
+    TERMINAL_RUN_STATES,
   };
   context.activityState = () => 'thinking';
   context.applyScoutState = () => {};
@@ -29,6 +32,124 @@ function loadScout() {
   vm.runInNewContext(source, context, { filename: 'ui/app.js' });
   return { scout: context.window.Scout, context };
 }
+
+test('reviewed draft transitions preserve edits until explicit discard', async () => {
+  const { scout, context } = loadScout();
+  const original = { opportunityId: 'synthetic-role-a', kind: 'cv', draftId: 'synthetic-preview', markdown: '# DRAFT\n\nA careful human edit.' };
+  scout.applicationDraft = original;
+  scout.showTab = () => {};
+  scout.waitFor = async () => {};
+  scout.renderApplicationDraft = () => {};
+  let confirmations = 0;
+  context.window.confirm = () => { confirmations++; return false; };
+  await scout.startReviewedDraft('synthetic-role-b', 'cover-letter');
+  assert.equal(scout.applicationDraft, original);
+  assert.equal(confirmations, 1);
+  context.window.confirm = () => true;
+  await scout.startReviewedDraft('synthetic-role-b', 'cover-letter');
+  assert.equal(scout.applicationDraft.opportunityId, 'synthetic-role-b');
+  assert.equal(scout.applicationDraft.kind, 'cover-letter');
+  assert.equal(scout.applicationDraft.markdown, undefined);
+});
+
+test('busy reviewed draft transitions and discard retain the current work', async () => {
+  const { scout, context } = loadScout();
+  const original = { opportunityId: 'synthetic-role-a', kind: 'cv', busy: true };
+  scout.applicationDraft = original;
+  scout.showTab = () => {};
+  scout.waitFor = async () => {};
+  scout.renderApplicationDraft = () => {};
+  context.window.confirm = () => { throw new Error('Busy work cannot be discarded.'); };
+  await scout.startReviewedDraft('synthetic-role-b', 'cover-letter');
+  assert.equal(scout.applicationDraft, original);
+  scout.runAction({ dataset: { action: 'discard-reviewed-draft' } });
+  assert.equal(scout.applicationDraft, original);
+});
+
+test('a stale reviewed draft save completion cannot clear a newer preview', async () => {
+  const { scout, context } = loadScout();
+  const original = { opportunityId: 'synthetic-role-a', kind: 'cv', draftId: 'original-preview', markdown: '# DRAFT\n\nEdited source.' };
+  const newer = { opportunityId: 'synthetic-role-b', kind: 'cover-letter', draftId: 'new-preview', markdown: '# DRAFT\n\nNewer source.' };
+  scout.applicationDraft = original;
+  context.document.getElementById = (id) => id === 'application-draft-confirm'
+    ? { checked: true } : { value: original.markdown };
+  scout.renderApplicationDraft = () => {};
+  let completeSave;
+  scout.api = () => new Promise((resolve) => { completeSave = resolve; });
+  let fileOpens = 0;
+  scout.renderCv = async () => { fileOpens++; };
+  scout.openCv = async () => {};
+  scout.setCvStatus = () => {};
+  const pending = scout.saveReviewedDraft();
+  scout.applicationDraft = newer;
+  completeSave({ path: 'applications/synthetic-role-a/draft-cv.md', slug: 'synthetic-role-a' });
+  await pending;
+  assert.equal(scout.applicationDraft, newer);
+  assert.equal(fileOpens, 0);
+});
+
+test('a stale reviewed draft generation cannot replace a newer preview', async () => {
+  const { scout } = loadScout();
+  const original = { opportunityId: 'synthetic-role-a', kind: 'cv' };
+  const newer = { opportunityId: 'synthetic-role-b', kind: 'cover-letter', markdown: '# DRAFT\n\nNewer source.' };
+  scout.applicationDraft = original;
+  scout.renderApplicationDraft = () => {};
+  let completePreview;
+  let previewRequested;
+  const previewStarted = new Promise((resolve) => { previewRequested = resolve; });
+  scout.api = async (url) => url.endsWith('/generate')
+    ? { operation: { id: 'synthetic-operation', status: 'succeeded', result: { draftId: 'original-preview' } } }
+    : new Promise((resolve) => { completePreview = resolve; previewRequested(); });
+  const pending = scout.generateReviewedDraft();
+  await previewStarted;
+  scout.applicationDraft = newer;
+  completePreview({ opportunityId: 'synthetic-role-a', kind: 'cv', markdown: '# DRAFT\n\nOlder generated source.' });
+  await pending;
+  assert.equal(scout.applicationDraft, newer);
+});
+
+test('an earlier opportunities response cannot replace the latest rendered tracker', async () => {
+  const { scout, context } = loadScout();
+  context.document.getElementById = () => null;
+  const pending = [];
+  scout.api = (url) => url === '/api/opportunities'
+    ? new Promise((resolve) => pending.push(resolve))
+    : Promise.resolve({});
+  const rendered = [];
+  scout.renderJobs = () => rendered.push(scout.state.data.opportunities[0].notes);
+  for (const name of ['renderSpeculative', 'renderShortlist', 'renderPipeline', 'renderAll', 'queueStrongMatches', 'applyWorkspaceConfig']) scout[name] = () => {};
+  const older = scout.loadOpportunities();
+  const newer = scout.loadOpportunities();
+  pending[1]({ opportunities: [{ id: 'synthetic-role', notes: 'Latest saved note' }] });
+  await newer;
+  pending[0]({ opportunities: [{ id: 'synthetic-role', notes: 'Outdated note' }] });
+  await older;
+  assert.equal(scout.state.data.opportunities[0].notes, 'Latest saved note');
+  assert.deepEqual(rendered, ['Latest saved note']);
+});
+
+test('legacy search is disclosed until publication and opens the profile review', async () => {
+  const { scout, context } = loadScout();
+  const banner = { innerHTML: '', hidden: true, classList: { toggle(_name, hidden) { banner.hidden = hidden; } } };
+  context.document.getElementById = (id) => id === 'discovery-mode-banner' ? banner : null;
+  let section;
+  context.window.ScoutSetup = { openSettings(value) { section = value; } };
+  let engine = 'legacy-discovery';
+  scout.api = async (url) => url === '/api/opportunities'
+    ? { discoveryEngine: engine, opportunities: [] }
+    : {};
+  for (const name of ['renderJobs', 'renderSpeculative', 'renderShortlist', 'renderPipeline', 'renderAll', 'queueStrongMatches', 'applyWorkspaceConfig']) scout[name] = () => {};
+  await scout.loadOpportunities();
+  assert.match(banner.innerHTML, /Earlier search settings are active/);
+  assert.match(banner.innerHTML, /ranking the complete pool/);
+  assert.equal(banner.hidden, false);
+  scout.runAction({ dataset: { action: 'review-search-profile' } });
+  assert.equal(section, 'search');
+  engine = 'ranked-discovery';
+  await scout.loadOpportunities();
+  assert.equal(banner.hidden, true);
+  assert.equal(banner.innerHTML, '');
+});
 
 test('custom CV recommendations are preselected but remain optional', () => {
   const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
@@ -323,7 +444,10 @@ test('index.html orders the Speculative tab before Jobs in both nav and sections
   assert.match(html, /data-tab="jobs" class="active"/);
 });
 
-function withJobsDom() {
+function withJobsDom(scout) {
+  // These string-rendering tests use a minimal DOM. Real reconciliation,
+  // pointer continuity and live-editor preservation are browser regressions.
+  if (scout) scout.replaceOpportunityCards = (target, html) => { target.innerHTML = html; };
   const sections = {};
   const make = () => ({ innerHTML: '', classList: { toggle() {}, add() {}, remove() {} }, addEventListener() {}, querySelector: () => null });
   const doc = {
@@ -449,6 +573,52 @@ test('run audit renders persisted recovery and queue state without private diagn
   assert.doesNotMatch(html, /PRIVATE-HOST|4242|private prompt|full advert body|private queued prompt/i);
 });
 
+test('app.js takes the durable run-state vocabulary from the shared module', () => {
+  // The UI rejects a durable state it does not recognise. An inlined second
+  // copy of the vocabulary is how the server and the UI drift apart, so the
+  // browser must import the same module the server publishes from.
+  const source = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  assert.match(source, /import \{ DURABLE_RUN_STATES, TERMINAL_RUN_STATES \} from '\.\/lib\/durableRunStates\.mjs/);
+  assert.doesNotMatch(source, /const DURABLE_RUN_STATES = new Set/);
+  assert.doesNotMatch(source, /const TERMINAL_RUN_STATES = new Set/);
+});
+
+test('run audit renders recovered and retrying states distinctly', () => {
+  // The UI refuses a durable state it does not recognise, so the shared
+  // vocabulary has to publish both states before they can be rendered.
+  assert.equal(DURABLE_RUN_STATES.has('retrying'), true);
+  assert.equal(DURABLE_RUN_STATES.has('recovered'), true);
+  assert.equal(TERMINAL_RUN_STATES.has('retrying'), false);
+  assert.equal(TERMINAL_RUN_STATES.has('recovered'), false);
+
+  const { scout } = loadScout();
+  scout.scanRuns = [{
+    id: 'run-rec…', state: 'recovered', label: 'Recovered compatible work',
+    owner: 'active worker', startedAt: '2026-07-29T00:00:00.000Z',
+    updatedAt: '2026-07-29T00:05:00.000Z', profileVersion: 'profile-v3',
+    pipelineVersion: 'pipeline-v9', completedStages: ['collect'],
+    assessment: null, recoveryCount: 1, terminalReason: null,
+  }];
+  const recoveredHtml = scout.scanRunAuditCard();
+  assert.match(recoveredHtml, /Recovered compatible work/);
+  assert.match(recoveredHtml, /1 recovery/);
+
+  scout.scanRuns = [{
+    id: 'run-retry…', state: 'retrying', label: 'Retrying failed job',
+    owner: 'active worker', startedAt: '2026-07-29T00:00:00.000Z',
+    updatedAt: '2026-07-29T00:05:00.000Z', profileVersion: 'profile-v3',
+    pipelineVersion: 'pipeline-v9', completedStages: ['collect', 'normalise', 'deduplicate', 'filter', 'rank', 'select'],
+    assessment: {
+      currentBatch: 2, totalBatches: 3, totalBatchesExact: false,
+      completedBatches: 1, completedJobs: 10, failedJobs: 1,
+    },
+    recoveryCount: 0, terminalReason: null,
+  }];
+  const retryingHtml = scout.scanRunAuditCard();
+  assert.match(retryingHtml, /Retrying failed job/);
+  assert.match(retryingHtml, /batch 2 of at least 3/i);
+});
+
 test('the Jobs audit remains visible for queue-only and waiting workspaces', () => {
   const { scout } = loadScout();
   scout.latestScan = null;
@@ -465,7 +635,7 @@ test('the Jobs audit remains visible for queue-only and waiting workspaces', () 
 
 test('renderJobs lists only new jobs, highest score first, with tags and actions', () => {
   const { scout, context } = loadScout();
-  const { doc } = withJobsDom();
+  const { doc } = withJobsDom(scout);
   context.document = doc;
   scout.filterBar = () => '';
   scout.latestScanCard = () => '';
@@ -499,7 +669,7 @@ test('speculative classification uses the exact tag case-insensitively', () => {
 
 test('renderSpeculative groups tagged opportunities and honours commute filtering', () => {
   const { scout, context } = loadScout();
-  const { doc } = withJobsDom();
+  const { doc } = withJobsDom(scout);
   context.document = doc;
   scout.filterBar = () => '';
   scout.state.commute = { mode: 'car', maxMinutes: '60', includeUnknown: false };
@@ -522,7 +692,7 @@ test('renderSpeculative groups tagged opportunities and honours commute filterin
 
 test('renderSpeculative shows an empty state when nothing matches', () => {
   const { scout, context } = loadScout();
-  const { doc } = withJobsDom();
+  const { doc } = withJobsDom(scout);
   context.document = doc;
   scout.filterBar = () => '';
   scout.state.data = { opportunities: [] };
@@ -553,11 +723,16 @@ test('triage actions post the right status transitions', async () => {
 });
 
 test('explicit job feedback is separate from tracker status and carries the current ledger revision', async () => {
-  const { scout, context } = loadScout();
-  const answers = ['not-interested', 'location', 'The commute is too long.'];
-  context.window.prompt = () => answers.shift();
-  let alertText = '';
-  context.window.alert = (value) => { alertText = value; };
+  const { scout } = loadScout();
+  const status = { textContent: '' };
+  const fields = {
+    '[data-feedback-decision]': { value: 'not-interested' },
+    '[data-feedback-reason]': { value: 'location' },
+    '[data-feedback-explanation]': { value: 'The commute is too long.' },
+    '[data-feedback-scope]': { value: 'job' },
+    '[data-feedback-status]': status,
+  };
+  const form = { dataset: { feedbackForm: 'job-1' }, querySelector: (key) => fields[key] };
   scout.feedbackLearning = { revision: 'a'.repeat(64) };
   const calls = [];
   scout.api = async (pathname, options) => {
@@ -565,7 +740,7 @@ test('explicit job feedback is separate from tracker status and carries the curr
     return { ok: true, ledger: { revision: 'b'.repeat(64) } };
   };
 
-  const result = await scout.recordJobFeedback('job-1');
+  const result = await scout.saveJobFeedback({ closest: () => form });
 
   assert.equal(result.ok, true);
   assert.deepEqual(calls, [[
@@ -578,8 +753,11 @@ test('explicit job feedback is separate from tracker status and carries the curr
       explanation: 'The commute is too long.',
     },
   ]]);
-  assert.match(alertText, /Ranking did not change/);
+  assert.match(status.textContent, /ranking are unchanged/);
   assert.equal(scout.feedbackLearning.revision, 'b'.repeat(64));
+  scout.api = async () => ({ error: 'Feedback changed. Refresh and retry.' });
+  await scout.saveJobFeedback({ closest: () => form });
+  assert.match(status.textContent, /Refresh and retry/);
 });
 
 test('No removes a job immediately and restores it when persistence fails', async () => {
@@ -602,7 +780,7 @@ test('No removes a job immediately and restores it when persistence fails', asyn
 
 test('renderShortlist lists only shortlisted jobs with a remove action', () => {
   const { scout, context } = loadScout();
-  const { doc } = withJobsDom();
+  const { doc } = withJobsDom(scout);
   context.document = doc;
   scout.filterBar = () => '';
   scout.state.data = {
@@ -786,7 +964,7 @@ test('saveCv persists the source without rendering', async () => {
     querySelectorAll: () => [],
   };
   scout.cvState = { path: 'applications/acme-eng-2026-07/cv.typ', dirty: true };
-  scout.post = (p, payload) => { calls.push([p, payload]); return Promise.resolve({ ok: true }); };
+  scout.api = (p, options) => { if (options?.method === 'POST') calls.push([p, JSON.parse(options.body)]); return Promise.resolve(p === '/api/cv' ? { entries: [], letters: [] } : { ok: true }); };
   scout.renderCvPreview = () => { calls.push(['RENDER_PREVIEW']); };
   await scout.saveCv();
   assert.deepEqual(calls.map((c) => c[0]), ['/api/cv/save']);

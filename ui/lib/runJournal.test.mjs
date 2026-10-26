@@ -7,7 +7,7 @@ import { afterEach, test } from 'node:test';
 import {
   JournalCorruptionError, appendRunEvent, openRunJournal, replayRunJournal, validateRunJournal,
 } from './runJournal.mjs';
-import { acquireScanLease, currentLeaseOwner } from './scanLease.mjs';
+import { acquireScanLease, currentLeaseOwner, releaseScanLease } from './scanLease.mjs';
 
 const roots = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -44,6 +44,158 @@ function hashEvent(event) {
   const { eventHash, ...envelope } = event;
   return sha256(envelope);
 }
+
+function journalReads(file, operation) {
+  const original = { open: fs.openSync, close: fs.closeSync, read: fs.readSync, readFile: fs.readFileSync };
+  const descriptors = new Set();
+  let bytes = 0;
+  fs.openSync = function (target, ...args) {
+    const descriptor = original.open.call(this, target, ...args);
+    if (String(target) === file) descriptors.add(descriptor);
+    return descriptor;
+  };
+  fs.closeSync = function (descriptor) {
+    descriptors.delete(descriptor);
+    return original.close.call(this, descriptor);
+  };
+  fs.readSync = function (descriptor, ...args) {
+    const count = original.read.call(this, descriptor, ...args);
+    if (descriptors.has(descriptor)) bytes += count;
+    return count;
+  };
+  fs.readFileSync = function (target, ...args) {
+    const result = original.readFile.call(this, target, ...args);
+    if (String(target) === file || descriptors.has(target)) bytes += Buffer.byteLength(result);
+    return result;
+  };
+  try { return { value: operation(), get bytes() { return bytes; } }; }
+  finally {
+    fs.openSync = original.open;
+    fs.closeSync = original.close;
+    fs.readSync = original.read;
+    fs.readFileSync = original.readFile;
+  }
+}
+
+test('warm fenced appends bound journal reads while replacements, caller mutations and interrupted writes require validation', () => {
+  const root = temp();
+  const journal = openRunJournal(root, 'run-1');
+  const input = (index) => ({ ...collected, idempotencyKey: `synthetic-append-${index}` });
+  for (let index = 0; index < 500; index += 1) appendRunEvent(journal, input(index), lease);
+  const measured = journalReads(journal.file, () => {
+    for (let index = 500; index < 600; index += 1) appendRunEvent(journal, input(index), lease);
+  });
+  assert.ok(measured.bytes <= 100 * 70 * 1024, `100 appends read ${measured.bytes} journal bytes; the bound is 7 MiB`);
+  assert.ok(measured.bytes >= 100 * 64 * 1024, 'each warm append must actually verify its bounded tail');
+  assert.equal(replayRunJournal(journal.file).length, 600);
+
+  // Mutating the public projection cannot forge sequence, head or idempotency.
+  journal.events = [];
+  journal.lastHash = '0'.repeat(64);
+  const committed = appendRunEvent(journal, input(600), lease);
+  assert.equal(committed.sequence, 601);
+  committed.payload.count = 999;
+  assert.equal(appendRunEvent(journal, input(600), lease).payload.count, collected.payload.count);
+  // Matching metadata alone is insufficient: a mismatched tail forces replay.
+  const read = fs.readSync;
+  let changedTail = false;
+  fs.readSync = function (descriptor, buffer, offset, length, position) {
+    const count = read.call(this, descriptor, buffer, offset, length, position);
+    if (!changedTail && length === 64 * 1024 && count) { buffer[offset] ^= 1; changedTail = true; }
+    return count;
+  };
+  try {
+    const fallback = journalReads(journal.file, () => appendRunEvent(journal, input(600), lease));
+    assert.equal(changedTail, true);
+    assert.ok(fallback.bytes >= fs.statSync(journal.file).size, 'a tail mismatch must trigger full validation even when file metadata agrees');
+  } finally { fs.readSync = read; }
+  const forged = { ...journal, events: [], lastHash: null };
+  const uncached = journalReads(journal.file, () => appendRunEvent(forged, input(601), lease));
+  assert.ok(uncached.bytes >= fs.statSync(journal.file).size / 2, 'a copied handle must fully validate the durable history');
+  assert.equal(uncached.value.sequence, 602);
+
+  // A changed prefix must be checked even when the bounded tail and mtime agree.
+  let original = fs.readFileSync(journal.file);
+  const stat = fs.statSync(journal.file);
+  const corruptPrefix = Buffer.from(original);
+  const marker = corruptPrefix.indexOf(Buffer.from('"count":2'));
+  assert.ok(marker >= 0 && marker < original.length - 70 * 1024);
+  corruptPrefix[marker + '"count":'.length] = '3'.charCodeAt(0);
+  fs.writeFileSync(journal.file, corruptPrefix);
+  fs.utimesSync(journal.file, stat.atime, stat.mtime);
+  assert.throws(() => appendRunEvent(journal, input(602), lease), JournalCorruptionError);
+  fs.writeFileSync(journal.file, '');
+  assert.throws(() => appendRunEvent(journal, input(602), lease), /committed history changed/);
+  const rewritten = original.toString('utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+  rewritten[0].payload.count = 7;
+  let previousHash = null;
+  for (const event of rewritten) {
+    event.previousHash = previousHash;
+    event.payloadHash = sha256(event.payload);
+    event.eventHash = hashEvent(event);
+    previousHash = event.eventHash;
+  }
+  fs.writeFileSync(journal.file, `${rewritten.map(canonicalJson).join('\n')}\n`);
+  assert.equal(validateRunJournal(journal.file).events.length, 602, 'the replacement is a self-consistent full hash chain');
+  assert.throws(() => appendRunEvent(journal, input(602), lease), /committed history changed/, 'a warm writer must not abandon its validated prefix for another history');
+  journal.root += `${path.sep}.`;
+  assert.throws(() => appendRunEvent(journal, input(602), lease), /committed history changed/, 'changing a public root spelling must not discard the private committed-prefix anchor');
+  journal.root = root;
+  fs.writeFileSync(journal.file, original);
+  const replacement = path.join(journal.directory, 'replacement.jsonl');
+  fs.writeFileSync(replacement, original);
+  fs.renameSync(replacement, journal.file);
+  const replaced = journalReads(journal.file, () => appendRunEvent(journal, input(602), lease));
+  assert.ok(replaced.bytes >= original.length, 'same-byte replacement must fully validate the prefix');
+  assert.equal(replaced.value.sequence, 603);
+
+  // A torn write cannot reuse a warm cache, including after reopening the run.
+  original = fs.readFileSync(journal.file);
+  const write = fs.writeSync;
+  let injected = false;
+  fs.writeSync = function (descriptor, buffer, offset, length, ...args) {
+    if (!injected && Buffer.isBuffer(buffer) && buffer.includes(Buffer.from('synthetic-append-603'))) {
+      injected = true;
+      write.call(this, descriptor, buffer, offset, 32, ...args);
+      throw new Error('synthetic interrupted append');
+    }
+    return write.call(this, descriptor, buffer, offset, length, ...args);
+  };
+  try { assert.throws(() => appendRunEvent(journal, input(603), lease), /synthetic interrupted append/); }
+  finally { fs.writeSync = write; }
+  assert.equal(injected, true);
+  assert.equal(validateRunJournal(journal.file).truncatedTail, true);
+  assert.throws(() => appendRunEvent(journal, input(603), lease), JournalCorruptionError);
+  assert.throws(() => appendRunEvent(openRunJournal(root, 'run-1'), input(603), lease), JournalCorruptionError);
+  fs.writeFileSync(journal.file, original);
+
+  // Complete-but-unacknowledged writes remain idempotent after process restart.
+  const sync = fs.fsyncSync;
+  let journalDescriptor;
+  const open = fs.openSync;
+  fs.openSync = function (target, flags, ...args) {
+    const descriptor = open.call(this, target, flags, ...args);
+    if (String(target) === journal.file && (flags & fs.constants.O_APPEND)) journalDescriptor = descriptor;
+    return descriptor;
+  };
+  fs.fsyncSync = function (descriptor) {
+    sync.call(this, descriptor);
+    if (descriptor === journalDescriptor) throw new Error('synthetic acknowledgement loss');
+  };
+  try { assert.throws(() => appendRunEvent(journal, input(603), lease), /synthetic acknowledgement loss/); }
+  finally { fs.openSync = open; fs.fsyncSync = sync; }
+  const reopened = openRunJournal(root, 'run-1');
+  assert.equal(appendRunEvent(reopened, input(603), lease).sequence, 604);
+  assert.equal(replayRunJournal(journal.file).length, 604);
+  const before = fs.readFileSync(journal.file);
+  releaseScanLease(lease);
+  const successor = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId: 'run-1' });
+  try {
+    assert.throws(() => appendRunEvent(reopened, input(604), lease), /lease|fence/i);
+    assert.deepEqual(fs.readFileSync(journal.file), before);
+    assert.equal(appendRunEvent(reopened, input(604), successor).sequence, 605);
+  } finally { releaseScanLease(successor); }
+});
 
 test('appends canonical hash-chained events and replays them in sequence', () => {
   const journal = openRunJournal(temp(), 'run-1');

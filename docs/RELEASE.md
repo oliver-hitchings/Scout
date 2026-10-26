@@ -29,7 +29,7 @@ Release only from this clean-history public application repository. Never copy c
    `installer/output/`. The current installer creates UI shortcuts but does not
    add the CLI to `PATH`.
 7. Test on clean Windows, macOS and Ubuntu runners: install; first launch; provider detection; supervised/scheduled scans; missed-run/overlap/timeout; upgrade; and uninstall preserving the workspace.
-8. Tag the reviewed commit with the exact package version prefixed by `v`. The cross-platform workflow builds all packages, runs native smoke tests and required-marker audits, deploys and health-checks the exact tag on the approved private Beta VPS, then publishes one checksum manifest, a keyless GitHub/Sigstore attestation bundle covering every package digest, and the release notes. A failed or unapproved VPS deployment prevents publication. Follow [release package verification and signing](SUPPLY_CHAIN_SECURITY.md) for the ownership, verification, rotation, incident and remaining platform-signing contract.
+8. Tag the reviewed commit with the exact package version prefixed by `v`. The cross-platform workflow builds all packages, runs native smoke tests and required-marker audits, deploys and health-checks the exact tag on the approved private Beta VPS, then signs an exact-version release manifest, verifies it against the enrolled owner public key, and publishes the manifest and detached signature, SHA-256 checksums, a keyless GitHub/Sigstore attestation bundle and release notes. The protected `release-signing` environment requires owner approval and its signing key. Candidate tags containing `-rc` build only; they neither deploy, upload artifacts nor publish. A failed or unapproved VPS deployment prevents publication. Follow [release package verification and signing](SUPPLY_CHAIN_SECURITY.md) for the ownership, verification, rotation, incident and remaining platform-signing contract.
 
 Every reusable action in the release workflow is pinned to a reviewed immutable
 full commit SHA. Treat an action update as a dependency change: review the new
@@ -67,3 +67,31 @@ The release audit detects configured personal markers and likely secret assignme
 Use semantic application versions and explicit workspace `schemaVersion`. Release notes must identify migrations, privacy/network changes, provider/source changes and manual actions. Retain the previous installer and checksums for rollback, but never publish a private workspace or its backups.
 
 Windows and macOS beta packages remain operating-system unsigned until operator-controlled publisher credentials and policy exist. Checksums verify bytes only; the tagged-release workflow's keyless GitHub/Sigstore attestations separately bind package digests to this repository and workflow. See [release package verification and signing](SUPPLY_CHAIN_SECURITY.md).
+
+## Automated native acceptance
+
+The CI `installed-artifact` matrix builds on Windows, Ubuntu and both macOS
+architectures, then runs `node tools/native-install-smoke.mjs`. It installs the
+real EXE, DMG application or DEB, starts that platform's native launcher, creates
+a disposable workspace, imports a synthetic CV, activates a reviewed proposal,
+publishes the profile, chooses a mode in Settings, runs a synthetic scan and
+checks the visible result before uninstalling. Uninstall must remove the app
+and preserve the workspace. It never uploads these local runner artifacts.
+
+The harness invokes a fake provider as a real subprocess through the installed
+adapter. Collection and advert liveness are explicit synthetic source
+boundaries. It has no real provider credentials, source keys, personal data or
+backup remote. It refuses an occupied Scout port or an existing installation;
+run it only on a disposable native runner. Its provider-expiry companion is
+`npm run test:acceptance`, which uses the process and HTTP boundaries throughout.
+
+The `windows-native` job compiles the real production C# host and executes its
+notification receipt state. It also measures the staged default installation
+path and round-trips a staged file beyond MAX_PATH. Browser jobs cover Chromium,
+Firefox and WebKit on every supported runner. Service-worker lifecycle tests
+explicitly opt in; API-route fixtures block worker routing interference.
+
+F-1 sealed packaging in PR #84 remains a separate gate. A native package-build
+failure blocks the install smoke; never bypass its audit or copy a workaround
+into acceptance to obtain a green check. Hosted logs, rather than a Linux
+source read, establish Windows/macOS execution evidence.

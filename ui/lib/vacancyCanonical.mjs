@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import {
-  jobIdentity, mergeSourceReferences, sameUnderlyingJob, sourceReferencesOf,
+  jobIdentity, jobIdentityBlockingKeys, mergeSourceReferences, sameUnderlyingJob, sourceReferencesOf,
 } from './jobIdentity.mjs';
 
 const DISPLAY_FIELDS = [
@@ -50,6 +50,16 @@ function responsibilityDescription(vacancy) {
   return normaliseText(vacancy?.description).replace(APPLICATION_BOILERPLATE, '').replace(/\s+/g, ' ').trim();
 }
 
+function compensationFacts(value) {
+  const supplied = valueOf(value) || null;
+  if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) return supplied;
+  // Evidence metadata must not make unchanged old salaries look materially
+  // different on upgrade. A corrected currency or amount still changes facts.
+  const { currencyProvenance, ...facts } = supplied;
+  void currencyProvenance;
+  return facts;
+}
+
 function fingerprintShape(vacancy, { includeBoilerplate = false } = {}) {
   return {
     title: normaliseText(valueOf(vacancy?.title) || vacancy?.role),
@@ -63,7 +73,7 @@ function fingerprintShape(vacancy, { includeBoilerplate = false } = {}) {
     qualifications: valueOf(vacancy?.qualifications) || null,
     eligibility: valueOf(vacancy?.eligibility) || null,
     industry: normaliseText(valueOf(vacancy?.industry)),
-    compensation: valueOf(vacancy?.compensation) || null,
+    compensation: compensationFacts(vacancy?.compensation),
     description: vacancy?.semanticEvidence?.descriptionDigest
       || (includeBoilerplate ? normaliseText(vacancy?.description) : responsibilityDescription(vacancy)),
   };
@@ -162,6 +172,24 @@ function referenceDisambiguatedId(vacancy) {
   });
 }
 
+function candidateIndex(values = []) {
+  const index = new Map();
+  const add = (value, position) => {
+    for (const key of jobIdentityBlockingKeys(value)) {
+      if (!index.has(key)) index.set(key, new Set());
+      index.get(key).add(position);
+    }
+  };
+  values.forEach(add);
+  return {
+    add,
+    positions(value) {
+      return [...new Set(jobIdentityBlockingKeys(value)
+        .flatMap((key) => [...(index.get(key) || [])]))].sort((left, right) => left - right);
+    },
+  };
+}
+
 function disambiguateCurrentVacancyIds(vacancies) {
   const counts = new Map();
   for (const { vacancyId } of vacancies) counts.set(vacancyId, (counts.get(vacancyId) || 0) + 1);
@@ -193,12 +221,23 @@ function reconcileDurableVacancyIds(vacancies, priorVacancies) {
     }
   }
   const priors = [...priorById.values()];
+  const index = candidateIndex(priors);
+  const sparsePriorPositions = new Map();
+  priors.forEach((prior, position) => {
+    const identity = jobIdentity(prior);
+    if (!identity.company && !identity.title && !identity.references.length) {
+      sparsePriorPositions.set(prior.vacancyId, position);
+    }
+  });
   const claimed = new Set();
   const reservedPriorIds = new Set(priors.map(({ vacancyId }) => vacancyId));
   const usedIds = new Set();
   return vacancies.map((vacancy) => {
-    const match = priors
-      .map((prior, index) => ({ prior, index, shared: sharedReferenceCount(prior, vacancy) }))
+    const positions = index.positions(vacancy);
+    const sparsePosition = sparsePriorPositions.get(vacancy.vacancyId);
+    if (sparsePosition !== undefined && !positions.includes(sparsePosition)) positions.push(sparsePosition);
+    const match = positions
+      .map((position) => ({ prior: priors[position], index: position, shared: sharedReferenceCount(priors[position], vacancy) }))
       .filter(({ prior }) => {
         if (sameUnderlyingJob(prior, vacancy)) return true;
         const identity = jobIdentity(prior);
@@ -377,11 +416,18 @@ function canonicalVacancy(observations) {
 
 export function canonicaliseObservations(observations, { priorVacancies = [] } = {}) {
   const groups = [];
+  const index = candidateIndex();
   const orderedObservations = sortObservations(observations || []);
   for (const observation of orderedObservations) {
-    const group = groups.find((candidate) => candidate.every((existing) => sameUnderlyingJob(existing, observation)));
-    if (group) group.push(observation);
-    else groups.push([observation]);
+    const position = index.positions(observation).find((candidate) => (
+      groups[candidate].every((existing) => sameUnderlyingJob(existing, observation))
+    ));
+    const groupPosition = position ?? groups.length;
+    if (position === undefined) groups.push([observation]);
+    else groups[position].push(observation);
+    // Index every observation: later records may share a reference with any
+    // member. Sorted positions preserve the original first-compatible group.
+    index.add(observation, groupPosition);
   }
   const vacancies = reconcileDurableVacancyIds(
     disambiguateCurrentVacancyIds(

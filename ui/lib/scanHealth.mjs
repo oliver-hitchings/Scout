@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { assessmentRecoveryBoundary } from './assessmentBatches.mjs';
+import { RUN_STATE_LABELS } from './durableRunStates.mjs';
 import { projectRunManifest } from './runArtifacts.mjs';
 import { validateRunJournal } from './runJournal.mjs';
 import {
@@ -124,26 +125,6 @@ const NEXT_RUN_STATE = Object.freeze({
   report: 'finalising',
 });
 
-const RUN_LABELS = Object.freeze({
-  waiting: 'Waiting to scan',
-  collecting: 'Collecting vacancies',
-  normalising: 'Normalising vacancies',
-  deduplicating: 'Deduplicating vacancies',
-  filtering: 'Filtering confirmed exclusions',
-  ranking: 'Ranking eligible vacancies',
-  selecting: 'Selecting vacancies for assessment',
-  assessing: 'Assessing selected vacancies',
-  repairing: 'Repairing affected jobs',
-  recovering: 'Recovering interrupted scan',
-  'updating-tracker': 'Updating tracker',
-  'writing-report': 'Writing report',
-  finalising: 'Finalising scan',
-  partial: 'Scan partially completed',
-  abandoned: 'Scan abandoned',
-  failed: 'Scan failed',
-  complete: 'Scan complete',
-});
-
 function shortId(value) {
   const id = String(value || '');
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
@@ -193,10 +174,14 @@ function durableRunState(manifest, events, currentAssessment) {
   const latestWork = [...events].reverse().find((event) => (
     event.type === 'stage.completed' || event.type.startsWith('assessment.') || event.type.startsWith('mutation.')
   ));
-  if (latestRecovery && eventSequence(latestRecovery) > eventSequence(latestWork)) return 'recovering';
+  if (latestRecovery && eventSequence(latestRecovery) > eventSequence(latestWork)) return 'recovered';
   const latestAttempt = [...currentAssessment].reverse().find((event) => event.type === 'assessment.batch-attempted');
   const assessCompleted = manifest?.completedWork?.some((work) => work.stageId === 'assess');
-  if (latestAttempt && !assessCompleted && /^(?:repair|retry-)/.test(String(latestAttempt.payload?.attempt || ''))) return 'repairing';
+  if (latestAttempt && !assessCompleted) {
+    const attempt = String(latestAttempt.payload?.attempt || '');
+    if (/^retry-/.test(attempt)) return 'retrying';
+    if (/^repair$/.test(attempt)) return 'repairing';
+  }
   const completed = manifest?.completedWork || [];
   if (!completed.length) return 'collecting';
   return NEXT_RUN_STATE[completed.at(-1).stageId] || 'finalising';
@@ -224,12 +209,14 @@ export function publicRunSummary(manifest = {}, { events = [], lease = null, now
   const result = {
     id: shortId(runId),
     state,
-    label: RUN_LABELS[state] || RUN_LABELS.waiting,
+    label: RUN_STATE_LABELS[state] || RUN_STATE_LABELS.waiting,
     owner: hasCurrentActiveLease(lease, runId, manifest.outcome, now) ? 'active worker' : null,
     startedAt,
     updatedAt,
     profileVersion: safeToken(manifest.compatibility?.profileVersion),
     pipelineVersion: safeToken(manifest.compatibility?.pipelineVersion),
+    provider: ['codex', 'claude', 'local'].includes(manifest.compatibility?.provider) ? manifest.compatibility.provider : null,
+    scheduleJobId: manifest.compatibility?.scheduleJobId === 'none' ? null : safeToken(manifest.compatibility?.scheduleJobId),
     completedStages,
     assessment: assessmentProgress(manifest, assessmentEvents),
     recoveryCount: Array.isArray(manifest.recoveryAttempts) ? manifest.recoveryAttempts.length : 0,
@@ -245,7 +232,8 @@ export function publicQueueSummary(projection = {}) {
       id: shortId(request.id),
       status: safeToken(request.status) || 'queued',
       requester: ['manual', 'scheduled'].includes(request.requester) ? request.requester : 'manual',
-      purpose: safeToken(request.purpose),
+      purpose: request.requester === 'scheduled' && request.purpose === 'manual-discovery'
+        ? 'scheduled-discovery' : safeToken(request.purpose),
       requestedAt: typeof request.requestedAt === 'string' ? request.requestedAt : null,
       expiresAt: typeof request.expiresAt === 'string' ? request.expiresAt : null,
     };
@@ -276,7 +264,7 @@ export function readPublicRunSummaries(root, { lease = null, now = new Date() } 
       runs.push({
         id: 'invalid-run',
         state: 'failed',
-        label: RUN_LABELS.failed,
+        label: RUN_STATE_LABELS.failed,
         owner: null,
         startedAt: null,
         updatedAt: null,

@@ -1,3 +1,4 @@
+import { runLocalTurn } from './localProvider.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -125,9 +126,20 @@ async function runStructuredTurnOperation({
   validate = (value) => value,
   onTurn = () => {},
 } = {}) {
-  if (!['codex', 'claude'].includes(provider)) throw new Error('structured provider must be codex or claude');
-  if (!status?.installed || !status?.authenticated) throw new Error(`${provider} is not installed and authenticated`);
+  if (!['codex', 'claude', 'local'].includes(provider)) throw new Error('structured provider must be codex, claude or local');
+  if (!status?.installed || !status?.authenticated) {
+    if (provider === 'local') throw safeProviderFailure(provider, status);
+    throw new Error(`${provider} is not installed and authenticated`);
+  }
   if (status.capabilities?.structuredOutput === false) throw new Error(`${provider} CLI must be upgraded before Scout can use bounded structured output`);
+  if (provider === 'local') {
+    const turn = runLocalTurn({ status, prompt, model, schema, timeoutMs, maxOutputBytes });
+    onTurn(turn);
+    const result = await awaitBoundedTurn(turn, timeoutMs, provider);
+    if (!result.ok) throw safeProviderFailure(provider, result);
+    if (maxInputTokens != null && result.usage.input_tokens > maxInputTokens) throw safeProviderFailure(provider, {});
+    return { ok: true, value: validate(result.value), usage: result.usage, provider };
+  }
   const taskDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-structured-'));
   const schemaFile = path.join(taskDir, 'schema.json');
   fs.writeFileSync(schemaFile, `${JSON.stringify(schema, null, 2)}\n`, 'utf8');

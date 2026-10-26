@@ -1,3 +1,5 @@
+import { isSafeModelId } from './modelIdentifier.mjs';
+export { isSafeModelId } from './modelIdentifier.mjs';
 // Models Scout offers when choosing an engine for a conversation.
 //
 // Legacy conversation callers still use this small merge helper. The engine
@@ -15,7 +17,6 @@ const CURATED = Object.freeze({
   codex: Object.freeze([]),
 });
 
-const SAFE_MODEL = /^[A-Za-z0-9._:-]{1,128}$/;
 // The current Codex catalogue is just under 300 KiB because each record also
 // carries instructions and capability metadata. Keep enough headroom for that
 // supported payload while still enforcing a firm pre-parse ceiling.
@@ -53,10 +54,6 @@ const BUNDLED = Object.freeze({
   codex: Object.freeze(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']),
   claude: Object.freeze(['claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5']),
 });
-
-export function isSafeModelId(value) {
-  return SAFE_MODEL.test(String(value || ''));
-}
 
 function label(id, curated) {
   return curated.find((model) => model.id === id)?.label || id;

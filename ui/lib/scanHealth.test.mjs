@@ -7,6 +7,34 @@ import {
   normaliseSourceHealth, parseScanRuns, publicQueueSummary, publicRunSummary,
   publicStoragePressure, readPublicRunSummaries, readPublicStoragePressure, scanHealthFromText,
 } from './scanHealth.mjs';
+import { DURABLE_RUN_STATES, RUN_STATE_LABELS } from './durableRunStates.mjs';
+import { acquireScanLease, currentLeaseOwner, releaseScanLease } from './scanLease.mjs';
+import { enqueueScanRequest, projectScanQueue } from './scanQueue.mjs';
+
+test('scheduled queue requests are presented truthfully without changing durable deduplication', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-queue-purpose-'));
+  const lease = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId: 'synthetic-purpose' });
+  try {
+    enqueueScanRequest(root, {
+      id: 'synthetic-scheduled-request', key: 'synthetic-schedule', requester: 'scheduled',
+      purpose: 'manual-discovery',
+      requestedAt: '2026-10-25T10:00:00.000Z', windowAt: '2026-10-25T11:00:00.000Z',
+      expiresAt: '2026-10-25T11:00:00.000Z',
+      compatibility: { profileFingerprint: 'a'.repeat(64), configFingerprint: 'b'.repeat(64), schemaVersion: 1 },
+      lease,
+    });
+    const durable = projectScanQueue(root);
+    const before = JSON.stringify(durable);
+    const view = publicQueueSummary(durable);
+    assert.equal(view.requests[0].requester, 'scheduled');
+    assert.equal(view.requests[0].purpose, 'scheduled-discovery');
+    assert.equal(JSON.stringify(projectScanQueue(root).requests), JSON.stringify(durable.requests));
+    assert.equal(JSON.stringify(durable), before);
+  } finally {
+    releaseScanLease(lease);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('parseScanRuns parses jsonl and reports bad lines', () => {
   const out = parseScanRuns('{"timestamp":"2026-07-08T07:30:00"}\nnope\n');
@@ -165,8 +193,43 @@ test('public run summaries show durable assessment repair, batch progress and re
   const recovery = runFixture({ completed: ['collect'], tail: [recoveryEvent] });
   recovery.manifest.recoveryAttempts = [{ sequence: 8 }];
   const summary = publicRunSummary(recovery.manifest, { events: recovery.events });
-  assert.equal(summary.state, 'recovering');
+  assert.equal(summary.state, 'recovered');
   assert.equal(summary.recoveryCount, 1);
+});
+
+test('every durable run state carries its own distinct label', () => {
+  // A shared vocabulary only helps if each state reads differently in the UI.
+  // `retrying` and `recovered` must not borrow the wording of `repairing`.
+  const labels = [...DURABLE_RUN_STATES].map((state) => RUN_STATE_LABELS[state]);
+  assert.equal(labels.every((label) => typeof label === 'string' && label.length > 0), true);
+  assert.equal(new Set(labels).size, labels.length);
+  assert.notEqual(RUN_STATE_LABELS.retrying, RUN_STATE_LABELS.repairing);
+  assert.notEqual(RUN_STATE_LABELS.recovered, RUN_STATE_LABELS.repairing);
+});
+
+test('public run summaries distinguish retrying from repair for per-job retries', () => {
+  const selected = ['collect', 'normalise', 'deduplicate', 'filter', 'rank', 'select'];
+  const retrying = runFixture({
+    completed: selected,
+    tail: [
+      event(8, 'assessment.batch-attempted', 'assessment', {
+        reference: { id: 'batch-1' }, count: 2, attempt: 'batch',
+      }),
+      event(9, 'assessment.job-completed', 'assessment', { reference: { id: 'job-1' } }),
+      event(10, 'assessment.job-failed', 'assessment', { reference: { id: 'job-2' } }),
+      event(11, 'assessment.batch-attempted', 'assessment', {
+        reference: { id: 'batch-1' }, count: 1, attempt: 'repair',
+      }),
+      event(12, 'assessment.batch-attempted', 'assessment', {
+        reference: { id: 'batch-1' }, count: 1, attempt: 'retry-job-2',
+      }),
+    ],
+  });
+  retrying.manifest.completedWork.find((work) => work.stageId === 'select').count = 2;
+  const summary = publicRunSummary(retrying.manifest, { events: retrying.events });
+  assert.equal(summary.state, 'retrying');
+  assert.equal(summary.assessment.currentBatch, 1);
+  assert.equal(summary.assessment.failedJobs, 1);
 });
 
 test('active assessment totals are marked as lower bounds and missing failure reasons stay auditable', () => {

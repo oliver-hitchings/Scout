@@ -19,8 +19,11 @@ node tools/build-release.mjs --installer
 
 Set `ISCC_PATH` if `ISCC.exe` is not in its usual installation directory. Use
 `--version <version>` to override the version read from `package.json`. Outputs are written to
-`installer/output/`, including `checksums.txt`. The beta is intentionally
-unsigned until a code-signing certificate and secure signing pipeline exist.
+`installer/output/`, including `checksums.txt`. Windows operating-system signing remains unavailable until the owner configures
+an Authenticode certificate. Owner-signed detached release manifests are a
+separate required distribution control; see [verification and signing](../docs/SUPPLY_CHAIN_SECURITY.md).
+Run the documented installer signature preflight before opening a downloaded
+installer. The updater performs that verification automatically.
 
 Run `node tools/build-release.mjs --stage-only` to inspect the allowlisted bundle
 without compiling an installer.

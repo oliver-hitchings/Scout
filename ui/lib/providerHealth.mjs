@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFile } from './atomicWrite.mjs';
+import { prepareProviderNotificationUnderFence, publishProviderNotificationIntentUnderFence } from './notifications.mjs';
 import { readProviderAuthMutation } from './providerAuthMutation.mjs';
 import { providerRemoteHealthSignal } from './providers.mjs';
 import {
@@ -29,11 +30,18 @@ export const PROVIDER_HEALTH_STATES = Object.freeze({
 const SCHEMA_VERSION = 1;
 const HISTORY_LIMIT = 32;
 const FILE_LIMIT_BYTES = 16 * 1024;
-const PROVIDERS = new Set(['codex', 'claude']);
+const PROVIDERS = new Set(['codex', 'claude', 'local']);
 const STATES = new Set(Object.values(PROVIDER_HEALTH_STATES));
 const USABLE_STATES = new Set([
   PROVIDER_HEALTH_STATES.READY,
   PROVIDER_HEALTH_STATES.CREDENTIALS_PRESENT_UNVERIFIED,
+]);
+const ALERT_STATES = new Set([
+  PROVIDER_HEALTH_STATES.SIGN_IN_REQUIRED,
+  PROVIDER_HEALTH_STATES.NETWORK_UNAVAILABLE,
+  PROVIDER_HEALTH_STATES.RATE_LIMITED,
+  PROVIDER_HEALTH_STATES.CLI_UPDATE_REQUIRED,
+  PROVIDER_HEALTH_STATES.PROVIDER_ERROR,
 ]);
 const SOURCES = new Set([
   'startup',
@@ -296,7 +304,10 @@ function validateRecord(value, provider) {
     throw new Error('provider health record does not match its latest evidence');
   }
   validateAlert(value.alert, provider);
-  if (USABLE_STATES.has(value.state) !== (value.alert === null)) {
+  // Older records may contain an alert for ordinary checking/login progress.
+  // Keep those readable, while new progress records have no failure alert.
+  if ((ALERT_STATES.has(value.state) && value.alert === null)
+    || (USABLE_STATES.has(value.state) && value.alert !== null)) {
     throw new Error('provider health record alert does not match its state');
   }
   return value;
@@ -351,7 +362,7 @@ function nextRecord(current, provider, evidence) {
   let remoteAuthBarrier = current.remoteAuthBarrier;
   if (evidence.kind === 'remote-auth-failure') remoteAuthBarrier = true;
   if (evidence.kind === 'remote-success') remoteAuthBarrier = false;
-  if (evidence.kind === 'local-credentials-present' && remoteAuthBarrier) {
+  if (remoteAuthBarrier) {
     state = PROVIDER_HEALTH_STATES.SIGN_IN_REQUIRED;
     reasonCode = 'authentication-required';
   }
@@ -362,7 +373,7 @@ function nextRecord(current, provider, evidence) {
     purpose: evidence.purpose,
     at: evidence.checkedAt,
   };
-  const alertId = USABLE_STATES.has(state) ? null : expectedAlertId(provider, state);
+  const alertId = ALERT_STATES.has(state) ? expectedAlertId(provider, state) : null;
   const sameAlert = alertId !== null && current.alert?.id === alertId;
   const alert = alertId === null ? null : (sameAlert ? current.alert : {
     id: alertId,
@@ -392,7 +403,9 @@ function persistRecord(root, provider, evidence) {
     throw new Error('provider health record exceeds its size limit');
   }
   const file = providerFile(root, provider, { create: true });
+  try { prepareProviderNotificationUnderFence(root, current, record); } catch { /* notification storage cannot own health authority */ }
   atomicWriteFile(file, encoded, { mode: 0o600 });
+  try { publishProviderNotificationIntentUnderFence(root, provider); } catch { /* the fenced pending intent is retried by notification polling */ }
   return { ...structuredClone(record), shouldNotify };
 }
 
@@ -444,6 +457,7 @@ export function recordProviderHealth(root, provider, signal, {
   const checkedPurpose = purposeName(purpose);
   const mutation = readProviderAuthMutation(root, provider, { now });
   const authoritativeSignal = mutation
+    && signal?.kind !== 'remote-auth-failure'
     && source !== 'post-auth'
     && signal?.source !== 'post-auth'
     ? { kind: 'login-started', source: signal.source ?? source ?? inferredSource(checkedPurpose) }
@@ -542,7 +556,7 @@ export function acknowledgeProviderAlert(root, provider, alertId, {
 }
 
 function preflightView(record, purpose, shouldNotify = false) {
-  const ok = USABLE_STATES.has(record.state);
+  const ok = USABLE_STATES.has(record.state) && !record.remoteAuthBarrier;
   return {
     ok,
     provider: record.provider,
@@ -575,7 +589,7 @@ export async function providerPreflight(root, provider, purpose, {
       reasonCode: 'login-started',
       checkedAt: new Date(mutation.acquiredAt).toISOString(),
       verified: false,
-      alertId: expectedAlertId(provider, PROVIDER_HEALTH_STATES.LOGIN_IN_PROGRESS),
+      alertId: readProviderHealth(root, provider).alert?.id ?? null,
       shouldNotify: false,
     };
   }

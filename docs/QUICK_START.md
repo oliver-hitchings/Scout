@@ -1,6 +1,8 @@
 # Quick Start
 
-Scout is a local-first opportunity finder for Windows, macOS and Linux. It keeps your career data in a private workspace and uses Codex or Claude to help search and assess opportunities. It never sends applications or outreach.
+For a shorter first-use walkthrough, start with [Getting started](GETTING_STARTED.md). [Living CV and application drafts](LIVING_CV.md) covers external CV sources, reviewable versions, editable cover-letter PDFs, feedback suggestions and employer notes.
+
+Scout is a local-first opportunity finder for Windows, macOS and Linux. It keeps your career data in a private workspace and uses a local model, Codex or Claude to help search and assess opportunities. It never sends applications or outreach.
 
 ## 1. Install and launch
 
@@ -35,7 +37,7 @@ The workspace contains `workspace.json`, your profile, CV, tracker, reports, app
 
 ## 3. Connect an AI provider
 
-Install and sign in to either Codex or Claude Code using the provider's official instructions. Scout does not collect the provider password or token.
+Choose **Local OpenAI-compatible** in the provider step to connect a model server you control; enter its URL, model and optional API-key file path. No provider CLI is needed for local models. See [local model setup](PROVIDERS.md#local-openai-compatible-model). For Codex or Claude Code, install and sign in using the provider's official instructions. Scout does not collect the provider password or token.
 
 ```powershell
 codex login
@@ -137,7 +139,7 @@ change status or ranking. Use **Settings → Feedback & learning** to inspect
 events, create a transparent bounded proposal, explicitly publish it, or undo
 the active learned version. One rejection never becomes a hard exclusion.
 
-If the supervised primary scan keeps zero roles, Scout automatically performs one broader discovery pass. It widens source queries, not your approved gates: salary, hard exclusions, location/commute, mandatory evidence and scoring remain in force. The completed result stays visible as “reviewed / kept”; **Review this scan** shows concise reasons for every discarded candidate without adding weak roles to the tracker.
+If the supervised primary scan keeps zero roles, Scout automatically performs one broader discovery pass. It widens source queries, not your approved gates: salary, hard exclusions, published location rules, mandatory evidence and scoring remain in force. Commute preferences guide assessments and filter your dashboard; they do not filter newly discovered vacancies. The completed result stays visible as “reviewed / kept”; **Review this scan** shows concise reasons for every discarded candidate without adding weak roles to the tracker.
 
 New opportunities land in the **Jobs** tab, highest score first, each carrying a colour tag for its search category. Choose **Yes, shortlist** to move a role to the **Shortlist** tab, or **No** to dismiss it; dismissing shows a brief **Undo** toast that restores the role to Jobs. Tap a card to expand its full detail, including the original advert. From the **Shortlist** tab, **Remove** dismisses a role the same way (with undo), and **Review CV options** starts the same CV options flow described above; marking a shortlisted role as applied moves it to the **Pipeline** tab. Dismissed and applied roles remain visible in the **All** tab and are never re-surfaced by a later scan.
 

@@ -160,7 +160,7 @@ test('persists strict schema-v1 provider files with bounded atomic history', (t)
   assert.throws(() => readProviderHealth(root, 'codex'), /unsupported schema/i);
 });
 
-test('remote authentication outranks local credentials but not distinct failures', (t) => {
+test('remote authentication remains authoritative until real remote success', (t) => {
   const root = temp(t);
   recordProviderHealth(root, 'codex', signal('remote-auth-failure'), {
     purpose: 'post-auth-failure',
@@ -181,7 +181,7 @@ test('remote authentication outranks local credentials but not distinct failures
     signal('network-failure', 2, 'periodic'),
     { purpose: 'periodic' },
   );
-  assert.equal(current.state, 'network-unavailable');
+  assert.equal(current.state, 'sign-in-required');
   assert.equal(current.remoteAuthBarrier, true);
 
   current = recordProviderHealth(

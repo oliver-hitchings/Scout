@@ -12,7 +12,7 @@ Application files install under `%LOCALAPPDATA%\Programs\Scout` on Windows, `/Ap
 - `.scout/backups/` and, when initialised, private Git history.
 - optional `.scout-backup/v1/` encrypted recovery data and ignored device-local sync settings.
 
-Provider login credentials remain in provider-owned storage. Scout must never copy workspace content into its application repository.
+Codex and Claude login credentials remain in provider-owned storage. A local model's optional API key is read from the configured file and never stored in configuration or health evidence. Keep that file outside the workspace and manage its backup separately; the selector path remains private workspace configuration. Scout must never copy workspace content into its application repository.
 
 Tailored application folders may include `cv-evidence.json` and `cv-quality.json`. These private files record the selected CV methods, user-confirmed answers, per-bullet evidence references, quality findings and any explicit draft override. They remain in the workspace and may contain career details that were not present in the original imported CV.
 
@@ -20,7 +20,7 @@ Company relationship history is stored under `data/companies/`. It may contain r
 
 ## Network boundaries
 
-- AI-assisted setup, chat and scans send necessary context to Codex or Claude under that provider's terms and account controls.
+- AI-assisted setup, chat and scans send necessary context to the selected Codex/Claude provider or explicitly configured local model server. Local HTTP endpoints can be on loopback or your private network; they are operator-selected provider destinations and are separate from the public-only job-source boundary below. A local model name does not guarantee offline processing: control the server and its logging/forwarding settings yourself. Provider redirects are refused.
 - Adzuna searches send search parameters and credentials to Adzuna.
 - ATS and public-source requests reveal ordinary request metadata to those sites.
 - Careers and advert discovery accepts only public HTTP(S) destinations. Scout
@@ -44,10 +44,14 @@ headers, credentials or an unbounded raw payload. Observation diagnostics
 declare `fingerprint-only` retention and are bounded to sixteen fixed codes.
 
 Durable ranked-stage artifacts replace complete advert text with bounded
-semantic facts and digests. The scan log keeps only a sanitised review summary.
-At most the newest 512 review decisions are loaded into a later scan for
-lifecycle comparison. An unchanged prior rejection can therefore be
-revalidated and skipped without sending the advert to the assessment provider
+semantic facts and digests. Stopword-only clauses and duplicate facts are
+omitted; a non-empty description is not a promise of one stored fact per clause.
+The scan log keeps only a sanitised review summary. At most 512 mixed lifecycle
+decisions are loaded: when both pools are full, 384 assessed decisions and 128
+pre-assessment decisions. An undersupplied pool lends its unused places to the
+other. A separate bounded memory reads the full log and retains the latest
+4,096 assessed rejections, including their assessment version. An unchanged
+prior rejection can therefore be revalidated and skipped without sending the advert to the assessment provider
 again; a material, reopened, profile-changed or assessment-contract-changed
 vacancy is eligible for reassessment. Existing run-retention and encrypted
 backup policies govern the underlying private run and scan-log files.

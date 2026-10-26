@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import {
-  archiveSelectedRuns, assertRunStorageWritable, compactScanQueue, measureRunStorage,
+  archiveSelectedRuns, assertRunStorageWritable, compactRecoverySelections, compactScanQueue, measureRunStorage,
   planRunCleanup,
 } from './runRetention.mjs';
 import { acquireScanLease, currentLeaseOwner, releaseScanLease } from './scanLease.mjs';
@@ -15,6 +15,24 @@ import {
 import {
   initializeRecoveryBackup, loadRecoveryHeader, unlockRecoveryKey, verifyReviewedRunArchive,
 } from './recoveryBackup.mjs';
+import { selectRecoverableRun } from './runRecovery.mjs';
+import { appendRunEvent, openRunJournal } from './runJournal.mjs';
+import { projectRunManifest } from './runArtifacts.mjs';
+
+function recoveryCompatibility() {
+  return {
+    schemaVersion: 1, mode: 'primary', purpose: 'scheduled-discovery',
+    profileVersion: 'profile-v1', sourceConfigFingerprint: 'a'.repeat(64),
+    journalSchemaVersion: 1, artifactSchemaVersion: 1,
+    pipelineVersion: 'pipeline-v1', rankingVersion: 'ranking-v1', promptVersion: 'prompt-v1',
+    assessmentSchemaVersion: 1, provider: 'codex', model: 'model-v1',
+    mutationSchemaVersion: 1, targetRevision: 'tracker-v1',
+  };
+}
+
+function recoveryCandidate(runId, outcome, updatedAt = '2024-01-01T00:00:00.000Z') {
+  return { runId, updatedAt, outcome, compatibility: recoveryCompatibility(), completedWork: [] };
+}
 
 const roots = [];
 afterEach(() => {
@@ -155,6 +173,251 @@ test('measures journals, derived artifacts and the queue independently', () => {
   assert.equal(measured.totalBytes, measured.runs.bytes + measured.artifacts.bytes + measured.queue.bytes);
 });
 
+test('storage measurement counts 100 MiB without reading artifact bodies and stays fresh', (t) => {
+  const root = temp();
+  const directory = terminalRun(root, 'large-complete', '2026-01-01T00:00:00.000Z');
+  const artifact = path.join(directory, 'artifacts', 'result.json');
+  const descriptor = fs.openSync(artifact, 'w');
+  fs.ftruncateSync(descriptor, 100 * 1024 * 1024);
+  fs.closeSync(descriptor);
+  const originalRead = fs.readFileSync;
+  let artifactReads = 0;
+  fs.readFileSync = function read(file, ...args) {
+    if (String(file) === artifact) artifactReads += 1;
+    return originalRead.call(this, file, ...args);
+  };
+  try {
+    const started = performance.now();
+    const measured = measureRunStorage(root);
+    const elapsed = performance.now() - started;
+    assert.equal(measured.artifacts.bytes, 100 * 1024 * 1024);
+    assert.equal(artifactReads, 0, 'status measurement must not hash artifact content');
+    assert.ok(elapsed < 2_000, `100 MiB inventory exceeded 2 seconds: ${elapsed}`);
+    fs.truncateSync(artifact, 123);
+    assert.equal(measureRunStorage(root).artifacts.bytes, 123, 'measurement must not use a stale cache');
+    t.diagnostic(`100 MiB metadata measurement: ${elapsed.toFixed(1)} ms; artifact body reads: ${artifactReads}`);
+  } finally {
+    fs.readFileSync = originalRead;
+  }
+});
+
+test('real recovery selection releases terminal historical skips for reviewed cleanup and keeps their audit', () => {
+  const root = temp();
+  const outcomes = ['complete', 'partial', 'abandoned', 'failed'];
+  for (const outcome of outcomes) terminalRun(root, `historical-${outcome}`, '2024-01-01T00:00:00.000Z', outcome);
+  const lease = acquireScanLease(root, currentLeaseOwner(), {
+    kind: 'scan', runId: 'current-selection', provider: 'codex', mode: 'primary', phase: 'recover',
+  });
+  try {
+    const selected = selectRecoverableRun(
+      outcomes.map((outcome) => recoveryCandidate(`historical-${outcome}`, outcome)),
+      recoveryCompatibility(), { root, lease },
+    );
+    assert.equal(selected.candidate, null);
+    assert.equal(selected.skipped.length, outcomes.length);
+    const selectionFile = path.join(root, '.scout', 'recovery-selections.jsonl');
+    const evidence = fs.readFileSync(selectionFile, 'utf8');
+    const plan = planRunCleanup(root, {
+      now: new Date('2026-10-25T00:00:00.000Z'), keepNewest: 0,
+      selectedRunIds: outcomes.map((outcome) => `historical-${outcome}`),
+      recoveryDataKey: archiveAuthority(root).dataKey,
+    });
+    assert.deepEqual(plan.refusedSelections, [], 'a historical skip is evidence, not a recovery obligation');
+    assert.equal(plan.selected.length, outcomes.length);
+    assert.equal(measureRunStorage(root).recoveryCritical.count, 0);
+    const result = archiveSelectedRuns(plan, lease);
+    assert.equal(result.archivedRuns, outcomes.length);
+    assert.equal(fs.readFileSync(selectionFile, 'utf8'), evidence, 'cleanup must preserve why recovery skipped each run');
+  } finally {
+    releaseScanLease(lease);
+  }
+});
+
+test('a selected recovery is protected until it completes, then its old selection stops pinning it', () => {
+  const root = temp();
+  const runId = 'selected-then-complete';
+  const lease = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId, phase: 'recover' });
+  const run = openRunJournal(root, runId);
+  appendRunEvent(run, {
+    type: 'run.started', stageId: 'initialise', idempotencyKey: 'started',
+    payload: { schemaVersion: 1, compatibility: recoveryCompatibility() },
+  }, lease);
+  selectRecoverableRun([{
+    runId, updatedAt: run.events.at(-1).recordedAt, ...projectRunManifest(run.events),
+  }], recoveryCompatibility(), { root, lease });
+  const policy = { now: new Date('2028-01-01T00:00:00.000Z'), keepNewest: 0, selectedRunIds: [runId] };
+  assert.equal(planRunCleanup(root, policy).selected.length, 0);
+  appendRunEvent(run, {
+    type: 'run.completed', stageId: 'finalise', idempotencyKey: 'completed',
+    payload: { schemaVersion: 1, outcome: 'complete' },
+  }, lease);
+  releaseScanLease(lease);
+  assert.equal(planRunCleanup(root, policy).selected.length, 1, 'completed recovery has no remaining selection obligation');
+});
+
+test('terminal skips cannot release an unreceipted mutation or a damaged journal', () => {
+  const root = temp();
+  terminalRun(root, 'historical-clean', '2024-01-01T00:00:00.000Z');
+  const damaged = terminalRun(root, 'damaged', '2024-01-01T00:00:00.000Z');
+  fs.appendFileSync(path.join(damaged, 'journal.jsonl'), 'not a valid journal\n');
+  const lease = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId: 'unreceipted', phase: 'recover' });
+  const run = openRunJournal(root, 'unreceipted');
+  appendRunEvent(run, {
+    type: 'run.started', stageId: 'initialise', idempotencyKey: 'started',
+    payload: { schemaVersion: 1, compatibility: { ...recoveryCompatibility(), profileVersion: 'old-profile' } },
+  }, lease);
+  appendRunEvent(run, {
+    type: 'mutation.prepared', stageId: 'finalise', idempotencyKey: 'prepared',
+    payload: { schemaVersion: 1, reference: { kind: 'mutation', id: 'pending-mutation' }, digest: 'b'.repeat(64), targetRevision: 'c'.repeat(64) },
+  }, lease);
+  selectRecoverableRun([
+    { ...projectRunManifest(run.events), updatedAt: run.events.at(-1).recordedAt },
+    recoveryCandidate('historical-clean', 'complete'), recoveryCandidate('damaged', 'failed'),
+  ], recoveryCompatibility(), { root, lease });
+  releaseScanLease(lease);
+  const plan = planRunCleanup(root, {
+    now: new Date('2028-01-01T00:00:00.000Z'), keepNewest: 0,
+    selectedRunIds: ['unreceipted', 'damaged', 'historical-clean'],
+  });
+  assert.deepEqual(plan.selected.map((item) => item.runId), ['historical-clean']);
+  assert.deepEqual(plan.refusedSelections, [
+    { runId: 'damaged', reason: 'recovery-critical' },
+    { runId: 'unreceipted', reason: 'recovery-critical' },
+  ]);
+});
+
+test('legacy scan-input bundles count towards pressure and use reviewed encrypted cleanup', () => {
+  const root = temp();
+  const directory = path.join(root, '.scout', 'scan-input');
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, '2024-01-01-codex-primary.json');
+  const bytes = JSON.stringify({ candidates: [{ id: 'synthetic-vacancy' }] });
+  fs.writeFileSync(file, bytes);
+  fs.utimesSync(file, new Date('2024-01-01T00:00:00Z'), new Date('2024-01-01T00:00:00Z'));
+  assert.equal(measureRunStorage(root).artifacts.bytes, Buffer.byteLength(bytes));
+  assert.throws(() => assertRunStorageWritable(root, {
+    maximumBytes: { artifacts: 1 }, reserveBytes: 0,
+  }), (error) => error.code === 'SCOUT_STORAGE_PRESSURE');
+  const candidate = planRunCleanup(root, {
+    now: new Date('2028-01-01T00:00:00.000Z'), keepNewest: 0,
+  }).candidates[0];
+  assert.equal(candidate.legacyScanInput, path.basename(file));
+  const authority = archiveAuthority(root);
+  const plan = planRunCleanup(root, {
+    now: new Date('2028-01-01T00:00:00.000Z'), keepNewest: 0,
+    selectedRunIds: [candidate.runId], recoveryDataKey: authority.dataKey,
+  });
+  const lease = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId: 'cleanup-legacy-input' });
+  try {
+    const result = archiveSelectedRuns(plan, lease);
+    const payload = verifyReviewedRunArchive(result.archiveFile, authority.dataKey);
+    assert.equal(Buffer.from(payload.runs[0].files[0].data, 'base64').toString(), bytes);
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(measureRunStorage(root).artifacts.bytes, 0);
+  } finally {
+    releaseScanLease(lease);
+  }
+});
+
+test('reviewed cleanup compacts old recovery selections into a verified archive and resumes its receipt', () => {
+  const root = temp();
+  terminalRun(root, 'historical-selections', '2024-01-01T00:00:00.000Z');
+  const lease = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId: 'selection-compaction' });
+  try {
+    for (let index = 0; index < 270; index += 1) {
+      selectRecoverableRun([recoveryCandidate('historical-selections', 'complete')], {
+        ...recoveryCompatibility(), promptVersion: `prompt-${index}`,
+      }, { root, lease });
+    }
+    const file = path.join(root, '.scout', 'recovery-selections.jsonl');
+    const before = fs.readFileSync(file, 'utf8');
+    const authority = archiveAuthority(root);
+    const plan = planRunCleanup(root, {
+      now: new Date('2028-01-01T00:00:00.000Z'), keepNewest: 0,
+      selectedRunIds: ['historical-selections'], recoveryDataKey: authority.dataKey,
+    });
+    let interrupted = false;
+    try {
+      archiveSelectedRuns(plan, lease, {
+        afterSelectionReplace() { interrupted = true; throw new Error('simulated compaction receipt crash'); },
+      });
+    } catch (error) {
+      assert.match(error.message, /simulated compaction receipt crash/);
+    }
+    assert.equal(interrupted, true, 'reviewed cleanup must compact the historical selection journal');
+    assert.equal(fs.readFileSync(file, 'utf8').trim().split('\n').length, 256);
+    selectRecoverableRun([], { ...recoveryCompatibility(), promptVersion: 'after-compaction-crash' }, { root, lease });
+    const result = archiveSelectedRuns(plan, lease);
+    assert.equal(result.archivedRuns, 1);
+    assert.equal(fs.readFileSync(file, 'utf8').trim().split('\n').length, 257, 'preserve a valid append after replacement');
+    const receipts = fs.readFileSync(path.join(root, '.scout', 'run-retention.jsonl'), 'utf8')
+      .trim().split('\n').map(JSON.parse).filter((event) => event.type === 'recovery-selections-compacted');
+    assert.equal(receipts.length, 1, 'compaction recovery must not duplicate its receipt');
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, '.scout', 'recovery-selection-compaction.json'), 'utf8'));
+    const archived = verifyReviewedRunArchive(path.join(root, manifest.archiveFile), authority.dataKey);
+    assert.equal(Buffer.from(archived.runs[0].files[0].data, 'base64').toString(), before);
+  } finally {
+    releaseScanLease(lease);
+  }
+});
+
+test('selection compaction retains current terminal dispositions and rechecks the fence before replacement', () => {
+  const root = temp();
+  terminalRun(root, 'preserved-terminal', '2024-01-01T00:00:00.000Z', 'partial');
+  let lease = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId: 'compact-current' });
+  try {
+    const initial = selectRecoverableRun([recoveryCandidate('preserved-terminal', 'partial')], recoveryCompatibility(), { root, lease });
+    for (let index = 0; index < 270; index += 1) {
+      selectRecoverableRun([], { ...recoveryCompatibility(), promptVersion: `prompt-${index}` }, { root, lease });
+    }
+    const file = path.join(root, '.scout', 'recovery-selections.jsonl');
+    const before = fs.readFileSync(file, 'utf8');
+    const authority = archiveAuthority(root);
+    assert.throws(() => compactRecoverySelections(root, lease, {
+      recoveryDataKey: authority.dataKey, beforeReplace() { releaseScanLease(lease); },
+    }), /lease|fence/i);
+    assert.equal(fs.readFileSync(file, 'utf8'), before, 'a stale owner cannot replace the selection journal');
+    lease = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId: 'compact-successor' });
+    selectRecoverableRun([], { ...recoveryCompatibility(), promptVersion: 'after-prepared-compaction' }, { root, lease });
+    const result = compactRecoverySelections(root, lease, { recoveryDataKey: authority.dataKey });
+    assert.equal(result.changed, true);
+    const kept = fs.readFileSync(file, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(kept.length, 258, 'retain recent 256, the current run disposition and the post-intent append');
+    assert.equal(kept.some((record) => record.selectionId === initial.selectionId), true);
+    assert.equal(planRunCleanup(root, {
+      now: new Date('2028-01-01T00:00:00.000Z'), keepNewest: 0, selectedRunIds: ['preserved-terminal'],
+    }).selected.length, 1);
+  } finally {
+    releaseScanLease(lease);
+  }
+});
+
+test('compaction rejects a prepared removal count that conflicts with its verified archive', () => {
+  const root = temp();
+  const lease = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId: 'compaction-corrupt-intent' });
+  try {
+    for (let index = 0; index < 260; index += 1) {
+      selectRecoverableRun([], { ...recoveryCompatibility(), promptVersion: `prompt-${index}` }, { root, lease });
+    }
+    const authority = archiveAuthority(root);
+    assert.throws(() => compactRecoverySelections(root, lease, {
+      recoveryDataKey: authority.dataKey, beforeReplace() { throw new Error('simulated prepared-intent crash'); },
+    }), /simulated prepared-intent crash/);
+    const file = path.join(root, '.scout', 'recovery-selections.jsonl');
+    const before = fs.readFileSync(file, 'utf8');
+    const manifestFile = path.join(root, '.scout', 'recovery-selection-compaction.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    fs.writeFileSync(manifestFile, JSON.stringify({ ...manifest, removedRecords: manifest.removedRecords + 1 }));
+    assert.throws(() => compactRecoverySelections(root, lease, {
+      recoveryDataKey: authority.dataKey,
+    }), /conflict|invalid/i);
+    assert.equal(fs.readFileSync(file, 'utf8'), before, 'conflicting intent must not replace the selection journal');
+    assert.equal(fs.existsSync(path.join(root, '.scout', 'run-retention.jsonl')), false, 'conflicting intent must not create a false receipt');
+  } finally {
+    releaseScanLease(lease);
+  }
+});
+
 test('cleanup policy keeps newest twenty, thirty-day history and every recovery-critical run', () => {
   const root = temp();
   for (let index = 0; index < 24; index += 1) {
@@ -163,11 +426,9 @@ test('cleanup policy keeps newest twenty, thirty-day history and every recovery-
   terminalRun(root, 'recent-complete', '2026-01-20T00:00:00.000Z');
   terminalRun(root, 'old-partial', '2024-01-01T00:00:00.000Z', 'partial');
   terminalRun(root, 'old-failed', '2024-01-02T00:00:00.000Z', 'failed');
-  fs.mkdirSync(path.join(root, '.scout'), { recursive: true });
-  fs.writeFileSync(path.join(root, '.scout', 'recovery-selections.jsonl'), `${JSON.stringify({
-    selectedRunId: null,
-    skipped: [{ runId: 'complete-02', outcome: 'complete' }],
-  })}\n`);
+  const lease = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId: 'policy-selection' });
+  selectRecoverableRun([recoveryCandidate('complete-02', 'complete')], recoveryCompatibility(), { root, lease });
+  releaseScanLease(lease);
 
   const plan = planRunCleanup(root, {
     now: new Date('2026-02-01T00:00:00.000Z'),
@@ -178,13 +439,12 @@ test('cleanup policy keeps newest twenty, thirty-day history and every recovery-
   assert.equal(plan.candidates.some((candidate) => candidate.runId === 'recent-complete'), false);
   assert.equal(plan.candidates.some((candidate) => candidate.runId === 'old-partial'), false);
   assert.equal(plan.candidates.some((candidate) => candidate.runId === 'old-failed'), false);
-  assert.deepEqual(plan.selected.map((candidate) => candidate.runId), ['complete-00']);
+  assert.deepEqual(plan.selected.map((candidate) => candidate.runId), ['complete-00', 'complete-02']);
   assert.deepEqual(plan.refusedSelections, [
-    { runId: 'complete-02', reason: 'recovery-referenced' },
     { runId: 'old-partial', reason: 'recovery-critical' },
   ]);
   assert.equal(plan.compactSummaries.some((summary) => summary.runId === 'complete-00'), true);
-  assert.equal(measureRunStorage(root).recoveryCritical.runIds.includes('complete-02'), true);
+  assert.equal(measureRunStorage(root).recoveryCritical.runIds.includes('complete-02'), false);
 });
 
 test('unsafe journal pressure fails closed and identifies protected storage', () => {

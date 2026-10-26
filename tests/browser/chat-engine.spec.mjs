@@ -60,6 +60,35 @@ const opportunity = {
   score: 82, status: 'new', sources: ['https://example.test/job'], lastChecked: '2026-07-20',
 };
 
+test('a saved failed message is resent only by its explicit button after reconnecting', async ({ page }) => {
+  const sends = [];
+  await page.route('**/api/chat?*', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      chat: {
+        engine: 'codex', cliSessionId: 'synthetic-retry-session', model: null,
+        messages: [{ role: 'user', text: 'Review this role.' }, { role: 'system', text: 'Reconnect, then resend.' }],
+        filesTouched: [], handoffs: [],
+        retry: { id: 'synthetic-retry', engine: 'codex', mode: null, messageIndex: 0 },
+      }, prefills: {}, purpose: 'job', busy: false,
+    }),
+  }));
+  await page.route('**/api/chat/send', (route) => {
+    sends.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: 'text/event-stream', body: 'event: done\ndata: {"text":"Resent after reconnecting.","sessionId":"synthetic-retry-session","filesTouched":[]}\n\n' });
+  });
+  await page.evaluate((id) => window.Scout.openChat(id, 'ask'), opportunity.id);
+  const resend = page.getByRole('button', { name: 'Resend with Codex' });
+  await expect(resend).toBeVisible();
+  expect(sends).toHaveLength(0);
+  await resend.click();
+  await expect.poll(() => sends.length).toBe(1);
+  expect(sends[0].retryId).toBe('synthetic-retry');
+  await expect(page.locator('#chat-body')).toContainText('Resent after reconnecting.');
+  await expect(resend).toHaveCount(0);
+  await expect(page.locator('#chat-body .chat-msg.user')).toHaveCount(1);
+});
+
 function deferred() {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
@@ -119,7 +148,9 @@ test.beforeEach(async ({ page }) => {
 test('the engine picker shows each provider allowance and offers models', async ({ page }) => {
   await page.evaluate((id) => window.Scout.openChat(id, 'ask'), opportunity.id);
   const picker = page.locator('.chat-picker');
-  await expect(picker.locator('.engine-card')).toHaveCount(2);
+  await expect(picker.locator('.engine-card')).toHaveCount(3);
+  await expect(picker.locator('[data-engine-card="local"]')).toContainText('Local model');
+  await expect(picker.locator('[data-engine-card="local"]')).toContainText('Your configured model · text chat');
 
   // A real limit is stated as a limit; Claude spend is stated as spend.
   await expect(picker).toContainText('62% of your weekly limit used');

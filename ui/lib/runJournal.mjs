@@ -1,3 +1,4 @@
+import { isSafeModelId } from './modelIdentifier.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +15,11 @@ const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const APPEND_TAIL_BYTES = 64 * 1024;
+// Only this module can mint an append snapshot. Public handle fields and
+// returned events are never authority for the cached prefix or its tail.
+const appendStates = new WeakMap();
+const STAMP_FIELDS = ['dev', 'ino', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs', 'birthtimeNs'];
 const WINDOWS_RESERVED_RUN_IDS = new Set(['CON', 'PRN', 'AUX', 'NUL', ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`), ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`)]);
 const EVENT_PAYLOAD_SCHEMAS = Object.freeze({
   'run.started': Object.freeze({
@@ -228,7 +234,9 @@ function validateVersion(value, ErrorType) {
   const version = requireExactKeys(value, ['kind', 'value'], 'version', ErrorType);
   if (!VERSION_KINDS.has(version.kind)) throw new ErrorType('journal payload version kind is invalid');
   try {
-    requireSafeToken(version.value, 'version value', ErrorType);
+    if (version.kind === 'model') {
+      if (!isSafeModelId(version.value)) throw new ErrorType('journal model version is invalid');
+    } else requireSafeToken(version.value, 'version value', ErrorType);
   } catch {
     throw new ErrorType('journal payload version value is invalid');
   }
@@ -270,7 +278,9 @@ function validateRecoveryCompatibility(value, ErrorType) {
     ...(compatibility.schemaVersion >= 2 ? ['scheduleJobId', 'logicalWindowId'] : []),
     ...(compatibility.schemaVersion >= 3 ? ['lanePlanGeneration'] : []),
   ]) {
-    requireSafeToken(compatibility[key], `recovery compatibility ${key}`, ErrorType);
+    if (key === 'model') {
+      if (!isSafeModelId(compatibility[key])) throw new ErrorType('journal recovery model is invalid');
+    } else requireSafeToken(compatibility[key], `recovery compatibility ${key}`, ErrorType);
   }
   if (typeof compatibility.sourceConfigFingerprint !== 'string' || !SHA256.test(compatibility.sourceConfigFingerprint)) {
     throw new ErrorType('journal recovery compatibility source/config fingerprint is invalid');
@@ -324,7 +334,9 @@ function validatePayload(type, payload, ErrorType = TypeError) {
   }
   if (type === 'recovery.provider-substituted') {
     for (const key of ['previousProvider', 'previousModel', 'nextProvider', 'nextModel']) {
-      requireSafeToken(value[key], `recovery substitution ${key}`, ErrorType);
+      if (key.endsWith('Model')) {
+        if (!isSafeModelId(value[key])) throw new ErrorType('journal recovery substitution model is invalid');
+      } else requireSafeToken(value[key], `recovery substitution ${key}`, ErrorType);
     }
     if (value.previousProvider === value.nextProvider && value.previousModel === value.nextModel) {
       throw new ErrorType('journal recovery substitution does not change provenance');
@@ -507,9 +519,7 @@ function validateEvent(event, { runId, sequence, previousHash }) {
   if (event.eventHash !== envelopeHash(event)) throw corrupt('journal event hash is invalid');
 }
 
-export function validateRunJournal(file) {
-  if (!fs.existsSync(file)) return { events: [], lastHash: null, truncatedTail: false };
-  const contents = fs.readFileSync(file, 'utf8');
+function validateJournalContents(contents) {
   if (!contents) return { events: [], lastHash: null, truncatedTail: false };
   const finalRecordTerminated = contents.endsWith('\n');
   const lines = contents.split(/\r?\n/);
@@ -549,6 +559,11 @@ export function validateRunJournal(file) {
   return { events, lastHash: previousHash, truncatedTail };
 }
 
+export function validateRunJournal(file) {
+  if (!fs.existsSync(file)) return { events: [], lastHash: null, truncatedTail: false };
+  return validateJournalContents(fs.readFileSync(file, 'utf8'));
+}
+
 export function replayRunJournal(file) {
   return validateRunJournal(file).events;
 }
@@ -567,9 +582,11 @@ export function openRunJournal(root, runId) {
   const directory = path.join(workspacePaths(root).runs, safeRunId(runId));
   fs.mkdirSync(directory, { recursive: true });
   const file = path.join(directory, 'journal.jsonl');
-  const state = validateRunJournal(file);
+  const state = readFullAppendState(file);
   if (state.events.length && state.events[0].runId !== runId) throw corrupt('journal run ID does not match its directory');
-  return { root: path.resolve(root), runId, directory, file, events: state.events, lastHash: state.lastHash };
+  const handle = { root: path.resolve(root), runId, directory, file, events: [...state.events], lastHash: state.lastHash };
+  appendStates.set(handle, { ...state, location: journalLocation(handle) });
+  return handle;
 }
 
 function sameIdempotentInput(event, input) {
@@ -578,9 +595,98 @@ function sameIdempotentInput(event, input) {
     && stableJson(event.payload) === stableJson(input.payload);
 }
 
-function appendSynced(file, bytes) {
-  const descriptor = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT, 0o600);
+function journalLocation(handle) {
+  return { root: handle.root, runId: handle.runId, directory: handle.directory, file: handle.file };
+}
+
+function sameStamp(left, right) {
+  if (!left || !right) return left === right;
+  return STAMP_FIELDS.every((field) => typeof left[field] === 'bigint' && left[field] === right[field]);
+}
+
+function fileStamp(file) {
+  let stat;
+  try { stat = fs.lstatSync(file, { bigint: true }); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  if (!stat.isFile()) throw corrupt('journal must be a regular file');
+  return stat;
+}
+
+function immutableEvent(value) {
+  for (const item of Object.values(value)) {
+    if (item && typeof item === 'object') immutableEvent(item);
+  }
+  return Object.freeze(value);
+}
+
+function appendState(state, stamp, tail, terminated) {
+  const events = state.events.map(immutableEvent);
+  return {
+    ...state, events, stamp, tail, terminated,
+    keys: new Map(events.map((event) => [event.idempotencyKey, event])),
+    eventIds: new Set(events.map((event) => event.eventId)),
+    started: events.some((event) => event.type === 'run.started'),
+  };
+}
+
+function readFullAppendState(file) {
+  const expected = fileStamp(file);
+  if (!expected) return appendState({ events: [], lastHash: null, truncatedTail: false }, null, Buffer.alloc(0), true);
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
   try {
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    if (!sameStamp(expected, before)) throw corrupt('journal changed during validation');
+    const bytes = fs.readFileSync(descriptor);
+    const state = validateJournalContents(bytes.toString('utf8'));
+    if (!sameStamp(before, fs.fstatSync(descriptor, { bigint: true })) || !sameStamp(before, fileStamp(file))) {
+      throw corrupt('journal changed during validation');
+    }
+    return appendState(state, before, Buffer.from(bytes.subarray(-APPEND_TAIL_BYTES)), !bytes.length || bytes.at(-1) === 0x0a);
+  } finally { fs.closeSync(descriptor); }
+}
+
+function verifiedCachedTail(file, cached) {
+  if (!sameStamp(cached.stamp, fileStamp(file))) return false;
+  if (!cached.stamp) return true;
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  try {
+    if (!sameStamp(cached.stamp, fs.fstatSync(descriptor, { bigint: true }))) return false;
+    const bytes = Buffer.alloc(cached.tail.length);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fs.readSync(descriptor, bytes, offset, bytes.length - offset, Number(cached.stamp.size) - bytes.length + offset);
+      if (!count) return false;
+      offset += count;
+    }
+    return bytes.equals(cached.tail)
+      && sameStamp(cached.stamp, fs.fstatSync(descriptor, { bigint: true }))
+      && sameStamp(cached.stamp, fileStamp(file));
+  } finally { fs.closeSync(descriptor); }
+}
+
+function requireCommittedPrefix(previous, current) {
+  if (previous && previous.events.some((event, index) => current.events[index]?.eventHash !== event.eventHash)) {
+    throw corrupt('journal committed history changed');
+  }
+  return current;
+}
+
+function stateForAppend(handle, location) {
+  const candidate = appendStates.get(handle);
+  const cached = candidate && Object.keys(location).every((key) => candidate.location[key] === location[key]) ? candidate : null;
+  if (cached && !cached.invalidated && verifiedCachedTail(location.file, cached)) return cached;
+  // Public path spelling may disable reuse, but cannot erase a minted
+  // handle's independently known committed prefix.
+  return requireCommittedPrefix(candidate, readFullAppendState(location.file));
+}
+
+function appendSynced(file, bytes, expected) {
+  const descriptor = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW || 0), 0o600);
+  try {
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    if ((expected ? !sameStamp(expected, before) : before.size !== 0n) || !sameStamp(before, fileStamp(file))) {
+      throw corrupt('journal changed before append');
+    }
     let offset = 0;
     while (offset < bytes.length) {
       const written = fs.writeSync(descriptor, bytes, offset, bytes.length - offset);
@@ -588,14 +694,12 @@ function appendSynced(file, bytes) {
       offset += written;
     }
     fs.fsyncSync(descriptor);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    if (after.size !== before.size + BigInt(bytes.length)) throw corrupt('journal changed during append');
+    return after;
   } finally {
     fs.closeSync(descriptor);
   }
-}
-
-function hasFinalDelimiter(file) {
-  const bytes = fs.readFileSync(file);
-  return bytes.length === 0 || bytes.at(-1) === 0x0a;
 }
 
 export function appendRunEvent(handle, input, lease) {
@@ -604,28 +708,31 @@ export function appendRunEvent(handle, input, lease) {
   const type = requireSafeToken(input.type, 'event type');
   const stageId = requireSafeToken(input.stageId, 'stage ID');
   const idempotencyKey = requireSafeToken(input.idempotencyKey, 'idempotency key');
-  validatePayload(type, input.payload);
+  const payload = JSON.parse(validatePayload(type, input.payload));
+  const location = journalLocation(handle);
   const leaseId = requireSafeToken(lease?.leaseId, 'lease ID');
   if (!Number.isInteger(lease?.generation) || lease.generation < 1) throw new TypeError('journal lease generation must be a positive integer');
 
   const commit = () => {
-    const state = validateRunJournal(handle.file);
+    assertScanLeaseScope(lease, location.root, location.runId, location.directory, location.file);
+    const state = stateForAppend(handle, location);
+    if (state.events.length && state.events[0].runId !== location.runId) throw corrupt('journal run ID does not match its directory');
     if (state.truncatedTail) throw corrupt('journal has an unresolved truncated final entry');
-    const existing = state.events.find((event) => event.idempotencyKey === idempotencyKey);
+    const existing = state.keys.get(idempotencyKey);
     if (existing) {
-      if (sameIdempotentInput(existing, { type, stageId, payload: input.payload })) return existing;
+      if (sameIdempotentInput(existing, { type, stageId, payload })) return structuredClone(existing);
       throw new Error(`journal idempotency key conflicts: ${idempotencyKey}`);
     }
     if (type === 'run.started' && state.events.length !== 0) {
       throw new Error('journal run start must be the first event');
     }
-    if (type.startsWith('recovery.') && !state.events.some((event) => event.type === 'run.started')) {
+    if (type.startsWith('recovery.') && !state.started) {
       throw new Error('journal recovery event requires a versioned run start');
     }
 
     const event = {
       schemaVersion: RUN_JOURNAL_SCHEMA_VERSION,
-      runId: handle.runId,
+      runId: location.runId,
       sequence: state.events.length + 1,
       eventId: randomUUID(),
       type,
@@ -635,18 +742,35 @@ export function appendRunEvent(handle, input, lease) {
       stageId,
       idempotencyKey,
       previousHash: state.lastHash,
-      payloadHash: sha256(input.payload),
-      payload: input.payload,
+      payloadHash: sha256(payload),
+      payload,
     };
+    if (state.eventIds.has(event.eventId)) throw corrupt('journal event ID is duplicated');
     event.eventHash = envelopeHash(event);
-    if (state.events.length && !hasFinalDelimiter(handle.file)) appendSynced(handle.file, Buffer.from('\n', 'utf8'));
-    appendSynced(handle.file, Buffer.from(`${stableJson(event)}\n`, 'utf8'));
-    handle.events = [...state.events, event];
+    const bytes = Buffer.from(`${state.terminated ? '' : '\n'}${stableJson(event)}\n`, 'utf8');
+    // A partial write or failed acknowledgement must force full replay next time.
+    appendStates.set(handle, { ...state, location, invalidated: true });
+    const stamp = appendSynced(location.file, bytes, state.stamp);
+    const privateEvent = immutableEvent(structuredClone(event));
+    let next = {
+      ...state, location, stamp,
+      events: [...state.events, privateEvent],
+      keys: new Map(state.keys).set(idempotencyKey, privateEvent),
+      eventIds: new Set(state.eventIds).add(event.eventId),
+      lastHash: event.eventHash,
+      tail: Buffer.from(Buffer.concat([state.tail, bytes]).subarray(-APPEND_TAIL_BYTES)),
+      terminated: true,
+      started: state.started || type === 'run.started',
+      invalidated: false,
+    };
+    if (!sameStamp(stamp, fileStamp(location.file))) next = { ...requireCommittedPrefix(next, readFullAppendState(location.file)), location };
+    appendStates.set(handle, next);
+    handle.events = [...next.events];
     handle.lastHash = event.eventHash;
     return event;
   };
 
   if (!isScanLease(lease)) throw new LeaseLostError('a genuine current scan lease is required to append');
-  assertScanLeaseScope(lease, handle.root, handle.runId, handle.directory, handle.file);
+  assertScanLeaseScope(lease, location.root, location.runId, location.directory, location.file);
   return assertCurrentFence(lease, synchronousFenceCallback(commit));
 }

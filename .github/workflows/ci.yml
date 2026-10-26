@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, integration/epic77-progress]
   pull_request:
 
 permissions:
@@ -16,15 +16,18 @@ jobs:
         os: [windows-2022, ubuntu-22.04, macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
       - run: node tools/typst-runtime.mjs install
       - run: node tools/typst-runtime.mjs verify --compile
       - run: npm test
+      - run: npm run test:acceptance
       - name: Verify release staging
         run: node tools/build-release.mjs --stage-only
       - name: Audit staged public tree for fork pull requests
@@ -40,25 +43,63 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            browser: chromium
-            install: --with-deps chromium
-          - os: ubuntu-22.04
-            browser: firefox
-            install: --with-deps firefox
-          - os: windows-2022
-            browser: chromium
-            install: chromium
+        os: [ubuntu-22.04, windows-2022, macos-15, macos-15-intel]
+        browser: [chromium, firefox, webkit]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - run: node tools/typst-runtime.mjs install
       - run: node tools/typst-runtime.mjs verify --compile
-      - run: npx playwright install ${{ matrix.install }}
+      - name: Install requested browser with native dependencies
+        run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npm run test:browser -- --project=${{ matrix.browser }}
+
+  windows-native:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: node tools/typst-runtime.mjs install
+      - name: Compile production C# host and execute native receipts plus long-path measurement
+        run: node --test tools/windows-native.test.mjs
+
+  installed-artifact:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-22.04, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: node tools/typst-runtime.mjs install
+      - run: npx playwright install --with-deps chromium
+      - name: Install native Windows packager
+        if: runner.os == 'Windows'
+        run: choco install innosetup --yes --no-progress
+      - name: Build Windows artifact
+        if: runner.os == 'Windows'
+        run: node tools/build-release.mjs --installer
+        env: { SCOUT_RELEASE_MARKERS: SyntheticNativeAcceptanceMarker }
+      - name: Build macOS artifact and compile native Swift launcher
+        if: runner.os == 'macOS'
+        run: node tools/build-platform.mjs mac
+        env: { SCOUT_RELEASE_MARKERS: SyntheticNativeAcceptanceMarker }
+      - name: Build Linux artifacts
+        if: runner.os == 'Linux'
+        run: node tools/build-platform.mjs linux
+        env: { SCOUT_RELEASE_MARKERS: SyntheticNativeAcceptanceMarker }
+      - name: Install artifact, first launch, onboard, choose mode, scan, show results, uninstall
+        run: node tools/native-install-smoke.mjs
+      - name: Install and exercise Linux portable artifact independently
+        if: runner.os == 'Linux'
+        run: node tools/native-install-smoke.mjs --portable

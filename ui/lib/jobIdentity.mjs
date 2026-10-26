@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 const COMPANY_SUFFIXES = new Set(['co', 'company', 'corp', 'corporation', 'inc', 'incorporated', 'limited', 'llc', 'ltd', 'plc']);
 const EVIDENCE_NOISE = new Set([
   'about', 'after', 'also', 'and', 'are', 'but', 'for', 'from', 'have', 'into', 'our', 'that', 'the',
@@ -36,6 +38,19 @@ function similarity(left, right) {
   if (!a.size || !b.size) return 0;
   const shared = [...a].filter((value) => b.has(value)).length;
   return shared / (a.size + b.size - shared);
+}
+
+function comparableEvidence(left, right, a, b) {
+  const storedA = Array.isArray(left?.jobIdentity?.evidenceTokenDigests);
+  const storedB = Array.isArray(right?.jobIdentity?.evidenceTokenDigests);
+  if (!storedA && !storedB) return [a.evidenceTokens, b.evidenceTokens];
+  // Older receipts retained 32 tokens. Compare the same ordered sample until
+  // the next receipt upgrades it; raw words and their digests are not peers.
+  const limit = (storedA && a.evidenceTokens.length === 32)
+    || (storedB && b.evidenceTokens.length === 32) ? 32 : 80;
+  const values = (identity, stored) => identity.evidenceTokens.slice(0, limit)
+    .map((token) => stored ? token : createHash('sha256').update(token).digest('hex'));
+  return [values(a, storedA), values(b, storedB)];
 }
 
 export function canonicalJobUrl(value) {
@@ -101,6 +116,22 @@ export function invalidateJobIdentity(job) {
   if (job && typeof job === 'object') IDENTITY_CACHE.delete(job);
 }
 
+// Every successful sameUnderlyingJob path shares one of these keys. A fuzzy
+// title match has positive token overlap; blocking cannot invent a match and
+// callers must still apply the complete identity predicate.
+export function jobIdentityBlockingKeys(job) {
+  const identity = jobIdentity(job);
+  return [...new Set([
+    ...identity.references.flatMap(({ url, source, providerId }) => [
+      url && JSON.stringify(['url', url]),
+      source && providerId && JSON.stringify(['reference', source, providerId]),
+    ]),
+    ...identity.titleTokens.map((token) => (
+      identity.company && JSON.stringify(['company-title-token', identity.company, token])
+    )),
+  ].filter(Boolean))];
+}
+
 function locationsCompatible(a, b) {
   if (!a.location || !b.location) return true;
   if (a.location === b.location) return true;
@@ -136,7 +167,7 @@ export function sameUnderlyingJob(left, right) {
   if (!a.company || a.company !== b.company || !a.title || !b.title) return false;
   if (a.title !== b.title && similarity(a.titleTokens, b.titleTokens) < 0.8) return false;
   if (a.evidenceTokens.length >= 8 && b.evidenceTokens.length >= 8) {
-    return similarity(a.evidenceTokens, b.evidenceTokens) >= 0.35;
+    return similarity(...comparableEvidence(left, right, a, b)) >= 0.35;
   }
   return a.title === b.title;
 }
@@ -144,7 +175,7 @@ export function sameUnderlyingJob(left, right) {
 export function advertMateriallyChanged(previous, current) {
   const a = jobIdentity(previous); const b = jobIdentity(current);
   if (a.evidenceTokens.length < 8 || b.evidenceTokens.length < 8) return false;
-  return similarity(a.evidenceTokens, b.evidenceTokens) < 0.55;
+  return similarity(...comparableEvidence(previous, current, a, b)) < 0.55;
 }
 
 export function mergeSourceReferences(...jobs) {

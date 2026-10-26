@@ -113,6 +113,8 @@ function compensation(job, warnings) {
       minimum,
       maximum,
       currency,
+      ...(['queried-country', 'unknown'].includes(job.salaryCurrencyProvenance)
+        ? { currencyProvenance: job.salaryCurrencyProvenance } : {}),
       period: period?.toLowerCase() || null,
       rateType: rateType?.toLowerCase() || null,
       ...(amountType ? { amountType } : {}),

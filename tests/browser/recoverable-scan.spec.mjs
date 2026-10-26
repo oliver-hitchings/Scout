@@ -1318,6 +1318,7 @@ test('every durable pipeline and recovery state remains reviewable and privacy-s
     ['selecting', 'Selecting the assessment set'],
     ['assessing', 'Assessing jobs in bounded batches'],
     ['repairing', 'Repairing affected jobs'],
+    ['retrying', 'Retrying failed job'],
     ['recovered', 'Recovered compatible work'],
     ['partial', 'Completed with partial evidence'],
     ['abandoned', 'Abandoned safely'],
@@ -1329,14 +1330,14 @@ test('every durable pipeline and recovery state remains reviewable and privacy-s
       state: runState,
       runs: [publicRun(runState, label, {
         recoveryCount: runState === 'recovered' ? 1 : 0,
-        assessment: ['assessing', 'repairing'].includes(runState)
+        assessment: ['assessing', 'repairing', 'retrying'].includes(runState)
           ? {
             currentBatch: 2,
             totalBatches: 4,
             totalBatchesExact: true,
             completedBatches: 1,
             completedJobs: 10,
-            failedJobs: runState === 'repairing' ? 1 : 0,
+            failedJobs: ['repairing', 'retrying'].includes(runState) ? 1 : 0,
           }
           : null,
         terminalReason: ['partial', 'abandoned', 'failed'].includes(runState)
@@ -1349,7 +1350,7 @@ test('every durable pipeline and recovery state remains reviewable and privacy-s
     await expect(audit.locator('.chip')).toHaveText(runState);
     await expect(audit).toContainText(label);
     if (runState === 'recovered') await expect(audit).toContainText('1 recovery');
-    if (['assessing', 'repairing'].includes(runState)) {
+    if (['assessing', 'repairing', 'retrying'].includes(runState)) {
       await expect(audit).toContainText('batch 2 of 4');
     }
     for (const sentinel of PRIVATE_SENTINELS) {

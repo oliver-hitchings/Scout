@@ -4,14 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
-  assessScanCandidates, assessmentCandidatesForSelection, buildAssessmentPrompt, compactCandidates, createRankedDiscoveryStages, DEFAULT_CANDIDATE_LIMIT, durableScanProjection, gateAssessment, inboxRecheckCandidates, prepareRankedDiscovery, promptCandidate,
-  filterVacancies, PipelineInterruptedError, readVacancyDecisionHistory, runScanPipeline, validateAssessments, validateWrittenScanArtifacts,
+  assessScanCandidates, assessmentCandidatesForSelection, buildAssessmentPrompt, compactCandidates, coordinateScanArtifacts, createRankedDiscoveryStages, DEFAULT_CANDIDATE_LIMIT, durableScanProjection, gateAssessment, inboxRecheckCandidates, prepareRankedDiscovery, promptCandidate,
+  filterVacancies, PipelineInterruptedError, readRejectedVacancyMemory, readVacancyDecisionHistory, runScanPipeline, validateAssessments, validateWrittenScanArtifacts,
   verificationCandidates, writeScanArtifacts,
 } from './scanPipeline.mjs';
 import { claimNextScanRequest, enqueueScanRequest, projectScanQueue } from './scanQueue.mjs';
 import { acquireScanLease, currentLeaseOwner, readScanLease, releaseScanLease } from './scanLease.mjs';
 import {
-  appendRunEvent, openRunJournal, replayRunJournal, validateRunJournal,
+  JournalCorruptionError, appendRunEvent, openRunJournal, replayRunJournal, validateRunJournal,
 } from './runJournal.mjs';
 import { ProviderLifecycleUnclosedError } from './structuredTurn.mjs';
 import { applyPreparedMutation, prepareMutation } from './mutationCoordinator.mjs';
@@ -728,6 +728,150 @@ test('ranked discovery backfills assessment capacity instead of re-assessing an 
   assert.equal(result.funnel.selected, 1);
 });
 
+test('ranked discovery records why each repeat vacancy was skipped or re-ranked', () => {
+  const profile = {
+    version: 1, status: 'published', id: 'profile-current',
+    target: { primaryTitles: [{ value: 'Ideal Role', strength: 'strong-preference', provenance: 'explicit' }] },
+    negative: {},
+    compensation: {
+      currency: null, period: 'year', minimum: null, minimumStrength: 'neutral', unknownPolicy: 'include',
+    },
+  };
+  const sources = { ats: { count: 2, jobs: [
+    { company: 'Already Reviewed', title: 'Ideal Role', url: 'https://example.test/rejected', providerId: 'rejected', description: 'Deliver the ideal role responsibilities.' },
+    { company: 'Fresh Candidate', title: 'Ideal Role', url: 'https://example.test/fresh', providerId: 'fresh', description: 'Deliver the ideal role responsibilities.' },
+  ] } };
+  const rejected = prepareRankedDiscovery({
+    sources, profile, tracker: { opportunities: [] }, runId: 'initial', limit: 2,
+  }).ranked.find((item) => item.company === 'Already Reviewed');
+  const run = (learningVersionId) => prepareRankedDiscovery({
+    sources, profile, tracker: { opportunities: [] }, runId: 'repeat', limit: 2,
+    learningPolicy: { id: learningVersionId, changes: [] },
+    decisionHistory: [{
+      company: rejected.company, role: rejected.role, url: rejected.url, source: rejected.source,
+      outcome: 'below_threshold', profileId: profile.id, learningVersionId: 'learning-a',
+      contentFingerprint: rejected.contentFingerprint,
+    }],
+  });
+  const byCompany = (result) => Object.fromEntries(result.selection.lifecycle.map((item) => [
+    result.ranked.find((vacancy) => vacancy.vacancyId === item.vacancyId).company, `${item.change}:${item.reason}`,
+  ]));
+
+  assert.deepEqual(byCompany(run('learning-a')), { 'Already Reviewed': 'unchanged:unchanged-rejection' });
+  const relearned = run('learning-b');
+  assert.deepEqual(byCompany(relearned), { 'Already Reviewed': 'unchanged:scoring-change' });
+  assert.deepEqual(relearned.selection.assessmentSkipped.map((item) => item.company), ['Already Reviewed']);
+});
+
+test('an unchanged rejection stays remembered after newer assessments push it out of the recent history window', () => {
+  const profile = {
+    version: 1, status: 'published', id: 'profile-current',
+    target: { primaryTitles: [{ value: 'Ideal Role', strength: 'strong-preference', provenance: 'explicit' }] },
+    negative: {},
+    compensation: {
+      currency: null, period: 'year', minimum: null, minimumStrength: 'neutral', unknownPolicy: 'include',
+    },
+  };
+  const sources = { ats: { count: 2, jobs: [
+    { company: 'Already Reviewed', title: 'Ideal Role', url: 'https://example.test/rejected', providerId: 'rejected', description: 'Deliver the ideal role responsibilities.' },
+    { company: 'Fresh Candidate', title: 'Ideal Role', url: 'https://example.test/fresh', providerId: 'fresh', description: 'Deliver the ideal role responsibilities.' },
+  ] } };
+  const rejected = prepareRankedDiscovery({
+    sources, profile, tracker: { opportunities: [] }, runId: 'initial', limit: 2,
+  }).ranked.find((item) => item.company === 'Already Reviewed');
+  const review = (vacancyId, company, outcome, extra = {}) => ({
+    vacancyId, company, role: 'Ideal Role', source: 'ats', sourceUrl: `https://example.test/${vacancyId}`,
+    outcome, profileId: profile.id, ...extra,
+  });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-rejection-memory-'));
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+  const runs = [
+    { timestamp: '2026-07-01T09:00:00.000Z', profile_id: profile.id, reviewed: [
+      review('vacancy-rejected', rejected.company, 'below_threshold', { sourceUrl: rejected.url, contentFingerprint: rejected.contentFingerprint }),
+      review('vacancy-later-kept', 'Reopened Co', 'below_threshold'),
+      review('vacancy-rejected-twice', 'Twice Co', 'mandatory_unmet'),
+    ] },
+    { timestamp: '2026-07-02T09:00:00.000Z', profile_id: profile.id, reviewed: [
+      review('vacancy-later-kept', 'Reopened Co', 'kept'),
+      review('vacancy-rejected-twice', 'Twice Co', 'provider_discarded'),
+    ] },
+    ...Array.from({ length: 20 }, (_, run) => ({
+      timestamp: `2026-07-${String(run + 3).padStart(2, '0')}T09:00:00.000Z`, profile_id: profile.id,
+      reviewed: Array.from({ length: 30 }, (__, index) => review(`vacancy-filler-${run}-${index}`, `Filler ${run}-${index}`, 'kept')),
+    })),
+  ];
+  fs.writeFileSync(path.join(root, 'data', 'scan-runs.jsonl'), runs.map((run) => `${JSON.stringify(run)}
+`).join(''));
+
+  const recent = readVacancyDecisionHistory(root);
+  assert.equal(recent.some((item) => item.vacancyId === 'vacancy-rejected'), false);
+  const memory = readRejectedVacancyMemory(root);
+  assert.deepEqual(memory.map((item) => [item.vacancyId, item.outcome]), [
+    ['vacancy-rejected-twice', 'provider_discarded'], ['vacancy-rejected', 'below_threshold'],
+  ]);
+
+  const assess = (rejectionMemory) => prepareRankedDiscovery({
+    sources, profile, tracker: { opportunities: [] }, decisionHistory: recent, rejectionMemory,
+    runId: 'repeat', limit: 1,
+  });
+  assert.equal(assess([]).selection.assessmentSkipped.length, 0);
+  const remembered = assess(memory);
+  assert.deepEqual(remembered.selection.selected.map((item) => item.company), ['Fresh Candidate']);
+  assert.deepEqual(remembered.selection.assessmentSkipped.map((item) => item.lifecycle.reason), ['unchanged-rejection']);
+  // A long rejection memory must not bloat the 16 MiB select-stage artifact with full ranked objects.
+  assert.deepEqual(Object.keys(remembered.selection.assessmentSkipped[0]).sort(), ['company', 'lifecycle', 'role', 'vacancyId']);
+});
+
+test('decision history records the assessment version and a version change re-assesses an earlier rejection', () => {
+  const profile = {
+    version: 1, status: 'published', id: 'profile-current',
+    target: { primaryTitles: [{ value: 'Ideal Role', strength: 'strong-preference', provenance: 'explicit' }] },
+    negative: {},
+    compensation: {
+      currency: null, period: 'year', minimum: null, minimumStrength: 'neutral', unknownPolicy: 'include',
+    },
+  };
+  const sources = { ats: { count: 2, jobs: [
+    { company: 'Already Reviewed', title: 'Ideal Role', url: 'https://example.test/rejected', providerId: 'rejected', description: 'Deliver the ideal role responsibilities.' },
+    { company: 'Fresh Candidate', title: 'Ideal Role', url: 'https://example.test/fresh', providerId: 'fresh', description: 'Deliver the ideal role responsibilities.' },
+  ] } };
+  const rejected = prepareRankedDiscovery({
+    sources, profile, tracker: { opportunities: [] }, runId: 'initial', limit: 2,
+  }).ranked.find((item) => item.company === 'Already Reviewed');
+  const version = { promptVersion: 'assessment-prompt-v1', assessmentSchemaVersion: 2, provider: 'codex', model: 'model-a' };
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-assessment-version-'));
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'data', 'scan-runs.jsonl'), `${JSON.stringify({
+    timestamp: '2026-07-01T09:00:00.000Z', profile_id: profile.id, assessment_version: version,
+    reviewed: [{
+      vacancyId: 'vacancy-rejected', company: rejected.company, role: rejected.role, source: 'ats',
+      sourceUrl: rejected.url, contentFingerprint: rejected.contentFingerprint, outcome: 'below_threshold', profileId: profile.id,
+    }],
+    explanations: [{
+      vacancy_id: 'vacancy-unassessed', company: 'Never Assessed', role: 'Ideal Role', source: 'ats',
+      sourceUrl: 'https://example.test/unassessed', reason_code: 'below_threshold', stages: { assessed: false },
+    }],
+  })}\n`);
+
+  const history = readVacancyDecisionHistory(root);
+  assert.deepEqual(history.map((item) => [item.company, item.assessmentVersion]), [
+    [rejected.company, version], ['Never Assessed', null],
+  ]);
+  const memory = readRejectedVacancyMemory(root);
+  assert.deepEqual(memory.map((item) => item.assessmentVersion), [version]);
+
+  const assess = (assessmentVersion) => prepareRankedDiscovery({
+    sources, profile, tracker: { opportunities: [] }, decisionHistory: history, rejectionMemory: memory,
+    assessmentVersion, runId: 'repeat', limit: 2,
+  });
+  const unchanged = assess({ ...version });
+  assert.deepEqual(unchanged.selection.assessmentSkipped.map((item) => item.lifecycle.reason), ['unchanged-rejection']);
+  const changed = assess({ ...version, model: 'model-b' });
+  assert.deepEqual(changed.selection.assessmentSkipped, []);
+  assert.deepEqual(changed.selection.selected.map((item) => item.company).sort(), ['Already Reviewed', 'Fresh Candidate']);
+  assert.deepEqual(changed.selection.lifecycle.map((item) => item.reason), ['assessment-change']);
+});
+
 test('published learning reranks unassessed jobs, reconsiders scoped exclusions and reuses prior decisions', () => {
   const profile = {
     version: 1, status: 'published', id: 'profile-learning-flow',
@@ -1169,7 +1313,7 @@ test('scan artifact exposes a reconciled funnel without claiming all jobs were a
   assert.equal(artifacts.run.explanations.length, 61);
   assert.deepEqual(Object.keys(artifacts.run.explanations[0]).sort(), [
     'above_threshold', 'assessment_status', 'company', 'deterministic_exclusion',
-    'deterministic_exclusions', 'dimensions', 'outcome', 'pre_rank', 'reason_code',
+    'deterministic_exclusions', 'dimensions', 'lifecycle', 'outcome', 'pre_rank', 'reason_code',
     'role', 'selection_reason', 'source', 'sourceReferences', 'sourceUrl', 'stages', 'tracker_outcome',
     'vacancy_id',
   ].sort());
@@ -1190,6 +1334,88 @@ test('failed assessment reconciles selected candidates as assessment failures', 
   });
   assert.equal(artifacts.run.funnel.assessmentFailed, 1);
   assert.equal(artifacts.run.selection_summary.assessmentFailed, 1);
+});
+
+function unchangedKeeperFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-unchanged-keeper-'));
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'data', 'opportunities.json'), JSON.stringify({ opportunities: [] }));
+  const candidate = {
+    candidateId: 'candidate-001', vacancyId: 'vacancy-synthetic', company: 'Synthetic Studio', role: 'Synthetic role',
+    source: 'ats', url: 'https://example.test/job', preRankScore: 90,
+  };
+  const input = {
+    provider: 'codex', mode: 'primary', profileId: 'profile-synthetic', discoveryEngine: 'ranked-discovery',
+    sources: { ats: { configured: true, status: 'healthy', count: 1 } },
+    candidates: [candidate], ranked: [candidate], assessmentResult: { assessments: [assessment('met')] }, policy: {},
+    selectionDecision: { threshold: 50, selected: [candidate], notSelected: [], assessmentSkipped: [], reasons: [] },
+    funnel: {
+      sourceRecords: 1, sourceErrors: 0, failedSourceRecords: 0, parsed: 1, normalised: 1, duplicateObservations: 0,
+      uniqueVacancies: 1, deterministicallyExcluded: 0, eligible: 1, ranked: 1, aboveThreshold: 1,
+      selected: 1, assessed: 1, assessmentFailed: 0, added: 0, updated: 0, unchanged: 0, closed: 0,
+      bySource: { ats: { count: 1, failedRecords: 0, sourceErrors: 0 } },
+    },
+  };
+  return { root, candidate, input };
+}
+
+test('repeated assessed keeper content reconciles as unchanged while verification dates advance', () => {
+  const { root, candidate, input } = unchangedKeeperFixture();
+  try {
+    const first = writeScanArtifacts(root, { ...input, startedAt: '2026-10-23T10:00:00.000Z', timestamp: '2026-10-23T10:00:00.000Z' });
+    assert.equal(first.run.funnel.added, 1);
+    const second = writeScanArtifacts(root, { ...input, startedAt: '2026-10-24T10:00:00.000Z', timestamp: '2026-10-24T10:00:00.000Z' });
+    assert.equal(second.run.funnel.unchanged, 1);
+    assert.equal(second.run.funnel.updated, 0);
+    assert.equal(second.run.funnel.bySource.ats.unchanged, 1);
+    assert.equal(second.run.explanations[0].tracker_outcome, 'unchanged');
+    const tracker = JSON.parse(fs.readFileSync(path.join(root, 'data', 'opportunities.json')));
+    assert.equal(tracker.opportunities[0].lastChecked, '2026-10-24');
+    const changed = writeScanArtifacts(root, {
+      ...input, candidates: [{ ...candidate, preRankScore: 94 }],
+      startedAt: '2026-10-25T10:00:00.000Z', timestamp: '2026-10-25T10:00:00.000Z',
+    });
+    assert.equal(changed.run.funnel.updated, 1);
+    assert.equal(changed.run.funnel.unchanged, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('receipted scan projection preserves an unchanged keeper through the next coordinated scan', () => {
+  const { root, input, candidate } = unchangedKeeperFixture();
+  candidate.description = 'Design distributed database architecture deliver reliable cloud infrastructure implement observability tooling mentor engineers improve security automation';
+  const execute = (id) => {
+    const lease = acquireScanLease(root, currentLeaseOwner(), { kind: 'scan', runId: id });
+    const run = openRunJournal(root, id);
+    try {
+      appendRunEvent(run, {
+        type: 'run.started', stageId: 'initialise', idempotencyKey: `start-${id}`,
+        payload: { schemaVersion: 1, compatibility: RECOVERY_COMPATIBILITY },
+      }, lease);
+      return coordinateScanArtifacts(root, { ...input, startedAt: new Date().toISOString() }, { run, lease });
+    } finally {
+      releaseScanLease(lease);
+    }
+  };
+  try {
+    assert.equal(execute('synthetic-keeper-first').run.funnel.added, 1);
+    const second = execute('synthetic-keeper-second');
+    assert.equal(second.run.funnel.unchanged, 1);
+    assert.equal(second.run.funnel.bySource.ats.unchanged, 1);
+    assert.equal(second.run.explanations[0].tracker_outcome, 'unchanged');
+    assert.equal(second.run.reviewed[0].trackerOutcome, 'unchanged');
+    assert.deepEqual(second.tracker.opportunities[0].tags, []);
+    assert.ok(second.mutationReceipt);
+    assert.equal(execute('synthetic-keeper-third').run.funnel.unchanged, 1);
+    input.candidates = [{ ...candidate, description: 'Coordinate warehouse shipping transport inventory freight logistics procurement packaging distribution dispatch deliveries cargo stock returns' }];
+    const changed = execute('synthetic-keeper-changed');
+    assert.equal(changed.run.funnel.updated, 1);
+    assert.ok(changed.tracker.opportunities[0].tags.includes('Updated advert — review'));
+    assert.equal(execute('synthetic-keeper-changed-repeat').run.funnel.unchanged, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('forty zero-keeper candidates produce a bounded sanitised audit without tracker padding', () => {
@@ -1225,7 +1451,7 @@ test('forty zero-keeper candidates produce a bounded sanitised audit without tra
   assert.equal(history[0].outcome, 'provider_discarded');
   assert.match(history[0].contentFingerprint, /^[a-f0-9]{64}$/);
   assert.deepEqual(Object.keys(history[0]).sort(), [
-    'assessedAt', 'company', 'contentFingerprint', 'learningVersionId', 'outcome', 'profileId',
+    'assessedAt', 'assessmentVersion', 'company', 'contentFingerprint', 'learningVersionId', 'outcome', 'profileId',
     'role', 'source', 'sourceReferences', 'url', 'vacancyId',
   ].sort());
 });
@@ -3512,6 +3738,8 @@ test('an unclosed provider lifecycle remains auditable without stopping heartbea
 test('terminal evidence validation failure retains the lease for fenced recovery', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-terminal-evidence-retained-'));
   let runId;
+  let journalFile;
+  let journalBytes;
   try {
     await assert.rejects(
       runScanPipeline({
@@ -3520,12 +3748,18 @@ test('terminal evidence validation failure retains the lease for fenced recovery
         stages: durableStageHarness(new Map()),
         onStageCommitted({ stageId, run }) {
           runId = run.runId;
-          if (stageId === 'select') fs.renameSync(run.directory, `${run.directory}.unavailable`);
+          if (stageId === 'select') {
+            journalFile = run.file;
+            journalBytes = fs.readFileSync(run.file);
+            fs.renameSync(run.directory, `${run.directory}.unavailable`);
+          }
         },
       }),
-      /ENOENT|no such file|cannot find/i,
+      (error) => error instanceof JournalCorruptionError && /committed history changed/.test(error.message),
     );
     assert.equal(readScanLease(root)?.runId, runId);
+    assert.equal(fs.existsSync(journalFile), false, 'a missing committed journal must not be recreated');
+    assert.deepEqual(fs.readFileSync(path.join(`${path.dirname(journalFile)}.unavailable`, 'journal.jsonl')), journalBytes);
   } finally {
     const retained = readScanLease(root);
     if (retained) {
@@ -3877,4 +4111,47 @@ test('a provider health preflight exception records a bounded blocked run and re
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('hyphenated rejection outcomes remain authoritative beyond the 384-assessment mixed-history horizon', async () => {
+  const { vacancyContentFingerprint } = await import('./vacancyCanonical.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-reassessment-horizon-'));
+  try {
+    fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+    const oldVersion = { promptVersion: 'old-prompt', assessmentSchemaVersion: 'schema-1', provider: 'codex', model: 'synthetic-model' };
+    const vacancy = {
+      vacancyId: 'historical-0', company: 'Synthetic Employer 0', role: 'Synthetic Role',
+      url: 'https://jobs.example.test/historical-0', description: 'Deliver reliable synthetic systems.', preRankScore: 80,
+      source: 'synthetic', providerId: 'opening-0',
+    };
+    const reviewed = Array.from({ length: 600 }, (_, index) => ({
+      vacancyId: `historical-${index}`, company: `Synthetic Employer ${index}`, role: 'Synthetic Role',
+      sourceUrl: `https://jobs.example.test/historical-${index}`, outcome: 'below-threshold',
+      sourceReferences: [{ source: 'synthetic', providerId: `opening-${index}`, url: '' }],
+      contentFingerprint: vacancyContentFingerprint({ ...vacancy, company: `Synthetic Employer ${index}` }),
+    }));
+    const explanations = Array.from({ length: 128 }, (_, index) => ({
+      vacancy_id: `unassessed-${index}`, company: `Unassessed Employer ${index}`, role: 'Synthetic Role',
+      reason_code: 'below-relevance-threshold', stages: { assessed: false },
+    }));
+    fs.writeFileSync(path.join(root, 'data', 'scan-runs.jsonl'), `${JSON.stringify({
+      timestamp: '2026-10-25T12:00:00.000Z', profile_id: 'profile-current',
+      assessment_version: oldVersion, reviewed, explanations,
+    })}\n`);
+    const history = readVacancyDecisionHistory(root);
+    assert.equal(history.length, 512);
+    assert.equal(history.filter(item => item.assessmentVersion !== null).length, 384);
+    assert.equal(history.some(item => item.vacancyId === vacancy.vacancyId), false);
+    assert.equal(history.find(item => item.assessmentVersion)?.outcome, 'below_threshold');
+    const memory = readRejectedVacancyMemory(root);
+    assert.equal(memory.length, 600);
+    const remembered = memory.find(item => item.vacancyId === vacancy.vacancyId);
+    assert.deepEqual(remembered.assessmentVersion, oldVersion);
+    const unchanged = partitionVacanciesForAssessment([vacancy], [...memory, ...history], { profileId: 'profile-current', assessmentVersion: oldVersion });
+    assert.equal(unchanged.skipped[0].lifecycle.reason, 'unchanged-rejection');
+    const changed = partitionVacanciesForAssessment([vacancy], [...memory, ...history], {
+      profileId: 'profile-current', assessmentVersion: { ...oldVersion, promptVersion: 'new-prompt' },
+    });
+    assert.equal(changed.eligible[0].lifecycle.reason, 'assessment-change');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

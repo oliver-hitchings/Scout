@@ -12,6 +12,7 @@ import {
   proposeLearningChange,
   publishLearningProposal,
   recordFeedback,
+  resetLearning,
   undoLearningVersion,
   validateLearningLedger,
   writeLearningLedger,
@@ -46,6 +47,25 @@ test('feedback is a bounded job event and never silently changes learning policy
   assert.equal(recorded.feedbackEvents[0].learningVersionId, 'learning-baseline');
   assert.equal(recorded.proposals.length, 0);
   assert.deepEqual(activeLearningPolicy(recorded).changes, []);
+});
+
+test('reset removes all learned ranking changes while retaining events, proposals and undo history', () => {
+  let ledger = recordFeedback(createLearningLedger({ now: () => AT }), event());
+  for (const value of ['Example City', 'Example Town']) {
+    ledger = proposeLearningChange(ledger, {
+      sourceEventIds: [ledger.feedbackEvents[0].id], explanation: 'A reviewed ranking preference.',
+      change: { kind: 'rank-adjustment', field: 'location', value, weight: 3, scope: 'profile-wide' },
+    });
+    ledger = publishLearningProposal(ledger, { proposalId: ledger.proposals.at(-1).id, confirmed: true });
+  }
+  assert.throws(() => resetLearning(ledger, { confirmed: false }), /confirmation/);
+  const reset = resetLearning(ledger, { confirmed: true, versionId: ledger.activeVersionId, explanation: 'Start again with the reviewed search preferences.' });
+  assert.deepEqual(activeLearningPolicy(reset).changes, []);
+  assert.deepEqual(reset.feedbackEvents, ledger.feedbackEvents);
+  assert.deepEqual(reset.proposals, ledger.proposals);
+  assert.equal(reset.versions.length, ledger.versions.length + 1);
+  const restored = undoLearningVersion(reset, { confirmed: true, versionId: reset.activeVersionId, explanation: 'Restore the learned preferences.' });
+  assert.deepEqual(activeLearningPolicy(restored).changes, activeLearningPolicy(ledger).changes);
 });
 
 test('all required feedback decisions and rejection reasons validate explicitly', () => {

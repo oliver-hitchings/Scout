@@ -41,6 +41,21 @@ export function saveChat(repoRoot, id, chat, purpose = 'job') {
   });
 }
 
+// Reserve the one-use action durably before a provider can execute it. A later
+// transcript failure or process exit must never make the same token usable.
+export function consumeChatRetry(repoRoot, id, retryId, purpose = 'job') {
+  return withWorkspaceMutationAuthority(repoRoot, {
+    kind: 'chat-save', phase: 'consume-chat-retry',
+  }, () => {
+    const current = loadChat(repoRoot, id, purpose);
+    if (!current?.retry || current.retry.id !== retryId) {
+      throw new Error('Chat retry is no longer available');
+    }
+    delete current.retry;
+    atomicWriteFile(chatPath(repoRoot, id, purpose), `${JSON.stringify(current, null, 2)}\n`);
+  });
+}
+
 export function appendMessage(chat, role, text, ts) {
   chat.messages.push({ role, text, ts });
   return chat;

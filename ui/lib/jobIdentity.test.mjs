@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import {
   advertMateriallyChanged, canonicalJobUrl, invalidateJobIdentity, jobIdentity, sameUnderlyingJob,
@@ -59,4 +60,22 @@ test('job identities are cached until a deliberate candidate merge invalidates t
   assert.equal(jobIdentity(job), first);
   invalidateJobIdentity(job);
   assert.notEqual(jobIdentity(job), first);
+});
+
+test('receipted identity digests compare with live evidence across sources and detect real changes', () => {
+  const base = { company: 'Synthetic Studio', title: 'Synthetic role', description: 'Design distributed database architecture deliver reliable cloud infrastructure implement observability tooling mentor engineers improve security automation' };
+  const identity = jobIdentity(base);
+  const persisted = { company: base.company, role: base.title, jobIdentity: {
+    ...identity, evidenceTokens: undefined, advertFingerprint: undefined,
+    evidenceTokenDigests: identity.evidenceTokens.map((token) => createHash('sha256').update(token).digest('hex')),
+  } };
+  assert.equal(sameUnderlyingJob(persisted, base), true);
+  assert.equal(advertMateriallyChanged(persisted, base), false);
+  assert.equal(advertMateriallyChanged(persisted, { ...base, description: 'Coordinate warehouse shipping transport inventory freight logistics procurement packaging distribution dispatch deliveries cargo stock returns' }), true);
+  const long = { ...base, description: Array.from({ length: 80 }, (_, index) => `synthetictoken${String(index).padStart(2, '0')}`).join(' ') };
+  const legacy = { company: long.company, role: long.title, jobIdentity: {
+    evidenceTokenDigests: jobIdentity(long).evidenceTokens.slice(0, 32).map((token) => createHash('sha256').update(token).digest('hex')),
+  } };
+  assert.equal(sameUnderlyingJob(legacy, long), true);
+  assert.equal(advertMateriallyChanged(legacy, long), false);
 });

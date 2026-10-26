@@ -365,11 +365,7 @@ test('beta.22 snapshot rejects trees deeper than its traversal bound', () => {
   );
 });
 
-test('beta.22 snapshot rejects a protected path redirected outside the physical workspace', (t) => {
-  if (process.platform === 'win32') {
-    t.diagnostic('symbolic-link fixture is not portable to Windows');
-    return;
-  }
+test('beta.22 snapshot rejects a protected path redirected outside the physical workspace', () => {
   const root = productionShapedWorkspace();
   const outside = temporaryRoot('scout-beta22-outside-');
   write(outside, 'context.md', 'outside private content must not be copied\n');
@@ -380,22 +376,18 @@ test('beta.22 snapshot rejects a protected path redirected outside the physical 
       beforeCopy(relative) {
         if (relative !== 'profile') return;
         fs.renameSync(path.join(root, 'profile'), original);
-        fs.symlinkSync(outside, path.join(root, 'profile'), 'dir');
+        fs.symlinkSync(outside, path.join(root, 'profile'), process.platform === 'win32' ? 'junction' : 'dir');
       },
     },
   }), /symbolic links|redirected outside its physical root/);
 });
 
-test('beta.22 snapshot rejects redirected backup storage before writing protected data', (t) => {
-  if (process.platform === 'win32') {
-    t.diagnostic('symbolic-link fixture is not portable to Windows');
-    return;
-  }
+test('beta.22 snapshot rejects redirected backup storage before writing protected data', () => {
   const root = productionShapedWorkspace();
   const outside = temporaryRoot('scout-beta22-storage-outside-');
   const backups = path.join(root, '.scout', 'backups');
   fs.rmSync(backups, { recursive: true, force: true });
-  fs.symlinkSync(outside, backups, 'dir');
+  fs.symlinkSync(outside, backups, process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(
     () => createBeta22WorkspaceSnapshot(root, { now: () => NOW }),
     /snapshot storage is redirected outside the workspace/,

@@ -156,15 +156,17 @@ test('completed implementation plans are not shipped as current documentation', 
   }
 });
 
-test('beta.23 upgrade guidance explains the one-way fenced lease boundary', () => {
+test('upgrade guidance explains that new fencing cannot control older binaries', () => {
   const release = fs.readFileSync(path.join(root, 'docs', 'releases', '0.1.0-beta.23.md'), 'utf8');
   const upgrades = fs.readFileSync(path.join(root, 'docs', 'UPGRADES.md'), 'utf8');
   const troubleshooting = fs.readFileSync(path.join(root, 'docs', 'TROUBLESHOOTING.md'), 'utf8');
 
   for (const [name, content] of Object.entries({ release, upgrades, troubleshooting })) {
     assert.match(content, /old(?:er)? Scout.*(?:stop|stopped)|stop.*old(?:er)? Scout/is, `${name}: stop old Scout`);
-    assert.match(content, /fenced lease.*authoritative|authoritative.*fenced lease/is, `${name}: authoritative lease`);
-    assert.match(content, /downgrade.*coexist|coexist.*downgrade/is, `${name}: downgrade/coexistence refusal`);
+    assert.match(content, /(?:current|new) Scout (?:rejects|refuses).*legacy\s+lock/is, `${name}: current legacy-lock guard`);
+    assert.match(content, /older binaries\s+(?:do not|cannot)|old binary cannot/is, `${name}: older binary cannot honour fencing`);
+    assert.match(content, /disable (?:its|their) schedules/is, `${name}: disable old schedules`);
+    assert.doesNotMatch(content, /refuses a downgrade or old.new coexistence/is, `${name}: no two-way exclusion claim`);
   }
   assert.match(release, /no manual workspace-data conversion is normally needed/i);
 });

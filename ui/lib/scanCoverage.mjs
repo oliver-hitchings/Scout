@@ -95,6 +95,12 @@ function scoreOf(value) {
   return Number.isFinite(score) ? score : null;
 }
 
+// One short line saying why a ranking dimension contributed: the matched rule, or the unknown/freshness/novelty comparison.
+function evidenceNote(evidence) {
+  const rule = evidence?.rule === undefined || evidence?.rule === null ? '' : String(valueOf(evidence.rule));
+  return text([evidence?.matched ? 'matched' : evidence?.comparison, rule].filter(Boolean).join(': '), 120);
+}
+
 function compactContributions(value, positive) {
   const supplied = value?.preRank?.[positive ? 'positive' : 'negative'];
   const values = Array.isArray(supplied)
@@ -102,11 +108,17 @@ function compactContributions(value, positive) {
     : (value?.contributions || []).filter((item) => (
       positive ? Number(item?.score) > 0 : Number(item?.score) < 0
     )).sort((left, right) => Math.abs(Number(right?.score)) - Math.abs(Number(left?.score)));
-  return values.slice(0, 3).map((item) => (
-    typeof item === 'string'
-      ? code(item)
-      : { code: code(item?.code ?? item?.profileRuleId, 'contribution'), score: Number.isFinite(Number(item?.score)) ? Number(item.score) : null }
-  )).filter((item) => typeof item === 'string' ? item : item.code);
+  return values.slice(0, 3).map((item) => {
+    if (typeof item === 'string') return code(item);
+    const dimension = text(item?.dimension ?? item?.name, 40);
+    const evidence = evidenceNote(item?.evidence);
+    return {
+      code: code(item?.code ?? item?.profileRuleId, 'contribution'),
+      score: Number.isFinite(Number(item?.score)) ? Number(item.score) : null,
+      ...(dimension ? { dimension } : {}),
+      ...(evidence ? { evidence } : {}),
+    };
+  }).filter((item) => typeof item === 'string' ? item : item.code);
 }
 
 function dimensionsOf(value) {
@@ -173,6 +185,9 @@ export function buildVacancyExplanations({
   const skipped = new Map((selectionDecision?.assessmentSkipped || []).map((item) => [
     idOf(item), code(item?.lifecycle?.reason, 'unchanged-prior-assessment'),
   ]).filter(([id]) => id));
+  const lifecycleByVacancy = new Map((selectionDecision?.lifecycle || []).map((item) => [
+    idOf(item), { change: code(item?.change, 'unknown'), reason: code(item?.reason, 'unknown') },
+  ]).filter(([id]) => id));
   const exclusionCodes = new Map();
   for (const item of deterministicExclusions || []) {
     const id = idOf(item);
@@ -232,6 +247,8 @@ export function buildVacancyExplanations({
         negative: compactContributions(value, false),
       },
       reason_code: reasonCode,
+      lifecycle: lifecycleByVacancy.get(vacancyId)
+        || (selectionDecision?.lifecycle && !excluded ? { change: 'new', reason: 'new-vacancy' } : null),
       selection_reason: selectionReason,
       deterministic_exclusion: deterministicExclusion,
       deterministic_exclusions: deterministicExclusionsForVacancy,

@@ -1,6 +1,50 @@
-# Codex and Claude Providers
+# AI providers
 
-Scout needs one installed and authenticated provider CLI. Codex and Claude are supported; a second provider is optional and can perform a second-pass review.
+Scout needs one configured provider: Codex, Claude, or a local OpenAI-compatible model server. A second provider is optional and can perform a second-pass review. Local models connect directly over HTTP and need neither provider CLI.
+
+## Local OpenAI-compatible model
+
+In **Settings → AI providers**, choose **Local OpenAI-compatible**, enter your model server's base URL (including `/v1` when required), and its exact model name. Leave the API-key file blank if the server requires no key. Otherwise enter a file path on the Scout host, never the key itself. Relative file paths resolve from the selected workspace; absolute paths are supported. The Scout service account must be able to read the file.
+
+Keep a regular key file outside the workspace with access restricted to the service account, and back it up through your own secret-recovery process. Symlink selectors and non-regular files such as named pipes are rejected. Scout reads its bounded contents only when checking configuration or making a request; it never copies the key into configuration, provider health, run journals or diagnostics. The file's path is private workspace configuration and is visible in the owner's settings. A restore to another computer needs that computer's endpoint and credential-file setup.
+
+For manual configuration, merge this into your private `workspace.json`:
+
+```json
+{
+  "ai": {
+    "provider": "local",
+    "local": {
+      "baseUrl": "http://localhost:8000/v1",
+      "model": "YOUR_MODEL",
+      "apiKeyFile": null,
+      "timeoutMs": 120000,
+      "retries": 1
+    }
+  }
+}
+```
+
+Scout sends non-streaming chat-completion requests to `BASE_URL/chat/completions`. The entire operation has a default 120-second deadline, including retries and response reading. `timeoutMs` accepts 1 ms to 30 minutes; `retries` accepts zero to two and defaults to one. Retries cover bounded transient network failures and HTTP 408/502/503/504 responses. Authentication failures, rate limits, invalid outputs and other HTTP errors are returned without a transient retry. Redirects are refused, preventing credentials or career context from being forwarded to a different endpoint. Use HTTPS for another computer unless a private network protects the transport.
+
+Structured setup, scans and fit assessments first request strict JSON-schema output. An explicit schema/response-format rejection permits one plain-JSON attempt. Both paths parse the complete response without extracting Markdown or partial JSON and validate the same schema in Scout. Invalid or truncated output never becomes a successful assessment. Existing bounded per-job repair/retry rules still apply after adapter failure.
+
+Configuration/key presence is labelled unverified. Startup, periodic scheduled checks and manual/scheduled scan preflight use a fixed structured completion with a maximum 10-second deadline; only a valid response establishes verified health. An unreachable server, rejected key, rate limit and invalid response retain separate failure states. Explicit HTTP 401/403 authentication failures and 429 rate limits remain authoritative even if the server's error body is oversized or stalls. Failures enter Scout's durable notification outbox, deduplicated for the same failure episode; interrupted publication is retried without duplicating the warning. Scout does not choose another provider or model automatically. A small local model can pass a health probe yet still fail a complex assessment; use a model that can reliably follow the assessment schema.
+
+Local chat retains the conversation in the private workspace and sends bounded recent conversation context with each request. It answers questions and produces text drafts; it has no filesystem, tool or CLI session, so it cannot directly edit CV files or offer CLI-session handoff. Structured setup and scans use Scout's existing trusted write path.
+
+Reopening a local conversation keeps its selected provider and saved messages,
+so you can continue without choosing a provider again. If the model server rejects
+authentication, the failed message stays saved with **Resend with Local model**.
+Check the server and API-key file in **Settings → AI providers**, then click the
+resend button when ready. Opening the chat or restoring provider health never
+resends the message automatically. Each saved resend action can run only once.
+
+Run a local scan with `scout scan --provider local --mode primary`. Scheduled jobs accept `"provider": "local"`; a blank scan model uses `ai.local.model`. Exact namespaced model names are supported in the picker, queue, recovery and assessment provenance. Changing the local endpoint or configured model invalidates incompatible queued/recovered scan work.
+
+New scan history retains the exact model name, including its namespace. A model change can then reassess the strongest earlier rejections under Scout's existing per-scan limit; the unchanged model leaves those rejections alone. Older records with missing assessment provenance remain legacy history and are not rewritten.
+
+## Codex and Claude
 
 For Codex, use the current [official Codex CLI installation guide](https://developers.openai.com/codex/cli/) and select the macOS, Linux or Windows instructions for the host. After installation, open Terminal or PowerShell, run `codex`, complete its sign-in flow, and verify `codex login status`. Scout needs that authenticated CLI session; signing in to a desktop app alone does not authenticate the command-line provider.
 

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import {
-  CURRENT_WORKSPACE_SCHEMA, backupWorkspace, defaultWorkspaceRoot, ensureWorkspaceDirectories, mergeWorkspaceDefaults, migrateWorkspace, resolveWorkspaceRoot,
+  CURRENT_WORKSPACE_SCHEMA, DEFAULT_WORKSPACE_CONFIG, backupWorkspace, defaultWorkspaceRoot, ensureWorkspaceDirectories, mergeWorkspaceDefaults, migrateWorkspace, resolveWorkspaceRoot,
   modelForProvider, mutateWorkspaceConfig, mutateWorkspaceConfigAsync, syncManagedInstructions,
   validateWorkspaceConfig, workspacePaths, writeWorkspaceConfig,
 } from './workspace.mjs';
@@ -13,6 +13,15 @@ import { withWorkspaceMutationAuthorityAsync } from './workspaceMutationAuthorit
 const roots = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 function temp() { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-workspace-')); roots.push(root); return root; }
+
+test('generic defaults do not silently choose a country or regional time zone', () => {
+  assert.equal(DEFAULT_WORKSPACE_CONFIG.sources.adzuna.country, null);
+  assert.equal(DEFAULT_WORKSPACE_CONFIG.timezone, 'UTC');
+  assert.equal(DEFAULT_WORKSPACE_CONFIG.locale, 'en');
+  const existing = mergeWorkspaceDefaults({ locale: 'en-NZ', currency: 'NZD', timezone: 'Pacific/Auckland', sources: { adzuna: { country: 'nz' } } });
+  assert.equal(existing.sources.adzuna.country, 'nz');
+  assert.equal(existing.timezone, 'Pacific/Auckland');
+});
 
 test('explicit workspace overrides backwards-compatible app root', () => {
   const appRoot = temp();
@@ -93,14 +102,14 @@ test('async config read-modify-write excludes a concurrent disjoint update', asy
   assert.throws(
     () => mutateWorkspaceConfig(root, {
       kind: 'second-config', phase: 'update-config',
-    }, (current) => ({ ...current, currency: 'USD' })),
+    }, (current) => ({ ...current, currency: 'CAD' })),
     /another workspace mutation is in progress/,
   );
   release();
   await first;
   const saved = JSON.parse(fs.readFileSync(path.join(root, 'workspace.json'), 'utf8'));
   assert.equal(saved.locale, 'en-US');
-  assert.equal(saved.currency, 'GBP');
+  assert.equal(saved.currency, 'USD');
 });
 
 test('search-profile migration backups use a distinct reviewable label', () => {
@@ -146,7 +155,7 @@ test('workspace defaults are merged deeply for older schema-one files', () => {
   assert.equal(merged.profile.tone, 'natural, direct and evidence-led');
   assert.deepEqual(merged.search.locations, []);
   assert.equal(merged.triage.actionScore, 70);
-  assert.equal(merged.sources.adzuna.country, 'gb');
+  assert.equal(merged.sources.adzuna.country, null);
   assert.deepEqual(merged.searchProfile, { publishedId: null, schemaVersion: 1 });
 });
 
@@ -207,4 +216,12 @@ test('syncManagedInstructions migrates .scout/ to track cv-renders.json while ig
   
   const ignoreRenders = spawnSync('git', ['check-ignore', '.scout/cv-renders.json'], { cwd: workspace, encoding: 'utf8', windowsHide: true });
   assert.equal(ignoreRenders.status, 1); // 1 means NOT ignored
+});
+
+test('workspace Adzuna country permits an unchosen source and rejects malformed codes', () => {
+  const config = mergeWorkspaceDefaults();
+  assert.equal(config.sources.adzuna.country, null);
+  assert.doesNotThrow(() => validateWorkspaceConfig(config));
+  config.sources.adzuna.country = '../us';
+  assert.throws(() => validateWorkspaceConfig(config), /Adzuna country/);
 });

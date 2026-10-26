@@ -1,0 +1,12 @@
+[Unit]
+Description=Scout weekday scan timer (%i)
+
+[Timer]
+# Match workspace.json's timezone, time and days. UTC is only this example.
+OnCalendar=Mon..Fri *-*-* 07:30:00 UTC
+Persistent=true
+RandomizedDelaySec=30
+Unit=scout-scan@%i.service
+
+[Install]
+WantedBy=timers.target

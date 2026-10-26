@@ -187,6 +187,7 @@ function makeEmployer(value, now) {
     industries,
     locations,
     userPriority,
+    notes: '',
     decision: defaultDecision(userPriority),
     access: defaultAccess(value?.access),
     health: {
@@ -325,6 +326,7 @@ function validateEmployer(value) {
     throw new TypeError('employer board is invalid');
   }
   if (!PRIORITIES.includes(value.userPriority)) throw new TypeError('employer priority is invalid');
+  if (value.notes !== undefined && (typeof value.notes !== 'string' || value.notes.length > 4000 || value.notes.includes('\0'))) throw new TypeError('employer notes must be text of at most 4,000 characters');
   validateDecision(value.decision, value.userPriority);
   validateAccess(value.access);
   validateHealth(value.health);
@@ -704,6 +706,7 @@ export function updateEmployerRegistryEntry(registry, value, {
       reason: state === 'active' ? null : reason,
       decidedAt: updatedAt,
     },
+    notes: value.notes === undefined ? (current.notes || '') : value.notes,
     access,
     reviewHistory,
     updatedAt,

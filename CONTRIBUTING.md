@@ -28,6 +28,7 @@ Use Node.js 24 LTS on a supported Windows, macOS, or Linux development host.
 ```powershell
 npm install
 npm test
+npm run test:acceptance
 npm run release:audit
 ```
 

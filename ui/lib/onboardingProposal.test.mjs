@@ -2,19 +2,59 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { test } from 'node:test';
 import {
   ONBOARDING_FILES, activateOnboardingProposal, buildOnboardingEvidence, createOnboardingProposal,
   activatedProposalRecovery, discardOnboardingProposal, readOnboardingProposal, recoverActivatedProposal,
   recoverOnboardingActivationAtStartup, validateOnboardingProposal,
 } from './onboardingProposal.mjs';
-import { readProviderHealth } from './providerHealth.mjs';
+import { readProviderHealth, recordProviderHealth, recordProviderResultHealth } from './providerHealth.mjs';
 import { ProviderLifecycleUnclosedError } from './structuredTurn.mjs';
 import {
   acquireProviderAuthMutation, releaseProviderAuthMutation,
 } from './providerAuthMutation.mjs';
 import { acquireScanLease, currentLeaseOwner } from './scanLease.mjs';
 import { DEFAULT_WORKSPACE_CONFIG, writeWorkspaceConfig } from './workspace.mjs';
+import { approveLivingCv, configureLivingCv, livingCvStatus } from './livingCv.mjs';
+
+test('rebuilding a profile after Living CV approval uses the approved version instead of stale imports', (t) => {
+  const workspace = root();
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-cv-reprofile-'));
+  const source = path.join(parent, 'source.md');
+  t.after(() => { fs.rmSync(workspace, { recursive: true, force: true }); fs.rmSync(parent, { recursive: true, force: true }); });
+  fs.mkdirSync(path.join(workspace, 'cv'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, 'cv/master-cv.md'), 'Old CV evidence.');
+  fs.writeFileSync(source, '# Updated confirmed CV\n' + 'Current responsibilities with verified evidence. '.repeat(24));
+  configureLivingCv(workspace, source);
+  approveLivingCv(workspace, { confirmed: true, revision: livingCvStatus(workspace).revision });
+  const result = buildOnboardingEvidence(workspace, DEFAULT_WORKSPACE_CONFIG);
+  assert.ok(result.evidence.some(({ text }) => text.includes('Current responsibilities')));
+  assert.ok(!result.evidence.some(({ text }) => text.includes('Built reliable software systems')));
+});
+
+test('a newer CV approval during profile generation cannot be overwritten by an old-evidence proposal', async (t) => {
+  const workspace = root();
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-reprofile-race-'));
+  t.after(() => { fs.rmSync(workspace, { recursive: true, force: true }); fs.rmSync(parent, { recursive: true, force: true }); });
+  const source = path.join(parent, 'cv.md');
+  fs.mkdirSync(path.join(workspace, 'cv'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, 'cv/master-cv.md'), 'Earlier CV');
+  fs.writeFileSync(source, '# Approved CV\n' + 'Confirmed earlier evidence. '.repeat(30));
+  configureLivingCv(workspace, source);
+  approveLivingCv(workspace, { revision: livingCvStatus(workspace).revision, confirmed: true });
+  const newest = fs.readFileSync(source, 'utf8') + '\nThe newest confirmed fact must survive.\n';
+  await assert.rejects(createOnboardingProposal(workspace, 'codex', {
+    providerStatusFn: () => ({ installed: true, authenticated: true, capabilities: { structuredOutput: true } }),
+    runStructuredTurnFn: async ({ validate }) => {
+      const value = validate(proposal());
+      fs.writeFileSync(source, newest);
+      approveLivingCv(workspace, { revision: livingCvStatus(workspace).revision, confirmed: true });
+      return { ok: true, value, usage: {} };
+    },
+  }), /changed|regenerate/i);
+  assert.equal(fs.readFileSync(path.join(workspace, 'cv/master-cv.md'), 'utf8'), newest);
+});
 
 function root() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-onboarding-'));
@@ -51,6 +91,77 @@ function proposal() {
 const status = () => ({ installed: true, authenticated: true, executable: 'codex', capabilities: { structuredOutput: true } });
 const run = async () => ({ value: proposal(), usage: { input_tokens: 50 } });
 const healthyDoctor = () => ({ checks: { config: { ok: true }, tracker: { ok: true }, providers: { codex: { installed: true, authenticated: true } } } });
+
+test('reviewing and activating a rebuilt profile preserves the configured scan jobs exactly', async (t) => {
+  const dir = root();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const config = JSON.parse(fs.readFileSync(path.join(dir, 'workspace.json'), 'utf8'));
+  const jobs = [
+    { id: 'synthetic-primary', enabled: true, provider: 'codex', mode: 'primary', time: '07:15', days: [1, 3, 5], model: 'synthetic-model' },
+    { id: 'synthetic-verification', enabled: false, provider: 'claude', mode: 'second-pass', time: '08:40', days: [2, 4], model: null },
+  ];
+  config.schedule = { jobs };
+  writeWorkspaceConfig(dir, config);
+  const staged = await createOnboardingProposal(dir, 'codex', { providerStatusFn: status, runStructuredTurnFn: run });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'workspace.json'), 'utf8')).schedule.jobs, jobs, 'proposal generation must leave live schedules alone');
+  activateOnboardingProposal(dir, staged.proposalId, true, { doctorFn: healthyDoctor });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'workspace.json'), 'utf8')).schedule.jobs, jobs, 'profile activation must retain each enabled flag, provider, model, day and time');
+});
+
+test('local setup generates and activates a validated proposal over HTTP without a provider CLI', async (t) => {
+  const dir = root();
+  let calls = 0;
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const request = JSON.parse(raw);
+    assert.equal(request.model, 'synthetic/model-27b');
+    assert.doesNotMatch(request.messages.at(-1).content, /apiKeyFile|baseUrl/);
+    calls += 1;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(proposal()) } }] }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); fs.rmSync(dir, { recursive: true, force: true }); });
+  const config = JSON.parse(fs.readFileSync(path.join(dir, 'workspace.json')));
+  config.ai = { provider: 'local', local: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, model: 'synthetic/model-27b' } };
+  writeWorkspaceConfig(dir, config);
+  const staged = await createOnboardingProposal(dir, 'local');
+  assert.equal(staged.valid, true);
+  assert.equal(readProviderHealth(dir, 'local').state, 'ready');
+  assert.equal(activateOnboardingProposal(dir, staged.proposalId, true, { doctorFn: () => ({ checks: { config: { ok: true }, tracker: { ok: true }, providers: { local: { installed: true, authenticated: true } } } }) }).ok, true);
+  assert.equal(calls, 1, 'approval must consume no additional provider call');
+  assert.match(fs.readFileSync(path.join(dir, 'cv', 'master-cv.md'), 'utf8'), /evidence: config-roles/);
+});
+
+test('onboarding production preflight keeps a known remote auth failure authoritative', async (t) => {
+  const dir = root();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  recordProviderHealth(dir, 'codex', { kind: 'remote-auth-failure', source: 'provider-operation' }, { purpose: 'manual-run' });
+  let calls = 0;
+  await assert.rejects(createOnboardingProposal(dir, 'codex', {
+    providerStatusFn: status,
+    runStructuredTurnFn() { calls += 1; return run(); },
+  }), /sign.in|reconnect/i);
+  assert.equal(calls, 0);
+});
+
+test('onboarding commits real success health while its provider work still excludes login', async (t) => {
+  const dir = root();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let excluded;
+  await createOnboardingProposal(dir, 'codex', {
+    providerStatusFn: status, runStructuredTurnFn: run,
+    async recordProviderResultHealthFn(...args) {
+      const mutation = acquireProviderAuthMutation(dir, 'codex');
+      excluded = mutation === null;
+      if (mutation) releaseProviderAuthMutation(dir, mutation);
+      return recordProviderResultHealth(...args);
+    },
+  });
+  assert.equal(excluded, true);
+  assert.equal(readProviderHealth(dir, 'codex').state, 'ready');
+});
 
 test('onboarding evidence has stable IDs and oversized imports are never truncated', () => {
   const dir = root();
@@ -403,4 +514,23 @@ test('activated master CV recovery refuses workspace drift beyond activation tim
   fs.writeFileSync(workspaceFile, `${JSON.stringify(config, null, 2)}\n`);
   assert.equal(activatedProposalRecovery(dir).available, false);
   assert.throws(() => recoverActivatedProposal(dir, true, { doctorFn: healthyDoctor }), /workspace\.json no longer matches/);
+});
+
+test('generated onboarding instructions use the workspace locale for every proposal', async () => {
+  const dir = root();
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(dir, 'workspace.json'), 'utf8'));
+    config.locale = 'fr-CA';
+    writeWorkspaceConfig(dir, config);
+    let prompt;
+    await createOnboardingProposal(dir, 'codex', {
+      providerStatusFn: status,
+      runStructuredTurnFn: async (options) => {
+        prompt = options.prompt;
+        return run();
+      },
+    });
+    assert.match(prompt, /Create concise profile and CV content using the workspace locale fr-CA/);
+    assert.doesNotMatch(prompt, /UK[- ]English|British English/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

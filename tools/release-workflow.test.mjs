@@ -78,6 +78,27 @@ test('secret-bearing workspace repair rejects every mutable action reference', (
   }
 });
 
+test('every secret-bearing workflow pins all reusable actions to immutable commits', () => {
+  const directory = new URL('../.github/workflows/', import.meta.url);
+  const workflows = fs.readdirSync(directory)
+    .filter((name) => /\.ya?ml$/i.test(name))
+    .map((name) => ({ name, body: fs.readFileSync(new URL(name, directory), 'utf8') }))
+    .filter(({ body }) => /\bsecrets\s*(?:\.|\[)/.test(body));
+  assert.ok(workflows.length > 0, 'no secret-bearing workflows were checked');
+  const mutable = [];
+  for (const { name, body } of workflows) {
+    const references = body.split(/\r?\n/)
+      .map((line) => line.match(/^\s*(?:-\s*)?uses:\s*(.*?)\s*(?:#.*)?$/)?.[1])
+      .filter(Boolean)
+      .map((reference) => reference.replace(/^(['"])(.*)\1$/, '$2'));
+    assert.ok(references.length > 0, `${name} has no reviewed action references`);
+    for (const reference of references) {
+      if (!/@[a-f0-9]{40}$/.test(reference)) mutable.push(`${name}: ${reference}`);
+    }
+  }
+  assert.deepEqual(mutable, [], 'secret-bearing workflows must not use mutable action references');
+});
+
 test('release documentation defines checksum, keyless identity and platform-signing boundaries', () => {
   assert.match(supplyChain, /checksums\.intoto\.jsonl/);
   assert.match(supplyChain, /gh attestation verify/);

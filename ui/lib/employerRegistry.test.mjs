@@ -20,6 +20,17 @@ function discovery(name, overrides = {}) {
   };
 }
 
+test('private employer notes survive monitoring and discovery without changing watch priority', () => {
+  let registry = createEmployerRegistry([discovery('Example Cooperative')], { now: () => AT });
+  const id = registry.employers[0].id;
+  registry = updateEmployerRegistryEntry(registry, { id, userPriority: 'priority', notes: 'Review the role scope before applying.\nAsk about flexible hours.' });
+  assert.equal(registry.employers[0].notes, 'Review the role scope before applying.\nAsk about flexible hours.');
+  registry = reconcileEmployerDiscoveries(registry, [discovery('Example Cooperative')]);
+  assert.match(registry.employers[0].notes, /flexible hours/);
+  assert.equal(selectEmployersForMonitoring(registry)[0].id, id);
+  assert.throws(() => updateEmployerRegistryEntry(registry, { id, notes: 'x'.repeat(4001) }), /notes/);
+});
+
 test('stable canonical identity is domain-neutral and independent of case or spacing', () => {
   assert.equal(canonicalEmployerId(' Example   Health '), canonicalEmployerId('example health'));
   assert.match(canonicalEmployerId('Example Health'), /^employer-[a-f0-9]{16}$/);

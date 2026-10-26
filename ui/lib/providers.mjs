@@ -2,9 +2,11 @@ import { spawn as spawnProcess, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isSafeModelId } from './modelIdentifier.mjs';
+import { localProviderStatus } from './localProvider.mjs';
 import { parseCodexModelCatalogue } from './providerModels.mjs';
 
-export const PROVIDERS = Object.freeze(['codex', 'claude']);
+export const PROVIDERS = Object.freeze(['codex', 'claude', 'local']);
 const PROVIDER_HEALTH_SOURCES = new Set([
   'startup',
   'manual-preflight',
@@ -132,11 +134,13 @@ function windowsHomes(env) {
 }
 
 export function providerCommand(provider, platform = process.platform) {
+  if (provider === 'local') throw new Error('local provider uses HTTP, not a CLI');
   if (!PROVIDERS.includes(provider)) throw new Error(`unsupported AI provider: ${provider}`);
   return platform === 'win32' ? `${provider}.cmd` : provider;
 }
 
 export function providerStatus(provider, {
+  local, root,
   spawn = spawnSync,
   platform = process.platform,
   env = process.env,
@@ -145,6 +149,7 @@ export function providerStatus(provider, {
   runtimePath = process.execPath,
   timeoutMs = 10_000,
 } = {}) {
+  if (provider === 'local') return localProviderStatus({ local, root });
   const providerEnv = providerEnvironment(env, platform, runtimePath);
   const attempts = [];
   let installed = null;
@@ -311,6 +316,7 @@ export function runProviderCommand(command, args, options = {}) {
 }
 
 export async function providerStatusAsync(provider, {
+  local, root,
   run = runProviderCommand,
   platform = process.platform,
   env = process.env,
@@ -319,6 +325,7 @@ export async function providerStatusAsync(provider, {
   runtimePath = process.execPath,
   timeoutMs = 10_000,
 } = {}) {
+  if (provider === 'local') return localProviderStatus({ local, root });
   const providerEnv = providerEnvironment(env, platform, runtimePath);
   const attempts = [];
   let installed = null;
@@ -534,20 +541,29 @@ export function providerHealthSignal({ local = null, remote = null, source = 'pr
 
 export function createProviderDetector({ status = providerStatusAsync, ttlMs = 5_000, now = Date.now } = {}) {
   let cached = null;
+  let cachedKey = null;
   let expiresAt = 0;
   let inFlight = null;
-  return async function detect(options) {
+  return async function detect(options = {}) {
     const current = now();
+    const key = JSON.stringify([options.local || null, options.root || null]);
+    if (key !== cachedKey) {
+      cached = null;
+      inFlight = null;
+      cachedKey = key;
+    }
     if (cached && current < expiresAt) return cached;
     if (inFlight) return inFlight;
-    inFlight = Promise.all(PROVIDERS.map(async (name) => [name, await status(name, options)]))
+    const names = options.local ? PROVIDERS : PROVIDERS.filter((name) => name !== 'local');
+    const pending = Promise.all(names.map(async (name) => [name, await status(name, options)]))
       .then((entries) => {
-        cached = Object.fromEntries(entries);
-        expiresAt = now() + ttlMs;
-        return cached;
+        const value = Object.fromEntries(entries);
+        if (key === cachedKey) { cached = value; expiresAt = now() + ttlMs; }
+        return value;
       })
-      .finally(() => { inFlight = null; });
-    return inFlight;
+      .finally(() => { if (inFlight === pending) inFlight = null; });
+    inFlight = pending;
+    return pending;
   };
 }
 
@@ -555,7 +571,7 @@ export const detectProvidersAsync = createProviderDetector();
 
 export function assertSafeModel(value) {
   if (value == null || value === '') return null;
-  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(value)) throw new Error('invalid model identifier');
+  if (!isSafeModelId(value)) throw new Error('invalid model identifier');
   return value;
 }
 

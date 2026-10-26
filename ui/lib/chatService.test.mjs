@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,7 +11,7 @@ import { parseClaudeLine } from './chatClaude.mjs';
 import { emptyChat, loadChat, saveChat } from './chatStore.mjs';
 import { HANDOFF_SUMMARY_PROMPT } from './chatPrompts.mjs';
 import { interviewPrepPath } from './interviewPrep.mjs';
-import { readProviderHealth } from './providerHealth.mjs';
+import { readProviderHealth, recordProviderHealth, recordProviderResultHealth } from './providerHealth.mjs';
 import { ProviderLifecycleUnclosedError } from './structuredTurn.mjs';
 import { mergeWorkspaceDefaults, writeWorkspaceConfig } from './workspace.mjs';
 import {
@@ -58,6 +59,24 @@ function tmpRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'scout-chat-service-'));
 }
 
+test('pending CV approval blocks ordinary chat and fit assessment before any provider call', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'cv'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'cv/living-cv-approval.json'), '{}');
+  let calls = 0;
+  const routes = routeFixture(root, {
+    runTurnFn() { calls++; return { stop() {}, finished: Promise.resolve({ ok: true, text: 'Synthetic', filesTouched: [] }) }; },
+    runStructuredTurnFn() { calls++; return Promise.resolve({ ok: true, value: {} }); },
+  });
+  for (const mode of [undefined, 'fit-assessment']) {
+    const response = await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', mode, text: 'Review this role using the CV.' }));
+    assert.equal(response.statusCode, 409);
+    assert.match(response.text(), /CV.*recover|recover.*CV/i);
+  }
+  assert.equal(calls, 0);
+});
+
 function routeFixture(root, overrides = {}) {
   const routes = {};
   registerChatRoutes({
@@ -73,6 +92,265 @@ function routeFixture(root, overrides = {}) {
   });
   return routes;
 }
+
+test('real provider preflight blocks chat and fit after remote sign-out despite local credentials', async (t) => {
+  for (const mode of [null, 'fit-assessment']) {
+    const root = tmpRoot();
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    recordProviderHealth(root, 'codex', {
+      kind: 'remote-auth-failure', source: 'provider-operation',
+    }, { purpose: 'manual-run' });
+    let calls = 0;
+    const routes = routeFixture(root, {
+      runTurnFn() { calls += 1; return { stop() {}, finished: Promise.resolve({ ok: true, text: 'Unexpected' }) }; },
+      runStructuredTurnFn() { calls += 1; return Promise.resolve({ value: { summary: 'Unexpected', strengths: [], evidenceGaps: [], mandatoryGaps: [], recommendation: 'check' } }); },
+    });
+    const response = await callRoute(routes['POST /api/chat/send'], JSON.stringify({
+      id: ID, engine: 'codex', text: 'Check this role', mode,
+    }));
+    assert.equal(calls, 0, mode || 'chat');
+    assert.match(response.text(), /sign.in|required|reconnect/i);
+  }
+});
+
+test('chat result health is committed before real provider work exclusion is released', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let authWasExcluded;
+  const routes = routeFixture(root, {
+    runTurnFn: () => ({ stop() {}, finished: Promise.resolve({ ok: false, reasonCode: 'authentication-required' }) }),
+    async recordProviderResultHealthFn(...args) {
+      const mutation = acquireProviderAuthMutation(root, 'codex');
+      authWasExcluded = mutation === null;
+      if (mutation) releaseProviderAuthMutation(root, mutation);
+      return recordProviderResultHealth(...args);
+    },
+  });
+  await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', text: 'Review this role' }));
+  assert.equal(authWasExcluded, true);
+  assert.equal(readProviderHealth(root, 'codex').remoteAuthBarrier, true);
+});
+
+test('a real transcript filesystem failure never prints its private path', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const messages = [];
+  const originalError = console.error;
+  console.error = (...values) => messages.push(values.join(' '));
+  t.after(() => { console.error = originalError; });
+  const routes = routeFixture(root, {
+    runTurnFn() {
+      fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'data', 'chats'), 'blocked-directory');
+      return { stop() {}, finished: Promise.resolve({ ok: true, text: 'Completed', filesTouched: [] }) };
+    },
+  });
+  const response = await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', text: 'Review this role' }));
+  assert.match(response.text(), /done/);
+  assert.equal(messages.length, 1);
+  assert.doesNotMatch(messages.join('\n'), new RegExp(root));
+  assert.doesNotMatch(messages.join('\n'), /ENOTDIR|EEXIST|mkdir/);
+});
+
+test('a saved failed chat can be explicitly resent once without duplicating its user message', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let calls = 0;
+  const routes = routeFixture(root, {
+    runTurnFn() {
+      calls += 1;
+      return { stop() {}, finished: Promise.resolve(calls === 1
+        ? { ok: false, reasonCode: 'authentication-required', filesTouched: [] }
+        : { ok: true, text: 'Resent after reconnecting.', filesTouched: [] }) };
+    },
+  });
+  await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', text: 'Retain this request.' }));
+  const saved = loadChat(root, ID);
+  assert.ok(saved.retry?.id, 'failed request must survive closing the chat');
+  assert.equal(calls, 1, 'failure never automatically resends');
+  recordProviderHealth(root, 'codex', { kind: 'remote-success', source: 'post-auth' }, { purpose: 'post-auth' });
+  const request = JSON.stringify({ id: ID, retryId: saved.retry.id });
+  const response = await callRoute(routes['POST /api/chat/send'], request);
+  assert.equal(sseEvents(response.text()).at(-1).event, 'done');
+  assert.equal(calls, 2);
+  const retried = loadChat(root, ID);
+  assert.equal(retried.messages.filter(({ role }) => role === 'user').length, 1);
+  assert.equal(retried.messages.at(-1).text, 'Resent after reconnecting.');
+  assert.equal(retried.retry, undefined);
+  const replayed = await callRoute(routes['POST /api/chat/send'], request);
+  assert.equal(replayed.statusCode, 409);
+  assert.equal(calls, 2);
+});
+
+test('resend consumes its durable token before provider work even if the completion cannot be saved', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const rename = fs.renameSync;
+  t.after(() => { fs.renameSync = rename; });
+  let calls = 0;
+  const routes = routeFixture(root, { runTurnFn() {
+    calls += 1;
+    if (calls === 2) fs.renameSync = (from, to) => {
+      if (String(to).endsWith(`${path.sep}data${path.sep}chats${path.sep}${ID}.json`)) throw new Error('Synthetic transcript replacement failure');
+      return rename(from, to);
+    };
+    return { stop() {}, finished: Promise.resolve(calls === 1
+      ? { ok: false, reasonCode: 'authentication-required', filesTouched: [] }
+      : { ok: true, text: 'Completed synthetic turn', filesTouched: [] }) };
+  } });
+  await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', text: 'Synthetic request' }));
+  const retryId = loadChat(root, ID).retry.id;
+  recordProviderHealth(root, 'codex', { kind: 'remote-success', source: 'post-auth' }, { purpose: 'post-auth' });
+  await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, retryId }));
+  await new Promise(setImmediate);
+  fs.renameSync = rename;
+  const replay = await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, retryId }));
+  assert.equal(replay.statusCode, 409);
+  assert.equal(calls, 2);
+  assert.equal(loadChat(root, ID).retry, undefined);
+});
+
+test('a resend fails closed before execution when its durable reservation cannot be saved', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const rename = fs.renameSync;
+  t.after(() => { fs.renameSync = rename; });
+  let calls = 0;
+  const routes = routeFixture(root, { runTurnFn() {
+    calls += 1;
+    return { stop() {}, finished: Promise.resolve(calls === 1
+      ? { ok: false, reasonCode: 'authentication-required', filesTouched: [] }
+      : { ok: true, text: 'Synthetic completion', filesTouched: [] }) };
+  } });
+  await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', text: 'Synthetic request' }));
+  const retryId = loadChat(root, ID).retry.id;
+  recordProviderHealth(root, 'codex', { kind: 'remote-success', source: 'post-auth' }, { purpose: 'post-auth' });
+  fs.renameSync = (from, to) => {
+    if (String(to).endsWith(`${path.sep}data${path.sep}chats${path.sep}${ID}.json`)) throw new Error('Synthetic transcript replacement failure');
+    return rename(from, to);
+  };
+  const blocked = await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, retryId }));
+  fs.renameSync = rename;
+  assert.equal(calls, 1);
+  assert.equal(sseEvents(blocked.text()).at(-1).event, 'error');
+  assert.equal(loadChat(root, ID).retry.id, retryId);
+  await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, retryId }));
+  assert.equal(calls, 2);
+});
+
+test('fit resend cannot replay after provider success followed by transcript failure', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const rename = fs.renameSync;
+  t.after(() => { fs.renameSync = rename; });
+  let calls = 0;
+  const routes = routeFixture(root, { runStructuredTurnFn() {
+    calls += 1;
+    if (calls === 1) return Promise.reject(Object.assign(new Error('Synthetic auth failure'), { reasonCode: 'authentication-required' }));
+    fs.renameSync = (from, to) => {
+      if (String(to).endsWith(`${path.sep}data${path.sep}chats${path.sep}${ID}.json`)) throw new Error('Synthetic transcript replacement failure');
+      return rename(from, to);
+    };
+    return Promise.resolve({ value: { summary: 'Synthetic assessment', strengths: [], evidenceGaps: [], mandatoryGaps: [], recommendation: 'check' } });
+  } });
+  await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', mode: 'fit-assessment', text: 'Synthetic request' }));
+  await new Promise(setImmediate);
+  const retryId = loadChat(root, ID).retry.id;
+  recordProviderHealth(root, 'codex', { kind: 'remote-success', source: 'post-auth' }, { purpose: 'post-auth' });
+  await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, retryId }));
+  await new Promise(setImmediate);
+  fs.renameSync = rename;
+  const replay = await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, retryId }));
+  assert.equal(replay.statusCode, 409);
+  assert.equal(calls, 2);
+});
+
+test('two chat requests cannot both cross asynchronous preflight for the same opportunity', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let calls = 0;
+  const routes = routeFixture(root, {
+    runTurnFn() { calls += 1; return { stop() {}, finished: Promise.resolve({ ok: true, text: 'One result.', filesTouched: [] }) }; },
+  });
+  const body = JSON.stringify({ id: ID, engine: 'codex', text: 'Send once.' });
+  const first = new MockResponse();
+  const second = new MockResponse();
+  routes['POST /api/chat/send'](new EventEmitter(), first, body);
+  routes['POST /api/chat/send'](new EventEmitter(), second, body);
+  await Promise.all([first.finished, second.finished]);
+  assert.equal(second.statusCode, 409);
+  assert.equal(calls, 1);
+});
+
+test('a local sign-out records real health and a durable failed message before reconnecting', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const routes = routeFixture(root, {
+    providerStatusFn: () => ({ installed: true, authenticated: false, capabilities: { structuredOutput: true } }),
+    runTurnFn() { assert.fail('a signed-out provider must not run'); },
+  });
+  await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', text: 'Save this before reconnecting.' }));
+  assert.equal(readProviderHealth(root, 'codex').state, 'sign-in-required');
+  const saved = loadChat(root, ID);
+  assert.equal(saved.messages[0].text, 'Save this before reconnecting.');
+  assert.ok(saved.retry.id);
+});
+
+test('Stop during real handoff preflight prevents both provider turns', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const chat = emptyChat('codex');
+  chat.cliSessionId = 'synthetic-handoff-session';
+  saveChat(root, ID, chat);
+  let calls = 0;
+  const routes = routeFixture(root, {
+    runTurnFn() { calls += 1; return { stop() {}, finished: Promise.resolve({ ok: true, text: 'Summary', sessionId: 'synthetic-next', filesTouched: [] }) }; },
+  });
+  const response = new MockResponse();
+  routes['POST /api/chat/handoff'](new EventEmitter(), response, JSON.stringify({ id: ID }));
+  const stop = await callRoute(routes['POST /api/chat/stop'], JSON.stringify({ id: ID }));
+  await response.finished;
+  assert.equal(JSON.parse(stop.text()).stopped, true);
+  assert.equal(calls, 0);
+});
+
+test('a handoff reserves chat admission before asynchronous preflight', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const chat = emptyChat('codex');
+  chat.cliSessionId = 'synthetic-handoff-session';
+  saveChat(root, ID, chat);
+  const routes = routeFixture(root, {
+    runTurnFn: () => ({ stop() {}, finished: Promise.resolve({ ok: true, text: 'Summary', sessionId: 'synthetic-next', filesTouched: [] }) }),
+  });
+  const response = new MockResponse();
+  routes['POST /api/chat/handoff'](new EventEmitter(), response, JSON.stringify({ id: ID }));
+  const competing = await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', text: 'Concurrent request' }));
+  await response.finished;
+  assert.equal(competing.statusCode, 409);
+});
+
+test('changing provider by handoff invalidates a stale saved resend action', async (t) => {
+  const root = tmpRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let calls = 0;
+  const routes = routeFixture(root, {
+    runTurnFn() {
+      calls += 1;
+      return { stop() {}, finished: Promise.resolve(calls === 1
+        ? { ok: false, reasonCode: 'authentication-required', sessionId: 'synthetic-old', filesTouched: [] }
+        : { ok: true, text: 'Summary or new session.', sessionId: 'synthetic-next', filesTouched: [] }) };
+    },
+  });
+  await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'codex', text: 'Keep this request.' }));
+  const retryId = loadChat(root, ID).retry.id;
+  recordProviderHealth(root, 'codex', { kind: 'remote-success', source: 'post-auth' }, { purpose: 'post-auth' });
+  await callRoute(routes['POST /api/chat/handoff'], JSON.stringify({ id: ID }));
+  assert.equal(loadChat(root, ID).retry, undefined);
+  const replay = await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, retryId }));
+  assert.equal(replay.statusCode, 409);
+  assert.equal(calls, 3);
+});
 
 async function callRoute(handler, body, { closeRequest = false } = {}) {
   const req = new EventEmitter();
@@ -98,6 +376,30 @@ function fakeBuild(calls, engine) {
     return { command: 'node', args: [FAKE] };
   };
 }
+
+test('local chat answers over HTTP, retains conversation context and never starts a CLI', async (t) => {
+  const root = tmpRoot();
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    requests.push(JSON.parse(raw));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content: 'Synthetic local answer.' }, finish_reason: 'stop' }] }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); });
+  writeWorkspaceConfig(root, mergeWorkspaceDefaults({ ai: { provider: 'local', local: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, model: 'synthetic/model-27b' } } }));
+  const routes = routeFixture(root, { providerStatusFn: undefined, runTurnFn: () => assert.fail('local chat must not run a CLI') });
+  for (const text of ['First synthetic question.', 'Follow-up synthetic question.']) {
+    const response = await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'local', text }));
+    assert.ok(sseEvents(response.text()).some((event) => event.event === 'done' && event.data.text === 'Synthetic local answer.'), response.text());
+  }
+  assert.equal(requests.length, 2);
+  assert.ok(requests[1].messages.some((message) => message.role === 'assistant' && message.content === 'Synthetic local answer.'));
+  assert.equal(loadChat(root, ID).cliSessionId, null);
+  assert.equal(readProviderHealth(root, 'local').state, 'ready');
+});
 
 test('chat prefills honour per-CV option query parameters', async () => {
   const root = tmpRoot();
@@ -648,6 +950,7 @@ test('tracker read failures do not expose private diagnostic details at the API 
 
 test('a CV writing turn triggers installed-app quality validation when evidence exists', { concurrency: false }, async () => {
   const root = tmpRoot();
+  writeWorkspaceConfig(root, mergeWorkspaceDefaults({ locale: 'en-NZ' }));
   const app = path.join(root, 'applications', 'acme-role-2026-07');
   fs.mkdirSync(app, { recursive: true });
   fs.writeFileSync(path.join(app, 'cv.typ'), '#show: cv.with(name: "Example")\n');
@@ -660,7 +963,7 @@ test('a CV writing turn triggers installed-app quality validation when evidence 
       runCvQualityFn: (repoRoot, slug, options) => qualityCalls.push({ repoRoot, slug, options }),
     });
     await callRoute(routes['POST /api/chat/send'], JSON.stringify({ id: ID, engine: 'claude', text: 'hello' }));
-    assert.deepEqual(qualityCalls, [{ repoRoot: root, slug: 'acme-role-2026-07', options: { locale: 'en-GB' } }]);
+    assert.deepEqual(qualityCalls, [{ repoRoot: root, slug: 'acme-role-2026-07', options: { locale: 'en-NZ' } }]);
     const saved = loadChat(root, ID);
     assert.ok(saved.filesTouched.includes('applications/acme-role-2026-07/cv-quality.json'));
     assert.ok(saved.filesTouched.includes('applications/acme-role-2026-07/cv.pdf'));
@@ -745,6 +1048,7 @@ test('ordinary chat records remote-auth failure without resending and preserves 
     filesTouched: [],
     usage: {},
   };
+  recordProviderHealth(root, 'codex', { kind: 'remote-success', source: 'post-auth' }, { purpose: 'post-auth' });
   const retried = await callRoute(
     routes['POST /api/chat/send'],
     JSON.stringify({ id: ID, engine: 'codex', text: 'I confirm this retry.' }),
@@ -823,16 +1127,19 @@ test('runtime shutdown stops and awaits active SSE provider turns', async () => 
   await shutdownActiveChatTurns({ timeoutMs: 500 });
   await res.finished;
   assert.equal(stopped, true);
-  assert.equal(sseEvents(res.text()).at(-1).data.reasonCode, undefined);
+  assert.equal(sseEvents(res.text()).at(-1).data.reasonCode, 'stopped');
 });
 
 test('a settled late chat result is not resent or allowed to overwrite login-in-progress health', async () => {
   const root = tmpRoot();
   let resolveTurn;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
   let invocations = 0;
   const routes = routeFixture(root, {
     runTurnFn: () => {
       invocations += 1;
+      markStarted();
       return {
         stop() {},
         finished: new Promise((resolve) => { resolveTurn = resolve; }),
@@ -846,6 +1153,7 @@ test('a settled late chat result is not resent or allowed to overwrite login-in-
     res,
     JSON.stringify({ id: ID, engine: 'codex', text: 'Finish exactly once.' }),
   );
+  await started;
   const mutationWhileRunning = acquireProviderAuthMutation(root, 'codex', {
     owner: { host: 'synthetic-host', pid: 43, processStart: 'synthetic-start-2' },
     mutationId: 'chat-auth-mutation-0002',
@@ -1119,7 +1427,7 @@ test('the engine picker uses bounded injected catalogues and returns effective d
   );
   await response.finished;
   const body = JSON.parse(response.text());
-  assert.deepEqual(Object.keys(body.engines).sort(), ['claude', 'codex']);
+  assert.deepEqual(Object.keys(body.engines).sort(), ['claude', 'codex', 'local']);
   for (const engine of ['claude', 'codex']) {
     assert.ok(Array.isArray(body.engines[engine].models));
     assert.ok('usage' in body.engines[engine]);

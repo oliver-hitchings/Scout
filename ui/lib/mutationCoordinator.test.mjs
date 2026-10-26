@@ -1019,6 +1019,17 @@ test('tracker recipes preserve bounded durable scan identity and ranking lineage
   assert.doesNotMatch(JSON.stringify(recipe), /must not persist|access_token/);
 });
 
+test('run-log assessment versions retain namespaced models while other identifiers stay strict', () => {
+  const version = { promptVersion: 'assessment-v1', assessmentSchemaVersion: 1, provider: 'local', model: 'synthetic/nested/model-27b:Q4_K_M' };
+  assert.deepEqual(runLogAppendRecipe({ assessment_version: version }).record.assessment_version, version);
+  for (const model of ['../model', '/private/model', 'synthetic/../model', 'synthetic//model', 'model with spaces', 'm'.repeat(129)]) {
+    assert.equal(runLogAppendRecipe({ assessment_version: { ...version, model } }).record.assessment_version, undefined);
+  }
+  for (const field of ['promptVersion', 'provider']) {
+    assert.equal(runLogAppendRecipe({ assessment_version: { ...version, [field]: 'synthetic/value' } }).record.assessment_version, undefined);
+  }
+});
+
 test('run-log recipes preserve URL vacancy IDs and full supported provider references', () => {
   const providerId = 'a'.repeat(129);
   const vacancyId = 'https://jobs.example.test/opening/42?tracking=private';
@@ -1043,4 +1054,45 @@ test('run-log recipes preserve URL vacancy IDs and full supported provider refer
   assert.equal(recipe.record.reviewed[0].vacancyId, 'https://jobs.example.test/opening/42');
   assert.equal(recipe.record.explanations[0].sourceReferences[0].providerId, providerId);
   assert.equal(recipe.record.reviewed[0].sourceReferences[0].providerId, providerId);
+});
+
+test('run-log recipes keep each rank contribution score, dimension and evidence note and drop anything unsafe', () => {
+  const recipe = runLogAppendRecipe({
+    timestamp: '2026-07-31T09:00:00.000Z',
+    explanations: [{
+      vacancy_id: 'vacancy-why',
+      company: 'Safe Company',
+      role: 'Safe Role',
+      pre_rank: {
+        score: 82,
+        positive: [{
+          code: 'target-primary-titles-abc123', score: 1, dimension: 'title', evidence: 'matched: Data Analyst',
+          raw: 'private payload',
+        }],
+        negative: [{ code: 'policy-location-unknown', score: -0.25, dimension: 'bad dimension!', evidence: 'x '.repeat(40) }],
+      },
+    }],
+  });
+  assert.deepEqual(recipe.record.explanations[0].pre_rank.positive, [{
+    code: 'target-primary-titles-abc123', score: 1, dimension: 'title', evidence: 'matched: Data Analyst',
+  }]);
+  assert.deepEqual(recipe.record.explanations[0].pre_rank.negative, [{ code: 'policy-location-unknown', score: -0.25 }]);
+  assert.doesNotMatch(JSON.stringify(recipe), /private payload/);
+});
+
+test('run-log recipes keep the lifecycle change and reason as safe codes', () => {
+  const recipe = runLogAppendRecipe({
+    timestamp: '2026-07-31T09:00:00.000Z',
+    explanations: [
+      { vacancy_id: 'vacancy-a', company: 'Safe Company', role: 'Safe Role', lifecycle: { change: 'material', reason: 'material_change', raw: 'private payload' } },
+      { vacancy_id: 'vacancy-b', company: 'Safe Company', role: 'Safe Role', lifecycle: { change: 'C:\private path', reason: 'unchanged-rejection' } },
+      { vacancy_id: 'vacancy-c', company: 'Safe Company', role: 'Safe Role' },
+    ],
+  });
+  assert.deepEqual(recipe.record.explanations.map((item) => item.lifecycle), [
+    { change: 'material', reason: 'material-change' },
+    { change: 'unknown', reason: 'unchanged-rejection' },
+    null,
+  ]);
+  assert.doesNotMatch(JSON.stringify(recipe), /private payload|C:\\private/);
 });

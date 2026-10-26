@@ -1,3 +1,4 @@
+import { isSafeModelId } from './modelIdentifier.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -159,7 +160,10 @@ function checkedOperation(operation) {
   const result = { kind: requireToken(operation.kind, 'scan lease operation kind'), runId: operation.runId };
   for (const key of ['provider', 'model', 'mode', 'phase']) {
     if (operation[key] !== undefined && operation[key] !== null) {
-      result[key] = requireToken(operation[key], `scan lease operation ${key}`);
+      if (key === 'model') {
+        if (!isSafeModelId(operation[key])) throw new TypeError('scan lease operation model is invalid');
+        result[key] = operation[key];
+      } else result[key] = requireToken(operation[key], `scan lease operation ${key}`);
     }
   }
   return result;

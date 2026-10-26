@@ -67,7 +67,8 @@ jobs:
           if (-not (Test-Path "$installed\Scout.exe")) { throw 'Scout host missing' }
           $u = Start-Process "$installed\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
           if ($u.ExitCode -or -not (Test-Path "$workspace\workspace.json")) { throw 'Uninstall smoke failed' }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - if: ${{ !contains(github.ref_name, '-rc') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows
           path: installer/output/*.exe
@@ -127,7 +128,8 @@ jobs:
           test -f "$workspace/logs/ui-stdout.log"
           hdiutil detach "$mount"
           test -f "$workspace/workspace.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - if: ${{ !contains(github.ref_name, '-rc') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-${{ matrix.os }}
           path: installer/output/*.dmg
@@ -153,7 +155,8 @@ jobs:
           /opt/scout/runtime/node /opt/scout/app/tools/typst-runtime.mjs verify --compile
           sudo apt-get remove -y scout; test -f "$workspace/workspace.json"
           tar -tzf installer/output/*.tar.gz | grep -q scout-dashboard
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - if: ${{ !contains(github.ref_name, '-rc') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux
           path: |
@@ -161,7 +164,7 @@ jobs:
             installer/output/*.tar.gz
 
   deploy-vps:
-    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.deploy_vps)
+    if: (startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-rc')) || (github.event_name == 'workflow_dispatch' && inputs.deploy_vps)
     needs: [windows, macos, linux]
     runs-on: ubuntu-22.04
     environment: beta-vps
@@ -229,9 +232,10 @@ jobs:
           fi
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-rc')
     needs: [windows, macos, linux, deploy-vps]
     runs-on: ubuntu-22.04
+    environment: release-signing
     permissions:
       contents: write
       id-token: write
@@ -242,6 +246,20 @@ jobs:
         with: { path: release-assets, merge-multiple: true }
       - name: Create combined checksums
         run: cd release-assets && sha256sum Scout-* > checksums.txt
+      - name: Sign and verify the release manifest with the enrolled owner key
+        env:
+          SCOUT_RELEASE_SIGNING_KEY: ${{ secrets.SCOUT_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          key_file=$(mktemp)
+          trap 'rm -f "$key_file"' EXIT
+          export SCOUT_SIGNING_KEY_FILE="$key_file"
+          node --input-type=module -e 'import fs from "node:fs"; if (!process.env.SCOUT_RELEASE_SIGNING_KEY) process.exit(1); fs.writeFileSync(process.env.SCOUT_SIGNING_KEY_FILE, process.env.SCOUT_RELEASE_SIGNING_KEY, { mode: 0o600 });'
+          version=${GITHUB_REF_NAME#v}
+          node tools/release-signing.mjs sign --directory release-assets --version "$version" --key-file "$key_file"
+          for package in release-assets/Scout-*; do
+            node tools/release-signing.mjs verify --package "$package" --manifest release-assets/release-manifest.json --signature release-assets/release-manifest.sig --version "$version"
+          done
       - name: Attest every release package from the checksum manifest
         id: attest
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4

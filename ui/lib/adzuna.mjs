@@ -4,14 +4,26 @@ const ADZUNA_ORIGIN = 'https://api.adzuna.com/v1/api/jobs';
 
 export const DEFAULT_ADZUNA_QUERIES = [];
 
+// Adzuna returns salary amounts in the queried market's currency. The
+// workspace currency is a preference, never evidence about a source amount.
+const COUNTRY_CURRENCIES = Object.freeze({
+  at: 'EUR', au: 'AUD', be: 'EUR', br: 'BRL', ca: 'CAD', ch: 'CHF',
+  de: 'EUR', es: 'EUR', fr: 'EUR', gb: 'GBP', in: 'INR', it: 'EUR',
+  mx: 'MXN', nl: 'EUR', nz: 'NZD', pl: 'PLN', sg: 'SGD', us: 'USD', za: 'ZAR',
+});
+
+export function adzunaCountryCurrency(country) {
+  return COUNTRY_CURRENCIES[country] || null;
+}
+
 export const DEFAULT_ADZUNA_OPTIONS = Object.freeze({
-  country: 'gb',
+  country: null,
   where: '',
   distanceKm: null,
   salaryMin: null,
   resultsPerPage: 50,
-  locale: 'en-GB',
-  currency: 'GBP',
+  locale: 'en',
+  currency: null,
 });
 
 export function resolveAdzunaCredentials(env) {
@@ -37,10 +49,11 @@ export function adzunaUrl(query, options) {
 }
 
 function salaryText(min, max, options) {
-  const formatter = new Intl.NumberFormat(options.locale || 'en-GB', {
-    style: 'currency', currency: options.currency || 'GBP', maximumFractionDigits: 0,
+  const formatter = new Intl.NumberFormat(options.locale || 'en', {
+    ...(options.currency ? { style: 'currency', currency: options.currency } : {}),
+    maximumFractionDigits: 0,
   });
-  const fmt = (n) => formatter.format(Math.round(n));
+  const fmt = (n) => `${formatter.format(Math.round(n))}${options.currency ? '' : ' (currency unknown)'}`;
   if (min && max && min !== max) return `${fmt(min)}-${fmt(max)}`;
   if (min) return `${fmt(min)}+`;
   if (max) return `up to ${fmt(max)}`;
@@ -59,6 +72,7 @@ function normalise(item, options) {
     salaryMin: item.salary_min ?? null,
     salaryMax: item.salary_max ?? null,
     salaryCurrency: options.currency || null,
+    salaryCurrencyProvenance: options.currency ? 'queried-country' : 'unknown',
     salaryPeriod: 'year',
     salaryRateType: 'salary',
     location: item.location?.display_name || '',
@@ -71,9 +85,14 @@ function normalise(item, options) {
 
 export async function fetchAdzuna(options, fetchImpl = globalThis.fetch) {
   const values = { ...DEFAULT_ADZUNA_OPTIONS, ...options };
+  const currency = adzunaCountryCurrency(values.country);
+  // There is no implicit FX conversion at the source-query boundary.
+  if (!currency || values.currency !== currency) values.salaryMin = null;
+  values.currency = currency;
   const { appId, apiKey, queries = DEFAULT_ADZUNA_QUERIES } = values;
   if (!appId || !apiKey) return withSourceStatus({ jobs: [], sources: {}, errors: [], available: false }, { unavailableReason: 'Adzuna credentials are not configured' });
   if (!queries.length) return withSourceStatus({ jobs: [], sources: {}, errors: [], available: false, note: 'no Adzuna queries configured' });
+  if (!values.country) return withSourceStatus({ jobs: [], sources: {}, errors: [], available: false }, { unavailableReason: 'Choose an Adzuna search country in Settings before using this source' });
 
   const jobs = [];
   const sources = {};

@@ -156,6 +156,7 @@ function version(value) {
     changes: value.changes.map(learningChange),
     undoOf: value.undoOf === null || value.undoOf === undefined
       ? null : requiredText(value.undoOf, 'undone learning version ID', 80),
+    ...(value.resetOf !== undefined ? { resetOf: requiredText(value.resetOf, 'reset learning version ID', 80) } : {}),
   };
 }
 
@@ -197,7 +198,7 @@ export function validateLearningLedger(value) {
     if (item.parentId !== expectedParent) throw new TypeError('learning version ancestry is invalid');
   }
   if (rootVersions.length !== 1 || rootVersions[0].id !== 'learning-baseline'
-    || rootVersions[0].version !== 0 || rootVersions[0].changes.length !== 0) {
+    || rootVersions[0].version !== 0 || rootVersions[0].changes.length !== 0 || rootVersions[0].resetOf !== undefined) {
     throw new TypeError('learning baseline version is invalid');
   }
   const active = result.versions.at(-1);
@@ -234,6 +235,10 @@ export function validateLearningLedger(value) {
     }
     if (index === 0) continue;
     const parent = result.versions[index - 1];
+    if (item.resetOf !== undefined) {
+      if (item.resetOf !== parent.id || item.undoOf !== null || item.sourceProposalIds.length || item.changes.length) throw new TypeError('learning reset provenance is inconsistent');
+      continue;
+    }
     if (item.undoOf !== null) {
       const undoTarget = result.versions[index - 2];
       if (item.undoOf !== parent.id || item.sourceProposalIds.length !== 0 || !undoTarget
@@ -421,6 +426,23 @@ export function undoLearningVersion(ledger, value, {
     activeVersionId: next.id,
     versions: [...current.versions, next],
   });
+}
+
+export function resetLearning(ledger, value, { now = () => new Date().toISOString() } = {}) {
+  const current = validateLearningLedger(ledger);
+  if (value?.confirmed !== true) throw new TypeError('explicit confirmation is required');
+  if (value.versionId !== current.activeVersionId) throw new TypeError('only the active learning version can be reset');
+  if (current.versions.length >= MAX_VERSIONS) throw new TypeError('learning version history is full');
+  const publishedAt = now();
+  const next = version({
+    id: stableId('learning', { resetOf: current.activeVersionId, publishedAt }),
+    parentId: current.activeVersionId,
+    version: current.versions.length,
+    publishedAt,
+    explanation: requiredText(value.explanation, 'learning reset explanation', 1000),
+    sourceProposalIds: [], changes: [], undoOf: null, resetOf: current.activeVersionId,
+  });
+  return validateLearningLedger({ ...current, generation: current.generation + 1, updatedAt: publishedAt, activeVersionId: next.id, versions: [...current.versions, next] });
 }
 
 export function activeLearningPolicy(ledger) {

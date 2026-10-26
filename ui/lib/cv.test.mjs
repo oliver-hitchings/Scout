@@ -83,6 +83,40 @@ test('master Markdown becomes safe Typst without evidence comments', () => {
   assert.doesNotMatch(typst, /private-reference/);
 });
 
+test('cover-letter drafts render through Typst, stay editable and become stale after an edit', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-letter-'));
+  try {
+    const folder = path.join(root, 'applications', 'example-role');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'outreach.md'), '# Cover letter\n\nA truthful draft with # symbols.');
+    const result = await renderCvTarget(root, { target: 'cover-letter', slug: 'example-role' }, {
+      runtimeResolver: () => ({ available: true, command: 'typst' }), spawnImpl: successfulSpawn(root),
+    });
+    assert.equal(result.ok, true);
+    assert.match(fs.readFileSync(path.join(folder, 'outreach.typ'), 'utf8'), /DRAFT/);
+    assert.match(fs.readFileSync(path.join(folder, 'outreach.typ'), 'utf8'), /#text\("A truthful draft with # symbols\."\)/);
+    assert.match(cvPdfPath(root, { target: 'cover-letter', slug: 'example-role' }), /outreach\.pdf$/);
+    assert.equal(listCvFiles(root).letters[0].pdfCurrent, true);
+    fs.appendFileSync(path.join(folder, 'outreach.md'), '\nReviewed edit.');
+    assert.equal(cvRenderState(root, { target: 'cover-letter', slug: 'example-role' }).stale, true);
+    assert.throws(() => cvPdfPath(root, { target: 'cover-letter', slug: 'example-role' }), /stale/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('cover-letter rendering cannot write through a linked application folder into a sibling workspace', { skip: process.platform === 'win32' }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-linked-letter-'));
+  const sibling = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-sibling-letter-'));
+  try {
+    fs.mkdirSync(path.join(root, 'applications'));
+    fs.writeFileSync(path.join(sibling, 'outreach.md'), '# Private sibling draft\nKeep this unchanged.');
+    fs.writeFileSync(path.join(sibling, 'outreach.typ'), 'Existing sibling source');
+    fs.symlinkSync(sibling, path.join(root, 'applications', 'linked-role'), 'dir');
+    await assert.rejects(renderCvTarget(root, { target: 'cover-letter', slug: 'linked-role' }, { runtimeResolver: () => ({ available: false, error: 'synthetic missing runtime' }) }));
+    assert.equal(fs.readFileSync(path.join(sibling, 'outreach.typ'), 'utf8'), 'Existing sibling source');
+    assert.equal(fs.existsSync(path.join(sibling, 'outreach.pdf')), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(sibling, { recursive: true, force: true }); }
+});
+
 function successfulSpawn(root) {
   return (_command, args) => {
     const child = new EventEmitter();

@@ -7,7 +7,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { RELEASE_FILES } from './build-release.mjs';
 import {
-  auditRelease, loadMarkers, main, verifiedAuditTreeDigest,
+  auditRelease, auditStagedRelease, loadMarkers, main, verifiedAuditTreeDigest,
 } from './release-audit.mjs';
 
 test('audit digest cannot authorize bytes changed after an earlier final read', () => {
@@ -44,6 +44,13 @@ function fixture() {
 }
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+const REVIEWED_AJV_APP_ROOTS = [
+  'app', // Windows installer and the common release stage.
+  'deb/opt/scout/app',
+  `Scout-${VERSION}-linux-x64/app`,
+  'dmg-root/Scout.app/Contents/Resources/app',
+];
 const RANKED_DISCOVERY_SOURCES = [
   'ui/lib/searchProfile.mjs', 'ui/lib/vacancyObservation.mjs', 'ui/lib/vacancyCanonical.mjs',
   'ui/lib/vacancyFilter.mjs', 'ui/lib/vacancyRank.mjs', 'ui/lib/vacancySelect.mjs',
@@ -853,6 +860,70 @@ test('stage mode audits installed dependency JSON, YAML, TOML, text, log and run
     process.exitCode = originalExitCode;
   }
   assert.match(writes.join(''), /Release audit failed with 6 finding/);
+});
+
+test('reviewed Ajv metadata passes only at the exact vendor paths with unchanged bytes', (t) => {
+  const root = fixture();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const payload = fs.readFileSync(path.join(ROOT, 'node_modules', 'ajv', 'dist', 'refs', 'json-schema-secure.json'));
+  const files = REVIEWED_AJV_APP_ROOTS.flatMap((app) => ['dist', 'lib'].map((directory) => `${app}/node_modules/ajv/${directory}/refs/json-schema-secure.json`));
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), payload);
+  }
+  const audit = () => auditStagedRelease({ root });
+  assert.equal(audit().ok, true, 'reviewed public schema metadata must not be classified as a private advert');
+  for (const file of files) {
+    fs.appendFileSync(path.join(root, file), '\n');
+    assert.deepEqual(audit().findings, [{ file, line: 5, rule: 'advert-body' }], 'even whitespace drift requires the vendor bytes to be reviewed again');
+    fs.writeFileSync(path.join(root, file), payload);
+  }
+  for (const file of [
+    'app/node_modules/ajv/dist/refs/other.json',
+    'app/node_modules/other-package/dist/refs/json-schema-secure.json',
+    'arbitrary/app/node_modules/ajv/dist/refs/json-schema-secure.json',
+    'arbitrary/deb/opt/scout/app/node_modules/ajv/dist/refs/json-schema-secure.json',
+    'other/Scout.app/Contents/Resources/app/node_modules/ajv/dist/refs/json-schema-secure.json',
+    'Scout-0.0.0-linux-x64/app/node_modules/ajv/dist/refs/json-schema-secure.json',
+    `Scout-${VERSION}-linux-arm64/app/node_modules/ajv/dist/refs/json-schema-secure.json`,
+  ]) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), payload);
+    assert.deepEqual(audit().findings, [{ file, line: 5, rule: 'advert-body' }]);
+    fs.rmSync(path.join(root, file));
+  }
+  const changed = JSON.parse(payload);
+  changed.prompt = 'A synthetic private provider prompt.';
+  changed.diagnostic = ['ghp_', 'A'.repeat(36)].join('');
+  changed.providerTranscript = 'Synthetic private provider output.';
+  changed.localFile = unixHome('synthetic-user', 'private.txt');
+  changed.credentials = { apiKey: ['synthetic-', 'private-key-value'].join('') };
+  changed.privateMarker = 'Synthetic Native Vendor Marker';
+  for (const file of files) {
+    fs.writeFileSync(path.join(root, file), JSON.stringify(changed));
+    const rules = auditStagedRelease({ root, markers: [changed.privateMarker] }).findings.map(({ rule }) => rule);
+    for (const rule of ['advert-body', 'full-prompt', 'github-token', 'provider-transcript', 'private-path', 'credential', 'secret-assignment', 'personal-marker-1']) {
+      assert.ok(rules.includes(rule), `${file}: ${rule} must still run`);
+    }
+    fs.writeFileSync(path.join(root, file), payload);
+  }
+});
+
+test('reviewed Ajv metadata never suppresses configured personal markers', (t) => {
+  const root = fixture();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const app of REVIEWED_AJV_APP_ROOTS) {
+    for (const directory of ['dist', 'lib']) {
+      const file = `${app}/node_modules/ajv/${directory}/refs/json-schema-secure.json`;
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.copyFileSync(path.join(ROOT, 'node_modules', 'ajv', 'dist', 'refs', 'json-schema-secure.json'), path.join(root, file));
+    }
+  }
+  assert.equal(auditStagedRelease({ root }).ok, true);
+  const result = auditStagedRelease({ root, markers: ['untrusted data'] });
+  assert.equal(result.ok, false);
+  assert.equal(result.findings.length, REVIEWED_AJV_APP_ROOTS.length * 2);
+  assert.ok(result.findings.every(({ rule }) => rule === 'personal-marker-1'));
 });
 
 test('stage mode fails closed when a file appears after directory enumeration', () => {

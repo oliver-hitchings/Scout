@@ -1,15 +1,21 @@
 #!/usr/bin/env node
+import { atomicWriteFile } from '../ui/lib/atomicWrite.mjs';
+import { assertLivingCvReady, hasPendingLivingCvApproval, recoverLivingCvApproval } from '../ui/lib/livingCv.mjs';
+import { workspaceModePolicy } from '../ui/lib/workspaceMode.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { activateHouseholdRuntime, assertDesktopScheduleAllowed, createHouseholdInstance, householdScheduleManagement, readHousehold, switchHouseholdInstance } from '../ui/lib/household.mjs';
+import { dispatchHeadlessNotifications } from '../ui/lib/headlessNotifications.mjs';
 import { doctor } from '../ui/lib/doctor.mjs';
 import { fetchAdzuna, resolveAdzunaCredentials } from '../ui/lib/adzuna.mjs';
 import { fetchConfiguredPortals, loadPortals } from '../ui/lib/ats.mjs';
 import { collectEmployers } from '../ui/lib/careersAdapters.mjs';
 import { fetchHiringCafe } from '../ui/lib/hiringCafe.mjs';
+import { localProviderHealthSignal } from '../ui/lib/localProvider.mjs';
 import { loadEnv } from '../ui/lib/env.mjs';
 import {
   assertSafeModel, providerLocalHealthSignal, providerStatus,
@@ -22,9 +28,10 @@ import { ProviderLifecycleUnclosedError, runStructuredTurn } from '../ui/lib/str
 import {
   assessScanCandidates, assessmentCandidatesForSelection, buildAssessmentPrompt, compactCandidates, createRankedDiscoveryStages, DEFAULT_CANDIDATE_LIMIT,
   coordinateScanArtifacts, durableScanProjection, inboxRecheckCandidates, promptCandidate, runScanPipeline, SCAN_ASSESSMENT_SCHEMA,
-  readVacancyDecisionHistory, verificationCandidates,
+  readRejectedVacancyMemory, readVacancyDecisionHistory, verificationCandidates,
 } from '../ui/lib/scanPipeline.mjs';
 import { loadPublishedSearchProfile, migrateSearchProfile } from '../ui/lib/searchProfile.mjs';
+import { assessmentVersionOf } from '../ui/lib/vacancyLifecycle.mjs';
 import { partitionLiveCandidates } from '../ui/lib/advertLiveness.mjs';
 import { isMainModule } from '../ui/lib/mainModule.mjs';
 import { runCvQuality } from '../ui/lib/cvQuality.mjs';
@@ -106,12 +113,14 @@ function queuedScanOutcome(durable) {
 
 function sourceConfigFingerprint(config) {
   return scanDigest({
+    mode: config.mode,
     locale: config.locale,
     currency: config.currency,
     search: config.search,
     sources: config.sources,
     triage: config.triage,
     commute: config.commute,
+    ...(config.ai?.local?.baseUrl ? { localProvider: { baseUrl: config.ai.local.baseUrl, model: config.ai.local.model } } : {}),
   });
 }
 
@@ -471,7 +480,7 @@ export function assertScanReady(root, provider, {
   const config = loadWorkspaceConfig(root);
   const tracker = readScanTracker(root);
   const selected = config.ai?.provider;
-  const providers = Object.fromEntries([...new Set([selected, provider].filter(Boolean))].map((name) => [name, providerStatusFn(name)]));
+  const providers = Object.fromEntries([...new Set([selected, provider].filter(Boolean))].map((name) => [name, providerStatusFn(name, { local: config.ai?.local, root })]));
   const readiness = setupReadiness(root, config, providers, tracker);
   if (readiness.checks.preferences && readiness.checks.evidence && readiness.checks.approved) {
     migrateSearchProfile(root);
@@ -504,6 +513,7 @@ export async function runScan(root, provider, mode, {
   queueWorkspaceSyncFn = queueWorkspaceSync,
 } = {}) {
   signal?.throwIfAborted();
+  if (hasPendingLivingCvApproval(root)) recoverLivingCvApproval(root);
   onProgress({ phase: 'Validating approved evidence', current: 1, total: 5 });
   assertScanReadyFn(root, provider, { deferProviderHealth: true });
   const initial = await runScanWithFn(root, provider, mode, {
@@ -691,6 +701,7 @@ export function scoringConfig(config = {}) {
 }
 
 function buildScanContext(paths, config, candidates) {
+  assertLivingCvReady(paths.root);
   const context = {
     config: scoringConfig(config),
     profile: readBounded(path.join(paths.profile, 'context.md'), 'profile/context.md'),
@@ -706,6 +717,7 @@ function buildScanContext(paths, config, candidates) {
 }
 
 function assessmentContextDigests(paths, config) {
+  assertLivingCvReady(paths.root);
   return Object.freeze({
     scoringConfigDigest: scanDigest(scoringConfig(config)),
     profileDigest: scanDigest(readBounded(path.join(paths.profile, 'context.md'), 'profile/context.md')),
@@ -781,12 +793,14 @@ export async function runScanWith(root, provider, mode, {
   signal = null,
 } = {}) {
   signal?.throwIfAborted();
-  if (!['codex', 'claude'].includes(provider)) throw new Error('provider must be codex or claude');
+  if (!['codex', 'claude', 'local'].includes(provider)) throw new Error('provider must be codex, claude or local');
   if (!['primary', 'second-pass', 'broadened'].includes(mode)) throw new Error('mode must be primary, broadened or second-pass');
   const providerHealthPurpose = requester === 'scheduled' ? 'scheduled-job' : 'manual-run';
   const config = loadWorkspaceConfig(root);
+  const modePolicy = workspaceModePolicy(config);
+  model = provider === 'local' && model == null ? assertSafeModel(config.ai?.local?.model) : model;
   model = model === undefined
-    ? (config.ai?.provider === provider ? assertSafeModel(config.ai?.model) : null)
+    ? (provider === 'local' ? assertSafeModel(config.ai?.local?.model) : config.ai?.provider === provider ? assertSafeModel(config.ai?.model) : null)
     : assertSafeModel(model);
   const startedAt = new Date().toISOString();
   const injectedLegacyLock = claimedLease === null
@@ -846,15 +860,17 @@ export async function runScanWith(root, provider, mode, {
       tracker: trackerAtStart,
       learningPolicy: learningPolicyAtStart,
       decisionHistory: readVacancyDecisionHistory(root),
-      limit: DEFAULT_CANDIDATE_LIMIT,
-      relevanceThreshold: config.search?.relevanceThreshold ?? config.triage?.checkScore,
+      rejectionMemory: readRejectedVacancyMemory(root),
+      assessmentVersion: assessmentVersionOf(compatibility),
+      limit: modePolicy.resultCap,
+      relevanceThreshold: Math.max(config.search?.relevanceThreshold ?? 0, publishedAtStart.selection?.relevanceThreshold ?? 0, modePolicy.triage.checkScore),
     })
     : {
       collect,
       normalise({ priorArtifact }) {
         const compacted = compactCandidates(
           priorArtifact.sources,
-          DEFAULT_CANDIDATE_LIMIT,
+          modePolicy.resultCap,
           { trustedStageArtifact: true },
         );
         return { candidates: compacted.candidates, dropped: compacted.dropped };
@@ -914,11 +930,13 @@ export async function runScanWith(root, provider, mode, {
         const source = requester === 'scheduled' ? 'scheduled-preflight' : 'manual-preflight';
         // Startup can drain up to 128 older requests before this fenced
         // boundary, so select the executable only when this run is ready.
-        trustedProviderStatus = providerStatusFn(selectedProvider);
+        trustedProviderStatus = providerStatusFn(selectedProvider, { local: loadWorkspaceConfig(workspaceRoot).ai?.local, root: workspaceRoot });
         return providerPreflightFn(workspaceRoot, selectedProvider, providerHealthPurpose, {
           lease,
           source,
-          probe: async () => providerLocalHealthSignal(trustedProviderStatus, { source }),
+          probe: async () => selectedProvider === 'local'
+            ? localProviderHealthSignal(trustedProviderStatus, { source })
+            : providerLocalHealthSignal(trustedProviderStatus, { source }),
         });
       },
       prepare({ lease }) {
@@ -998,7 +1016,7 @@ export async function runScanWith(root, provider, mode, {
           lanes: collected?.lanes || plannedQueryPlan.lanes,
           candidates,
           assessmentResult: null,
-          policy: config.triage,
+          policy: modePolicy.triage,
           startedAt,
           error: error.message,
           dropped,
@@ -1050,7 +1068,7 @@ export async function runScanWith(root, provider, mode, {
             let selectedVacancies = liveness.selected;
             if (mode === 'second-pass') {
               const verification = verificationCandidates(
-                assessmentCandidatesForSelection(selectedVacancies), tracker, new Date().toISOString().slice(0, 10), config.triage,
+                assessmentCandidatesForSelection(selectedVacancies), tracker, new Date().toISOString().slice(0, 10), modePolicy.triage,
               );
               const selectedIds = new Set(verification.candidates.map((candidate) => candidate.vacancyId));
               selectedVacancies = selectedVacancies.filter((vacancy) => selectedIds.has(vacancy.vacancyId));
@@ -1082,7 +1100,7 @@ export async function runScanWith(root, provider, mode, {
               candidateId: `candidate-${String(index + 1).padStart(3, '0')}`,
             }));
             if (mode === 'second-pass') {
-              const verification = verificationCandidates(candidates, tracker, new Date().toISOString().slice(0, 10), config.triage);
+              const verification = verificationCandidates(candidates, tracker, new Date().toISOString().slice(0, 10), modePolicy.triage);
               candidates = verification.candidates.map((candidate, index) => ({
                 ...candidate,
                 candidateId: `candidate-${String(index + 1).padStart(3, '0')}`,
@@ -1091,11 +1109,11 @@ export async function runScanWith(root, provider, mode, {
             }
           }
 
-          const bundleDir = path.join(root, '.scout', 'scan-input');
-          const bundleFile = path.join(bundleDir, `${startedAt.replace(/[:.]/g, '-')}-${provider}-${mode}.json`);
+          const bundleDir = path.join(run.directory, 'artifacts');
+          const bundleFile = path.join(bundleDir, 'scan-input.json');
           assertCurrentFence(lease, synchronousFenceCallback(() => {
             fs.mkdirSync(bundleDir, { recursive: true });
-            fs.writeFileSync(bundleFile, `${JSON.stringify(durableScanProjection({
+            atomicWriteFile(bundleFile, `${JSON.stringify(durableScanProjection({
               generatedAt: collected.generatedAt,
               queries: collected.queries,
               sources: Object.fromEntries(Object.entries(collected.sources).map(([name, value]) => [
@@ -1108,7 +1126,7 @@ export async function runScanWith(root, provider, mode, {
               hardExcluded: hardExcluded.map((item) => ({ vacancyId: item.vacancyId, code: item.code })),
               closedAdverts: closedAdverts.map((item) => ({ url: item.url, reason: item.liveness?.reason })),
               candidates,
-            }), null, 2)}\n`, 'utf8');
+            }), null, 2)}\n`, { mode: 0o600 });
           }));
           let assessmentResult = null;
           let usage = {};
@@ -1212,7 +1230,7 @@ export async function runScanWith(root, provider, mode, {
           const artifacts = coordinateScanArtifacts(root, {
             provider, mode, sources: collected.sources, queries: collected.queries,
             lanes: collected.lanes, candidates, assessmentResult,
-            policy: config.triage, startedAt,
+            policy: modePolicy.triage, notificationConfig: config, startedAt,
             assessmentFailures,
             dropped, hardExcluded, closedAdverts, exclusions: discovery?.exclusions || [],
             livenessSummary, verificationScoped, funnel, selection,
@@ -1222,6 +1240,7 @@ export async function runScanWith(root, provider, mode, {
             runId: run.runId,
             discoveryEngine, profileId: publishedProfile?.id || null,
             learningVersionId: learningPolicyAtStart.id,
+            assessmentVersion: assessmentVersionOf(compatibility),
             staleInboxEntries, inboxRechecked,
           }, { run, lease, hooks: mutationHooks });
           result = { ok: true, status: artifacts.run.degraded ? 'degraded' : candidates.length ? 'completed' : 'healthy-empty', scan: artifacts.run, usage };
@@ -1296,7 +1315,8 @@ export async function runScanWith(root, provider, mode, {
 }
 
 export function installSchedule(root, time, provider, { id = `${provider}-primary`, mode = 'primary', model = null, days = null } = {}) {
-  if (!['codex', 'claude'].includes(provider)) throw new Error('schedule provider must be codex or claude');
+  assertDesktopScheduleAllowed(root);
+  if (!['codex', 'claude', 'local'].includes(provider)) throw new Error('schedule provider must be codex, claude or local');
   if (!['primary', 'second-pass'].includes(mode)) throw new Error('schedule mode must be primary or second-pass');
   model = assertSafeModel(model);
   const selectedDays = normaliseScheduleDays(days);
@@ -1341,6 +1361,24 @@ async function main() {
   const argv = process.argv.slice(2);
   const command = argv[0] || 'help';
   const root = selectedWorkspace(argv);
+  if (command !== 'household') activateHouseholdRuntime(root);
+  if (command === 'notifications') {
+    if (argv[1] !== 'dispatch') throw new Error('notifications action must be dispatch');
+    const result = await dispatchHeadlessNotifications(root);
+    print(result);
+    if (result.failed) process.exitCode = 1;
+    return;
+  }
+  if (command === 'household') {
+    const action = argv[1] || 'list';
+    if (action === 'list') return print({ ok: true, ...readHousehold() });
+    if (action === 'switch') return print(switchHouseholdInstance(argv[2]));
+    if (action === 'create') return print(createHouseholdInstance({
+      appRoot: APP_ROOT, directory: argValue('--directory', argv), id: argv[2],
+      port: Number(argValue('--port', argv)), initialise: initWorkspace,
+    }));
+    throw new Error('household action must be create, list, or switch');
+  }
   if (command === 'doctor') return print(doctor(root, { appRoot: APP_ROOT }));
   if (command === 'remote') {
     const action = argv[1] || 'preflight';
@@ -1411,6 +1449,7 @@ async function main() {
       scheduleId,
       logicalWindowId,
     });
+    await dispatchHeadlessNotifications(root).catch(() => {});
     print(result);
     if (!result.ok) process.exitCode = 1;
     return;
@@ -1460,11 +1499,14 @@ async function main() {
   }
   if (command === 'schedule') {
     const action = argv[1] || 'status';
+    const management = householdScheduleManagement(root);
+    if (['install', 'remove', 'run-now'].includes(action)) assertDesktopScheduleAllowed(root);
     const config = loadWorkspaceConfig(root);
     const id = argValue('--id', argv) || config.schedule?.jobs?.[0]?.id || 'primary';
     if (action === 'status') return print({
       ok: true,
-      runs: config.schedule.jobs.map((job) => ({ ...job, ...scheduleStatus({ id: job.id }) })),
+      ...(management || {}),
+      runs: config.schedule.jobs.map((job) => ({ ...job, ...(management ? { ...management, ok: false } : scheduleStatus({ id: job.id })) })),
     });
     if (action === 'remove') {
       let result;
@@ -1496,7 +1538,7 @@ async function main() {
       }));
     }
   }
-  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  workspace snapshot-beta22 [--workspace PATH]\n  workspace rollback-beta22 --workspace PATH --to PATH [--snapshot PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude [--mode primary|second-pass] [--model MODEL]\n  schedule install|status|remove|run-now [--id ID] [--time HH:MM] [--days 0,1,2] [--provider PROVIDER] [--mode primary|second-pass] [--model MODEL]`);
+  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  household create ID --directory PATH --port PORT\n  household list|switch ID\n  notifications dispatch [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  workspace snapshot-beta22 [--workspace PATH]\n  workspace rollback-beta22 --workspace PATH --to PATH [--snapshot PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude|local [--mode primary|second-pass] [--model MODEL]\n  schedule install|status|remove|run-now [--id ID] [--time HH:MM] [--days 0,1,2] [--provider PROVIDER] [--mode primary|second-pass] [--model MODEL]`);
 }
 
 const isMain = isMainModule(import.meta.url);

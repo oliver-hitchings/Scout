@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
 
+test.use({ serviceWorkers: 'allow' });
+
 const UI_ROOT = new URL('../../ui/', import.meta.url);
 const text = (name) => fs.readFileSync(new URL(name, UI_ROOT), 'utf8');
 const binary = (name) => fs.readFileSync(new URL(name, UI_ROOT));
@@ -14,6 +16,10 @@ const TEMPLATES = {
   '/offline-rollover/lib/scoutCharacter.mjs': text('lib/scoutCharacter.mjs'),
   '/offline-rollover/lib/chatDrawerState.mjs': text('lib/chatDrawerState.mjs'),
   '/offline-rollover/lib/codexDeepLink.mjs': text('lib/codexDeepLink.mjs'),
+  '/offline-rollover/lib/durableRunStates.mjs': text('lib/durableRunStates.mjs'),
+  '/offline-rollover/lib/providerPresentation.mjs': text('lib/providerPresentation.mjs'),
+  '/offline-rollover/lib/modelIdentifier.mjs': text('lib/modelIdentifier.mjs'),
+  '/offline-rollover/lib/standaloneUi.mjs': text('lib/standaloneUi.mjs'),
 };
 const ASSETS = Object.fromEntries([
   'scout-icon.ico', 'scout-icon.png', 'scout-idle.png', 'scout-thinking.png',
@@ -196,9 +202,12 @@ test('a real A-to-B worker activation keeps the exact app module graph bootable 
     const appUrl = new URL(`/offline-rollover/app.js?v=${build}`, location.origin).href;
     const appResponse = await cache.match(appUrl);
     if (!appResponse) throw new Error('build-B app.js is not cached');
-    const source = await appResponse.text();
-    const imports = [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)]
-      .map((match) => new URL(match[1], appUrl).href);
+    const setupUrl = new URL(`/offline-rollover/setup.js?v=${build}`, location.origin).href;
+    const setupResponse = await cache.match(setupUrl);
+    if (!setupResponse) throw new Error('build-B setup.js is not cached');
+    const modules = [[appUrl, await appResponse.text()], [setupUrl, await setupResponse.text()]];
+    const imports = modules.flatMap(([url, source]) => [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)]
+      .map((match) => new URL(match[1], url).href));
     return {
       imports,
       cached: await Promise.all(imports.map(async (url) => Boolean(await cache.match(url)))),

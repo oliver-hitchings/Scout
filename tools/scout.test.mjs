@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import test from 'node:test';
 import {
   assertScanReady, broadenSearchQueries, collectScanSources, migrateLegacyWorkspace, runScan, runScanWith, shouldAutoBroaden,
@@ -26,12 +27,68 @@ import {
   acquireProviderAuthMutation, releaseProviderAuthMutation,
 } from '../ui/lib/providerAuthMutation.mjs';
 
+test('a selected local provider runs a ranked synthetic scan over HTTP with no provider CLI', async (t) => {
+  const root = readyScanRoot();
+  enableRankedDiscovery(root);
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw);
+    requests.push(body);
+    const prompt = body.messages.at(-1).content;
+    const value = prompt.includes('Assess only the supplied Scout candidates')
+      ? assessmentFor(JSON.parse(prompt.split('\n\n').at(-1)).candidates)
+      : { ready: true };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(value) } }] }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); });
+  const config = loadWorkspaceConfig(root);
+  config.ai = { provider: 'local', local: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, model: 'synthetic/model-27b', retries: 0 } };
+  writeWorkspaceConfig(root, config);
+  // The setup activation marker binds all configured bytes, including the
+  // explicit local provider selection the person has approved.
+  const markerFile = path.join(root, '.scout', 'onboarding', 'activated.json');
+  const marker = JSON.parse(fs.readFileSync(markerFile));
+  marker.activatedHashes['workspace.json'] = crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'workspace.json'))).digest('hex');
+  fs.writeFileSync(markerFile, JSON.stringify(marker));
+  const result = await runScan(root, 'local', 'primary', {
+    autoBroaden: false,
+    runScanWithFn: (workspace, provider, mode, options) => runScanWith(workspace, provider, mode, { ...options,
+    collectSourcesFn: async () => ({ generatedAt: new Date().toISOString(), queries: ['Ideal Role'], sources: {
+      synthetic: { configured: true, status: 'healthy', count: 1, jobs: [{ title: 'Ideal Role', company: 'Synthetic Example', location: 'Remote', url: 'https://example.test/jobs/local', providerId: 'local-fixture', description: 'Deliver reliable systems.' }] },
+    } }),
+    checkLivenessFn: async (candidates) => ({ live: candidates, removed: [], summary: { checked: candidates.length, gone: 0, unverified: 0 } }),
+    queueWorkspaceSyncFn: async () => ({ state: 'disabled', enabled: false }),
+    }),
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.ok(requests.some((request) => request.messages.at(-1).content.includes('Assess only the supplied Scout candidates')));
+  assert.ok(requests.every((request) => request.model === 'synthetic/model-27b'));
+  const tracker = JSON.parse(fs.readFileSync(path.join(root, 'data', 'opportunities.json')));
+  assert.equal(tracker.opportunities.length, 1);
+  assert.equal(tracker.opportunities[0].role, 'Ideal Role');
+});
+
 function scanRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-runtime-scan-'));
   fs.mkdirSync(path.join(root, 'data'), { recursive: true });
   fs.writeFileSync(path.join(root, 'data', 'opportunities.json'), '{"updated":"2026-07-14","opportunities":[]}\n');
-  writeWorkspaceConfig(root, { ...structuredClone(DEFAULT_WORKSPACE_CONFIG), ai: { provider: 'codex', model: null } });
+  writeWorkspaceConfig(root, { ...structuredClone(DEFAULT_WORKSPACE_CONFIG), mode: 'active', ai: { provider: 'codex', model: null } });
   return root;
+}
+
+function retainedScanInput(root) {
+  assert.equal(fs.existsSync(path.join(root, '.scout', 'scan-input')), false,
+    'new diagnostic bundles must share their run artifact retention');
+  const files = fs.readdirSync(path.join(root, '.scout', 'runs'), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(root, '.scout', 'runs', entry.name, 'artifacts', 'scan-input.json'))
+    .filter((file) => fs.existsSync(file));
+  assert.ok(files.length > 0, 'each assessed run must retain its diagnostic input inside its artifacts');
+  return files.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
 }
 
 const authenticated = () => ({ installed: true, authenticated: true, executable: 'codex', capabilities: { structuredOutput: true } });
@@ -49,6 +106,7 @@ function publishedRankingProfile() {
 function readyScanRoot({ opportunities = [] } = {}) {
   const root = scanRoot();
   const config = structuredClone(DEFAULT_WORKSPACE_CONFIG);
+  config.mode = 'active';
   config.ai.provider = 'codex';
   config.profile.displayName = 'Synthetic Person';
   config.search = {
@@ -126,7 +184,7 @@ function scanHarness(sources, seenCandidates) {
       const candidates = seenCandidates();
       const value = assessmentFor(candidates);
       validate(value);
-      return { value, usage: {} };
+      return { ok: true, value, usage: {} };
     },
     acquireLockFn: () => ({ ok: true, lock: { token: fixtureToken('ranked-discovery-test') } }),
     releaseLockFn: () => ({ ok: true }),
@@ -858,7 +916,7 @@ for (const failedTarget of [2, 3]) {
       assert.equal(reconciled.status, 'partially-applied');
       assert.deepEqual(
         reconciled.states,
-        failedTarget === 2 ? ['applied', 'pending', 'pending'] : ['applied', 'applied', 'pending'],
+        failedTarget === 2 ? ['applied', 'pending', 'pending', 'pending'] : ['applied', 'applied', 'pending', 'pending'],
       );
       assert.equal(run.events.filter((event) => event.type === 'mutation.prepared').length, 1);
       assert.equal(run.events.filter((event) => event.type === 'mutation.receipted').length, 0);
@@ -2109,9 +2167,7 @@ test('a queued keeper run completes against its claim-time tracker input instead
     assert.equal(projectScanQueue(root).requests[0].status, 'succeeded');
     const tracker = JSON.parse(fs.readFileSync(path.join(root, 'data', 'opportunities.json'), 'utf8'));
     assert.equal(tracker.opportunities[0].company, 'Keeper Co');
-    const scanInput = fs.readdirSync(path.join(root, '.scout', 'scan-input'))
-      .map((name) => fs.readFileSync(path.join(root, '.scout', 'scan-input', name), 'utf8'))
-      .join('\n');
+    const scanInput = retainedScanInput(root);
     assert.match(scanInput, /https:\/\/example\.test\/jobs\/keeper/);
     assert.doesNotMatch(
       scanInput,
@@ -2174,8 +2230,7 @@ test('fresh liveness keeps a transient query URL while every persisted scan proj
             path.join(root, '.scout', 'runs', entry.name, 'artifacts', name),
             'utf8',
           ))),
-      ...fs.readdirSync(path.join(root, '.scout', 'scan-input'))
-        .map((name) => fs.readFileSync(path.join(root, '.scout', 'scan-input', name), 'utf8')),
+      retainedScanInput(root),
       fs.readFileSync(path.join(root, 'data', 'scan-runs.jsonl'), 'utf8'),
       fs.readFileSync(path.join(root, 'data', 'opportunities.json'), 'utf8'),
       ...fs.readdirSync(path.join(root, 'reports'))
@@ -2243,4 +2298,233 @@ test('runtime scan bounds the complete assembled context before calling a provid
   assert.equal(result.ok, false);
   assert.match(result.error, /assembled scan context exceeds Scout's 280,000-character limit/);
   assert.equal(providerCalls, 0);
+});
+
+test('an unchanged rejection is not assessed again once newer assessments fill the recent history window', async () => {
+  const root = scanRoot();
+  enableRankedDiscovery(root);
+  const jobs = [
+    { company: 'Rejected Co', title: 'Ideal Role', url: 'https://example.test/jobs/rejected', providerId: 'rejected', description: 'Deliver the ideal role responsibilities.' },
+    { company: 'Fresh Co', title: 'Ideal Role', url: 'https://example.test/jobs/fresh', providerId: 'fresh', description: 'Deliver the ideal role responsibilities.' },
+  ];
+  const assessedUrls = [];
+  const scan = (visible, recommendation) => runScanWith(root, 'codex', 'primary', {
+    providerStatusFn: authenticated,
+    collectSourcesFn: async () => ({ generatedAt: '2026-07-26T20:00:00Z', queries: [], sources: {
+      ats: { configured: true, status: 'healthy', count: visible.length, jobs: visible },
+    } }),
+    runStructuredTurnFn: async ({ prompt, validate }) => {
+      const batch = JSON.parse(prompt.split('\n\n').at(-1)).candidates;
+      assessedUrls.push(...batch.map((item) => item.url));
+      const value = { assessments: batch.map((item) => nuancedAssessment(item.candidateId, {
+        recommendation: item.url.endsWith('/rejected') ? recommendation : 'keep',
+      })) };
+      validate(value);
+      return { value, usage: {} };
+    },
+    checkLivenessFn: async (items) => ({ live: items, removed: [], summary: { checked: items.length, gone: 0, unverified: 0 } }),
+    acquireLockFn: () => ({ ok: true, lock: { token: fixtureToken('rejection-memory-test') } }),
+    releaseLockFn: () => ({ ok: true }),
+    onProgress: () => {},
+  });
+
+  assert.equal((await scan([jobs[0]], 'discard')).ok, true);
+  assert.deepEqual(assessedUrls, [jobs[0].url]);
+  const logPath = path.join(root, 'data', 'scan-runs.jsonl');
+  const firstRun = JSON.parse(fs.readFileSync(logPath, 'utf8').trim().split(/\r?\n/).at(-1));
+  assert.equal(firstRun.reviewed[0].outcome, 'provider_discarded');
+  const filler = Array.from({ length: 600 }, (_, index) => ({
+    vacancyId: `vacancy-filler-${index}`, company: `Filler ${index}`, role: 'Ideal Role', source: 'ats',
+    sourceUrl: `https://example.test/jobs/filler-${index}`, outcome: 'kept', profileId: firstRun.profile_id,
+  }));
+  fs.appendFileSync(logPath, `${JSON.stringify({ timestamp: '2026-07-27T09:00:00.000Z', profile_id: firstRun.profile_id, reviewed: filler })}\n`);
+
+  assert.equal((await scan(jobs, 'discard')).ok, true);
+  assert.deepEqual(assessedUrls, [jobs[0].url, jobs[1].url]);
+});
+
+test('a scan records its assessment version and a model change assesses an earlier rejection again', async () => {
+  const root = scanRoot();
+  enableRankedDiscovery(root);
+  const job = { company: 'Rejected Co', title: 'Ideal Role', url: 'https://example.test/jobs/rejected', providerId: 'rejected', description: 'Deliver the ideal role responsibilities.' };
+  const assessedUrls = [];
+  const scan = (model) => runScanWith(root, 'codex', 'primary', {
+    providerStatusFn: authenticated,
+    model,
+    collectSourcesFn: async () => ({ generatedAt: '2026-07-26T20:00:00Z', queries: [], sources: {
+      ats: { configured: true, status: 'healthy', count: 1, jobs: [job] },
+    } }),
+    runStructuredTurnFn: async ({ prompt, validate }) => {
+      const batch = JSON.parse(prompt.split('\n\n').at(-1)).candidates;
+      assessedUrls.push(...batch.map((item) => item.url));
+      const value = { assessments: batch.map((item) => nuancedAssessment(item.candidateId, { recommendation: 'discard' })) };
+      validate(value);
+      return { value, usage: {} };
+    },
+    checkLivenessFn: async (items) => ({ live: items, removed: [], summary: { checked: items.length, gone: 0, unverified: 0 } }),
+    acquireLockFn: () => ({ ok: true, lock: { token: fixtureToken('assessment-version-test') } }),
+    releaseLockFn: () => ({ ok: true }),
+    onProgress: () => {},
+  });
+  const lastRun = () => JSON.parse(fs.readFileSync(path.join(root, 'data', 'scan-runs.jsonl'), 'utf8').trim().split(/\r?\n/).at(-1));
+
+  assert.equal((await scan('model-a')).ok, true);
+  assert.equal(assessedUrls.length, 1);
+  assert.equal(lastRun().assessment_version.model, 'model-a');
+  assert.deepEqual(Object.keys(lastRun().assessment_version).sort(), ['assessmentSchemaVersion', 'model', 'promptVersion', 'provider']);
+
+  assert.equal((await scan('model-a')).ok, true);
+  assert.equal(assessedUrls.length, 1, 'the same assessment version leaves the rejection alone');
+
+  assert.equal((await scan('model-b')).ok, true);
+  assert.deepEqual(assessedUrls, [job.url, job.url], 'a different model assesses the rejection again');
+  assert.equal(lastRun().assessment_version.model, 'model-b');
+  assert.deepEqual(lastRun().explanations.map((item) => item.lifecycle.reason), ['assessment-change']);
+});
+
+test('changing a configured namespaced local model reassesses a durable earlier rejection', async (t) => {
+  const root = scanRoot();
+  enableRankedDiscovery(root);
+  const assessedModels = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const request = JSON.parse(raw);
+    const prompt = request.messages.at(-1).content;
+    let value = { ready: true };
+    if (prompt.includes('Assess only the supplied Scout candidates')) {
+      const candidates = JSON.parse(prompt.split('\n\n').at(-1)).candidates;
+      assessedModels.push(request.model);
+      value = { assessments: candidates.map((item) => nuancedAssessment(item.candidateId, { recommendation: 'discard' })) };
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(value) } }] }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const selectModel = (model) => {
+    const config = loadWorkspaceConfig(root);
+    config.ai = { provider: 'local', local: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, model, retries: 0 } };
+    writeWorkspaceConfig(root, config);
+  };
+  const job = { company: 'Synthetic Rejected Co', title: 'Ideal Role', url: 'https://example.test/jobs/local-rejected', providerId: 'local-rejected', description: 'Deliver reliable systems.' };
+  const scan = () => runScanWith(root, 'local', 'primary', {
+    collectSourcesFn: async () => ({ generatedAt: new Date().toISOString(), queries: [], sources: {
+      ats: { configured: true, status: 'healthy', count: 1, jobs: [job] },
+    } }),
+    checkLivenessFn: async (items) => ({ live: items, removed: [], summary: { checked: items.length, gone: 0, unverified: 0 } }),
+    queueWorkspaceSyncFn: async () => ({ state: 'disabled', enabled: false }),
+    onProgress: () => {},
+  });
+  const lastRun = () => JSON.parse(fs.readFileSync(path.join(root, 'data', 'scan-runs.jsonl'), 'utf8').trim().split(/\r?\n/).at(-1));
+
+  selectModel('synthetic/model-a');
+  const first = await scan();
+  assert.equal(first.ok, true, first.error);
+  const firstRecord = lastRun();
+  assert.equal(firstRecord.reviewed[0].outcome, 'provider_discarded');
+  assert.deepEqual(assessedModels, ['synthetic/model-a']);
+
+  assert.equal((await scan()).ok, true);
+  assert.deepEqual(assessedModels, ['synthetic/model-a'], 'the unchanged local model leaves the rejection alone');
+
+  selectModel('synthetic/model-b');
+  const changed = await scan();
+  assert.equal(changed.ok, true, changed.error);
+  assert.deepEqual(assessedModels, ['synthetic/model-a', 'synthetic/model-b'], 'changing the configured local model must assess the rejection again');
+  assert.equal(firstRecord.assessment_version.model, 'synthetic/model-a');
+  assert.equal(lastRun().assessment_version.model, 'synthetic/model-b');
+  assert.equal(lastRun().assessment_version.provider, 'local');
+  assert.deepEqual(lastRun().explanations.map((item) => item.lifecycle.reason), ['assessment-change']);
+});
+
+test('persisted source country flows through collection and canonical compensation independently of workspace currency', async () => {
+  const { fetchAdzuna } = await import('../ui/lib/adzuna.mjs');
+  const { normaliseObservation } = await import('../ui/lib/vacancyObservation.mjs');
+  const root = scanRoot();
+  try {
+    const config = loadWorkspaceConfig(root);
+    config.currency = 'EUR';
+    config.locale = 'fr-FR';
+    config.search.salaryMinimum = 50000;
+    config.sources.adzuna.country = 'us';
+    writeWorkspaceConfig(root, config);
+    fs.writeFileSync(path.join(root, '.env'), ['ADZUNA_APP_ID=example', 'ADZUNA_API_KEY=example', ''].join('\n'));
+    let queried;
+    const collected = await collectScanSources(root, loadWorkspaceConfig(root), {
+      queryPlan: { queries: ['synthetic role'], lanes: [] },
+      fetchAts: async () => ({ jobs: [], available: true }),
+      fetchCafe: async () => ({ jobs: [], available: true }),
+      fetchAdzunaFn: (options) => fetchAdzuna(options, async (url) => {
+        queried = new URL(url);
+        return { ok: true, json: async () => ({ results: [{
+          id: 'synthetic-country-role', title: 'Synthetic Role', company: { display_name: 'Synthetic Company' },
+          salary_min: 60000, salary_max: 70000, redirect_url: 'https://jobs.example.test/country-role',
+        }] }) };
+      }),
+    });
+    const observation = normaliseObservation(collected.sources.adzuna.jobs[0], { sourceName: 'adzuna' });
+    assert.match(queried.pathname, /\/us\/search\//);
+    assert.equal(observation.compensation.value.currency, 'USD');
+    assert.equal(observation.compensation.value.currencyProvenance, 'queried-country');
+    assert.equal(queried.searchParams.has('salary_min'), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('workspace modes apply different real scan capacity and assessment gates with durable alert delivery', async () => {
+  const { readNotifications, flushNotificationDigest } = await import('../ui/lib/notifications.mjs');
+  for (const [workspaceMode, expectedCount] of [['background', 6], ['active', 12]]) {
+    const root = scanRoot();
+    try {
+      const config = { ...loadWorkspaceConfig(root), mode: workspaceMode };
+      writeWorkspaceConfig(root, config);
+      const jobs = Array.from({ length: 12 }, (_, index) => ({ company: `Synthetic${String.fromCharCode(65 + index)}group`, title: 'Example Role', url: `https://example.test/jobs/${index}`, score: 98, source: 'hiring_cafe' }));
+      let candidates = [];
+      const result = await runScanWith(root, 'codex', 'primary', {
+        ...scanHarness({ hiring_cafe: { configured: true, status: 'healthy', count: jobs.length, jobs } }, () => candidates),
+        checkLivenessFn: async (items) => { candidates = items; return { live: items, removed: [], summary: { checked: items.length, gone: 0, unverified: 0 } }; },
+      });
+      assert.equal(result.ok, true, result.error);
+      assert.equal(candidates.length, expectedCount, `${workspaceMode} must drive the production candidate cap`);
+      assert.ok(fs.existsSync(path.join(root, '.scout', 'notifications.json')), 'the real finalisation must write its outbox');
+      if (workspaceMode === 'background') {
+        assert.equal(readNotifications(root).alerts.length, 0, 'a generic keep recommendation is not evidence of an exceptional match');
+        assert.equal(result.scan.keepers_added, 0);
+      }
+      else {
+        const state = readNotifications(root);
+        assert.equal(state.alerts.length, 0);
+        assert.equal(state.pending.length, expectedCount);
+        assert.equal(flushNotificationDigest(state, config, state.digestAfter).alerts[0].count, expectedCount);
+      }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test('ranked background discovery reaches the exceptional-match outbox from real deterministic scores', async () => {
+  const { readNotifications } = await import('../ui/lib/notifications.mjs');
+  const root = scanRoot();
+  try {
+    writeWorkspaceConfig(root, { ...loadWorkspaceConfig(root), mode: 'background' });
+    enableRankedDiscovery(root);
+    const jobs = Array.from({ length: 12 }, (_, index) => ({ company: `Synthetic${String.fromCharCode(65 + index)}group`, title: 'Ideal Role', url: `https://example.test/ranked/${index}`, providerId: `synthetic-${index}`, postedAt: '2026-07-26T20:00:00.000Z', firstSeenAt: '2026-07-26T20:00:00.000Z', lastSeenAt: '2026-07-26T20:00:00.000Z' }));
+    let candidates = [];
+    const options = {
+      ...scanHarness({ hiring_cafe: { configured: true, status: 'healthy', count: jobs.length, jobs } }, () => candidates),
+      checkLivenessFn: async (items) => { candidates = items; return { live: items, removed: [], summary: { checked: items.length, gone: 0, unverified: 0 } }; },
+    };
+    const result = await runScanWith(root, 'codex', 'primary', options);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.scan.funnel.selected, 6);
+    assert.equal(result.scan.keepers_added, 6);
+    assert.equal(readNotifications(root).alerts.filter((item) => item.kind === 'match').length, 6);
+    assert.ok(result.scan.reviewed.every((item) => item.score >= 95));
+    const stored = JSON.parse(fs.readFileSync(path.join(root, 'data', 'opportunities.json'), 'utf8'));
+    assert.equal(stored.opportunities.filter((entry) => entry.notificationState?.exceptional).length, 6, 'dedupe must persist on the existing tracker, not a growing outbox history');
+    assert.equal(Object.keys(readNotifications(root).matches).length, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

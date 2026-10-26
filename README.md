@@ -4,7 +4,7 @@ Scout is a local-first, AI-assisted opportunity finder. It searches configured j
 
 Scout never submits an application or sends outreach. Your CV, profile, tracker, reports, applications, chat history, and source credentials live in a separate private workspace.
 
-**New user?** Start with the [five-minute quick start](docs/QUICK_START.md), then choose [Windows](docs/INSTALL_WINDOWS.md), [macOS](docs/INSTALL_MACOS.md), or [Linux](docs/INSTALL_LINUX.md). Advanced users can run the same private workspace on an always-on Linux host by following the [VPS guide](docs/INSTALL_VPS.md). Scout beta packages are unsigned and require your own authenticated Codex or Claude provider account.
+**New user?** Start with [Getting started](docs/GETTING_STARTED.md), then choose [Windows](docs/INSTALL_WINDOWS.md), [macOS](docs/INSTALL_MACOS.md), or [Linux](docs/INSTALL_LINUX.md). Advanced users can run the same private workspace on an always-on Linux host by following the [VPS guide](docs/INSTALL_VPS.md). Scout beta packages are unsigned and require a configured local model server or your own authenticated Codex or Claude provider account.
 
 > **Repository note:** this repository contains the public Scout application. Personal CV, profile, tracker, report, application, chat, and credential data belongs only in a separate private workspace. See [Repository layout](docs/REPOSITORY_LAYOUT.md).
 
@@ -14,7 +14,7 @@ Scout `0.1.x` is a cross-platform public beta. Windows SmartScreen and macOS Gat
 
 ## What Scout does
 
-- Uses either the Codex CLI or Claude Code as the AI provider; a second provider is optional.
+- Uses a local OpenAI-compatible model server, the Codex CLI or Claude Code as the AI provider; a second provider is optional.
 - Imports selectable text from PDF, DOCX, Markdown, or plain-text CVs.
 - Interviews you to build a factual profile, configurable search lanes, exclusions, and a 100-point scoring rubric.
 - Offers optional Google XYZ evidence questions and a separate natural-voice review when tailoring a CV.
@@ -33,7 +33,7 @@ Scout is not an auto-apply tool. It does not invent qualifications, infer positi
 
 1. Install Scout from the release page and launch it. For a source checkout, see [Development setup](#development-setup).
 2. Create a new local workspace or restore an existing Scout workspace from a private GitHub backup. Scout proposes a platform-appropriate local path during setup.
-3. Install and sign in to either Codex or Claude, then let Scout verify it.
+3. Connect a local model server or sign in to Codex or Claude, then let Scout verify it.
 4. Import a CV, answer the setup questions, and generate one bounded proposal. Review every staged file before explicitly activating it.
 5. Optionally add Adzuna credentials, run `scout doctor`, then perform one supervised scan.
 6. Optionally connect a private GitHub repository for automatic backup. Git and Git Credential Manager are required only for backup/restore.
@@ -69,7 +69,7 @@ deletes active or recovery-critical runs, but this release does not expose a
 general cleanup button or CLI command; preserve the workspace and follow a
 reviewed operator handoff if a refusal is reached.
 
-Provider health is tracked separately for Codex and Claude. An unhealthy
+Provider health is tracked separately for Codex, Claude and local models. An unhealthy
 provider blocks only its own work and is never silently replaced. Use the
 owner-only guided sign-in in **Settings -> AI providers**, or the documented
 terminal command shown there. Scout never clears Claude credentials
@@ -101,7 +101,7 @@ scout workspace migrate --from PATH --to PATH
 scout workspace snapshot-beta22 [--workspace PATH]
 scout workspace rollback-beta22 --workspace PATH --to PATH [--snapshot PATH]
 scout cv quality <application-slug> [--workspace PATH]
-scout scan --provider codex|claude --mode primary|second-pass
+scout scan --provider codex|claude|local --mode primary|second-pass
 scout schedule install|status|remove|run-now
 ```
 
@@ -109,7 +109,7 @@ Run `scout` without arguments for command help.
 
 ## Development setup
 
-Requirements: a supported Windows, macOS, or Linux host; Node.js 24 LTS; Git; and at least one authenticated compatible provider CLI.
+Requirements: a supported Windows, macOS, or Linux host; Node.js 24 LTS; Git; and a local OpenAI-compatible model server or at least one authenticated compatible provider CLI.
 
 ```powershell
 git clone https://github.com/oliver-hitchings/Scout.git
@@ -134,3 +134,5 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change. Use synthetic f
 Report vulnerabilities through the private route described in [SECURITY.md](SECURITY.md), not in a public issue.
 
 Scout is available under the [MIT License](LICENSE).
+
+For a private Linux household server, see the [home server guide](docs/HOME_SERVER.md) for isolated instances, systemd timers, a local summary API and optional outbound notifications.

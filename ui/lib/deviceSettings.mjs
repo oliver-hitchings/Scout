@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { selectedHouseholdInstance } from './household.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,7 +9,13 @@ export const DEVICE_SETUP_SECTIONS = Object.freeze({ 'windows-startup': 1 });
 export const WINDOWS_STARTUP_TASK = '\\Scout\\Scout Host';
 const LEGACY_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 
-export function deviceSettingsPath(env = process.env, platform = process.platform) {
+export function deviceSettingsPath(env = process.env, platform = process.platform, { household = true } = {}) {
+  if (household) {
+    const argument = env === process.env ? process.argv.indexOf('--workspace') : -1;
+    const workspace = (argument >= 0 ? process.argv[argument + 1] : null) || env.SCOUT_WORKSPACE || null;
+    const selected = selectedHouseholdInstance({ env, workspace });
+    if (selected) return selected.deviceSettings;
+  }
   if (env.SCOUT_DEVICE_SETTINGS) return path.resolve(env.SCOUT_DEVICE_SETTINGS);
   const base = platform === 'win32'
     ? (env.LOCALAPPDATA || path.join(env.USERPROFILE || os.homedir(), 'AppData', 'Local'))

@@ -1,3 +1,4 @@
+import { isSafeModelId } from './modelIdentifier.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,6 +24,7 @@ import {
   readScanLease,
   synchronousFenceCallback,
 } from './scanLease.mjs';
+import { validatePhysicalWorkspacePath } from './physicalPath.mjs';
 
 const COMPATIBILITY_SCHEMA_VERSION = 1;
 const COMPATIBILITY_SCHEMA_VERSIONS = new Set([1, 2, 3]);
@@ -188,7 +190,11 @@ function checkedCompatibility(input, { candidate = false } = {}) {
     'provider', 'purpose', 'rankingVersion', 'targetRevision',
     ...(input.schemaVersion >= 2 ? ['scheduleJobId', 'logicalWindowId'] : []),
     ...(input.schemaVersion >= 3 ? ['lanePlanGeneration'] : []),
-  ]) token(input[field], `recovery compatibility ${field}`);
+  ]) {
+    if (field === 'model') {
+      if (!isSafeModelId(input[field])) throw new TypeError('recovery compatibility model is invalid');
+    } else token(input[field], `recovery compatibility ${field}`);
+  }
   if (typeof input.sourceConfigFingerprint !== 'string' || !SHA256.test(input.sourceConfigFingerprint)) {
     throw new TypeError('recovery compatibility source/config fingerprint is invalid');
   }
@@ -225,7 +231,9 @@ function checkedProviderSubstitution(value, request) {
   exactKeys(value, ['allowed', 'fromProvider', 'fromModel', 'toProvider', 'toModel'], 'provider substitution');
   if (value.allowed !== true) throw new TypeError('provider substitution must be explicitly allowed');
   for (const field of ['fromProvider', 'fromModel', 'toProvider', 'toModel']) {
-    token(value[field], `provider substitution ${field}`);
+    if (field.endsWith('Model')) {
+      if (!isSafeModelId(value[field])) throw new TypeError('provider substitution model is invalid');
+    } else token(value[field], `provider substitution ${field}`);
   }
   if (value.toProvider !== request.provider || value.toModel !== request.model) {
     throw new TypeError('provider substitution does not match requested provenance');
@@ -492,6 +500,14 @@ function appendDiagnosticRecord(file, identityKey, validateRecord, lease, makeRe
 
 function selectionFile(root) {
   return path.join(path.resolve(root), '.scout', 'recovery-selections.jsonl');
+}
+
+export function readRecoverySelections(root) {
+  const file = selectionFile(root);
+  validatePhysicalWorkspacePath(root, file, 'recovery selection journal');
+  const state = diagnosticJournalState(file, validateSelectionRecord, 'selectionId');
+  if (state.truncatedTail) throw new Error('recovery selection journal is truncated');
+  return state.events;
 }
 
 function candidateSortEnvelope(input, index) {

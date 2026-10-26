@@ -1,3 +1,4 @@
+import { isSafeModelId } from './modelIdentifier.mjs';
 import { createHash } from 'node:crypto';
 import {
   ASSESSMENT_ARTIFACT_SCHEMA_VERSION,
@@ -203,7 +204,9 @@ function validateProvenance(value) {
   ];
   if (!exactKeys(value, keys)) throw new TypeError('assessment provenance is invalid');
   for (const key of ['profileVersion', 'promptVersion', 'pipelineVersion', 'provider', 'model']) {
-    safeId(value[key], `assessment provenance ${key}`);
+    if (key === 'model') {
+      if (!isSafeModelId(value[key])) throw new TypeError('assessment provenance model is invalid');
+    } else safeId(value[key], `assessment provenance ${key}`);
   }
   positiveInteger(value.assessmentSchemaVersion, 'assessment schema version');
   return value;
@@ -995,7 +998,7 @@ function assertOrRecordSubstitution(run, batches, context) {
   appendRunEvent(run, {
     type: 'recovery.provider-substituted',
     stageId: 'assessment',
-    idempotencyKey: `assessment-provider-substitution-${next.provider}-${next.model}`,
+    idempotencyKey: `assessment-provider-substitution-${next.provider}-${SAFE_ID.test(next.model) ? next.model : digest(next.model).slice(0, 32)}`,
     payload: { schemaVersion: 1, ...decision },
   }, context.lease);
 }

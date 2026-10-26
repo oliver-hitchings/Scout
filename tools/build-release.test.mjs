@@ -107,6 +107,74 @@ test('release tree filter omits tests and snapshots', () => {
   }
 });
 
+test('real release and public-source staging omit nested dependency trees while retaining production dependencies', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-nested-dependencies-'));
+  const root = path.join(base, 'source');
+  const runtimeDir = path.join(base, 'runtime');
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  const nodeExecutable = path.join(runtimeDir, 'node');
+  const typstExecutable = path.join(runtimeDir, 'typst');
+  fs.writeFileSync(nodeExecutable, 'synthetic-runtime');
+  fs.writeFileSync(typstExecutable, 'synthetic-typst');
+  const trees = new Set();
+  const nestedPaths = [
+    'node_modules/synthetic-shadow/entry.mjs',
+    'nested/NODE_MODULES/synthetic-shadow/entry.mjs',
+  ];
+  try {
+    for (const entry of [...RELEASE_FILES, ...PUBLIC_SOURCE_FILES]) {
+      const target = path.join(root, entry.source);
+      if (entry.tree) {
+        fs.mkdirSync(target, { recursive: true });
+        trees.add(entry.target);
+        fs.writeFileSync(path.join(target, 'source.mjs'), 'export const synthetic = true;\n');
+        for (const relative of nestedPaths) {
+          const shadow = path.join(target, relative);
+          fs.mkdirSync(path.dirname(shadow), { recursive: true });
+          fs.writeFileSync(shadow, 'export const shadow = true;\n');
+        }
+      } else {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, entry.source === 'package.json'
+          ? JSON.stringify({ version: '1.0.0', dependencies: { 'selected-package': '1.0.0' } })
+          : entry.source === 'package-lock.json'
+            ? JSON.stringify({ lockfileVersion: 3, packages: {
+              '': { dependencies: { 'selected-package': '1.0.0' } },
+              'node_modules/selected-package': { version: '1.0.0' },
+              'node_modules/selected-package/node_modules/transitive': { version: '1.0.0' },
+            } })
+            : 'synthetic public input\n');
+      }
+    }
+    for (const relative of [
+      'node_modules/selected-package/index.js',
+      'node_modules/selected-package/node_modules/transitive/index.js',
+    ]) {
+      const file = path.join(root, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, 'module.exports = true;\n');
+    }
+    const release = stageRelease({
+      root, stageDir: path.join(base, 'release'), nodeExecutable, typstExecutable,
+    });
+    const source = stagePublicSource({ root, stageDir: path.join(base, 'public-source') });
+    const copied = [];
+    for (const tree of trees) {
+      for (const relative of nestedPaths) {
+        for (const destination of [release.appDir, source.stageDir]) {
+          if (fs.existsSync(path.join(destination, tree, relative))) copied.push(`${tree}/${relative}`);
+        }
+      }
+    }
+    assert.deepEqual(copied, [], 'allowlisted source trees must not copy nested dependency trees');
+    assert.equal(fs.existsSync(path.join(release.appDir, 'node_modules', 'selected-package', 'index.js')), true);
+    assert.equal(fs.existsSync(path.join(release.appDir, 'node_modules', 'selected-package', 'node_modules', 'transitive', 'index.js')), true);
+    assert.equal(fs.existsSync(path.join(source.stageDir, 'node_modules')), false);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('production dependency filter excludes development-only browser tooling', () => {
   const include = productionDependencyFilter({
     packages: {

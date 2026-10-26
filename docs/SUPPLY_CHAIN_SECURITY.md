@@ -1,8 +1,98 @@
 # Release package verification and signing
 
-Scout publishes SHA-256 checksums and GitHub artifact attestations for packages built by the current tagged-release workflow. Verify both before installing a package. The checksum detects changed bytes; the attestation links those bytes to the release workflow in `oliver-hitchings/Scout`.
+Scout publishes SHA-256 checksums and GitHub artifact attestations for packages built by the current tagged-release workflow. New releases also require an owner-signed release manifest. Verify the signature, checksum and attestation before installing a package. The checksum detects changed bytes; the attestation links those bytes to the release workflow in `oliver-hitchings/Scout`.
 
 Windows and macOS packages remain operating-system unsigned. Windows SmartScreen and macOS Gatekeeper therefore cannot yet identify Scout through an Authenticode or Apple Developer ID publisher certificate.
+
+## Signed manifest and installer preflight
+
+The updater requires `release-manifest.json` and its detached Ed25519
+`release-manifest.sig`. The manifest binds the repository, exact release version,
+and each package's filename, byte length and SHA-256. Scout checks a locally
+bundled public key and its revocation list before requesting installer bytes.
+Unknown, revoked, missing, malformed, oversized or altered signing metadata
+blocks the download. Streamed byte limits, SHA-256 verification and atomic
+publication remain required after signature verification. Unsigned older
+releases can still be inspected on GitHub but cannot be downloaded by Scout.
+
+Before manually running an installer, use the same verifier from an existing
+trusted Scout installation or a separately verified source checkout:
+
+```sh
+node tools/release-signing.mjs verify --package Scout-<version>-<platform-package> \
+  --manifest release-manifest.json --signature release-manifest.sig \
+  --version <version>
+```
+
+Run the native installer only after that command succeeds. This preflight does
+not replace Authenticode or Gatekeeper and cannot stop a user from bypassing it
+and opening an installer directly. Obtain Scout's verifier and trusted public
+keys independently of the package being checked. An explicit `--trust-file`
+may select an independently authenticated trust JSON file for offline use;
+never trust a key merely because it arrived beside a downloaded installer.
+There is no environment or network override for the updater's bundled trust.
+
+The initial `ui/lib/releaseKeys.json` intentionally contains no public keys.
+**Owner enrollment is required before production update downloads or signed
+publication can succeed.** CI generates a throwaway Ed25519 key in a temporary
+directory, verifies real signed synthetic installer bytes, then deletes the key.
+No test or production private key is committed or packaged.
+
+## Owner key creation, enrollment, rotation and revocation
+
+1. On the owner's trusted signing machine, outside the repository and workspace,
+   create an Ed25519 key. Restrict the directory and private file to the owner:
+
+   ```sh
+   umask 077
+   openssl genpkey -algorithm ED25519 -out OWNER_PRIVATE_SIGNING_KEY.pem
+   openssl pkey -in OWNER_PRIVATE_SIGNING_KEY.pem -pubout -out OWNER_PUBLIC_SIGNING_KEY.pem
+   ```
+
+2. Keep the private key in the owner's protected secret store with a separate
+   encrypted recovery copy. Never add it to Git, a workspace, CI output or an
+   artifact. Compute the public key ID as SHA-256 of its SPKI DER encoding:
+
+   ```sh
+   openssl pkey -pubin -in OWNER_PUBLIC_SIGNING_KEY.pem -outform DER | openssl dgst -sha256
+   ```
+
+3. In a separately reviewed change, add only `{ "keyId": "<64-hex-public-key-id>",
+   "publicKey": "<PEM-public-key>" }` to `keys` in `ui/lib/releaseKeys.json`.
+   Keep `schemaVersion: 1` and `revokedKeyIds: []`. Verify the fingerprint
+   through a separate trusted channel. The owner controls the identity and
+   review; an automated agent must never invent a production identity.
+4. Configure the protected GitHub Environment `release-signing`, required owner
+   approval and restricted release-tag access. Only that environment receives
+   `SCOUT_RELEASE_SIGNING_KEY`. The publication job writes it to a private
+   temporary file, signs all packages, verifies them against the enrolled
+   bundled public key and removes the file on exit. A missing or mismatched key
+   fails publication closed. Release-candidate tags containing `-rc` neither
+   deploy nor publish.
+5. For offline signing of a fresh artifact directory:
+
+   ```sh
+   node tools/release-signing.mjs sign --directory RELEASE_ARTIFACTS \
+     --version <version> --key-file OWNER_PRIVATE_SIGNING_KEY.pem
+   ```
+
+   Preserve `checksums.txt`; the updater requires it to agree with the signed
+   manifest. Ship both manifest files beside the immutable packages.
+6. To rotate, ship the new public key in a release signed by the still-trusted
+   old key, allow installations to receive the trust update, then switch the
+   protected signing secret. Retain old public keys only for the documented
+   transition period. Record key IDs and activation dates in public release
+   notes, never private key material.
+7. On compromise, disable publication, remove the old active key, append its
+   ID to `revokedKeyIds`, rotate the secret and publish an independently
+   authenticated replacement installer and security advisory. Old installed
+   clients cannot learn a new revocation list through untrusted metadata:
+   affected owners must install the trusted replacement out of band. Never
+   move an existing tag or claim revocation retroactively secures old clients.
+
+Signing is additive to the F-1 sealed packaging/publication controls in PR #84.
+Those controls remain a separate release gate and are not replaced by a valid
+manifest signature.
 
 ## Verify a downloaded package
 
@@ -66,11 +156,49 @@ The project has no long-lived project signing key for these attestations. For a 
 
 The repository owner controls who can approve and change the tagged-release workflow. The `publish` job alone receives `id-token: write` and `attestations: write`; build jobs and workflow-dispatch rehearsals cannot publish releases or attestations. Every subject digest is generated from `checksums.txt`, verified locally, verified again with `gh attestation verify`, and only then published.
 
-Every reusable action in the release workflow is pinned to a reviewed immutable
-full commit SHA, with its major release line retained only as a comment for
-maintenance. Privileged jobs reject mutable tag references in tests. Updating
+Every reusable action in a workflow that receives secrets is pinned to a reviewed
+immutable full commit SHA, with its major release line retained only as a comment
+for maintenance. This includes both jobs in CI, tagged-release builds and
+publication, and workspace repair. Tests discover every workflow containing a
+secret reference and reject mutable action references throughout it. Updating
 one of those SHAs requires a reviewed dependency change and another
 release-candidate rehearsal.
+
+Allowlisted application and public-source trees omit nested `node_modules`
+directories, including differently cased names. Production dependencies enter a
+release only through the separate top-level dependency staging pass, selected
+from the lockfile. That pass retains required nested production dependencies and
+the existing private-file filters; the staged-tree privacy audit still inspects
+their contents.
+
+The audit has one narrowly reviewed metadata exception for Ajv's pinned security
+meta-schema: the `advert-body` heuristic at line 5 of exactly
+`node_modules/ajv/dist/refs/json-schema-secure.json` and its `lib/refs` copy,
+beneath only these app roots relative to the audited stage:
+
+- `app` (common stage and Windows installer);
+- `deb/opt/scout/app` (Linux Debian package);
+- `Scout-<package-version>-linux-x64/app` (Linux portable package, using the
+  exact version from the auditor's own package); and
+- `dmg-root/Scout.app/Contents/Resources/app` (macOS disk-image bundle).
+
+Both must have SHA-256
+`b7840b4f1526eee47ac19780906a436d0c39df2aa3d505388caf18864085a421`.
+This is public schema-description text, not an advert. A byte change, different
+path, additional parent directory or different portable version removes the
+exception. The audit still inspects the entire stage, including files outside
+these roots. Personal-marker, credential, prompt, transcript,
+private-path and all other checks still apply. Dependency upgrades must review
+any changed metadata before updating this exact digest.
+
+CI runs `npm audit --omit=dev` against the locked production tree and fails if
+the registry reports a known vulnerability. Ajv is pinned to the patched
+8.20.0 release; Mammoth's compatible XML-parser dependency is locked to
+`@xmldom/xmldom` 0.8.15. These resolve the reported Ajv `$data` ReDoS and
+xmldom XML injection, parser-time and memory-consumption advisories. The two
+reviewed Ajv meta-schema files remain byte-for-byte identical after this update;
+their digest exception is unchanged. Use `npm ci` to reproduce the reviewed
+dependency tree before testing imports and provider validation.
 
 Release staging refuses symbolic links for both copied trees and individually
 allowlisted inputs, including a link in any ancestor component, except for the

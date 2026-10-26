@@ -19,6 +19,7 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'tools/remote-hosting-preflight.mjs', target: 'tools/remote-hosting-preflight.mjs' },
   { source: 'tools/typst-runtime.mjs', target: 'tools/typst-runtime.mjs' },
   { source: 'tools/scan-lock.mjs', target: 'tools/scan-lock.mjs' },
+  { source: 'tools/release-signing.mjs', target: 'tools/release-signing.mjs' },
   { source: 'tools/fetch-adzuna.mjs', target: 'tools/fetch-adzuna.mjs' },
   { source: 'tools/fetch-ats.mjs', target: 'tools/fetch-ats.mjs' },
   { source: 'tools/fetch-hiring-cafe.mjs', target: 'tools/fetch-hiring-cafe.mjs' },
@@ -32,17 +33,23 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'docs/DOCUMENTATION.md', target: 'docs/DOCUMENTATION.md' },
   { source: 'docs/OPERATIONS.md', target: 'docs/OPERATIONS.md' },
   { source: 'docs/QUICK_START.md', target: 'docs/QUICK_START.md' },
+  { source: 'docs/GETTING_STARTED.md', target: 'docs/GETTING_STARTED.md' },
+  { source: 'docs/LIVING_CV.md', target: 'docs/LIVING_CV.md' },
   { source: 'docs/INSTALL_WINDOWS.md', target: 'docs/INSTALL_WINDOWS.md' },
   { source: 'docs/INSTALL_MACOS.md', target: 'docs/INSTALL_MACOS.md' },
   { source: 'docs/INSTALL_LINUX.md', target: 'docs/INSTALL_LINUX.md' },
   { source: 'docs/INSTALL_VPS.md', target: 'docs/INSTALL_VPS.md' },
+  { source: 'docs/HOME_SERVER.md', target: 'docs/HOME_SERVER.md' },
   { source: 'docs/VPS_BACKUP_AND_STATE.md', target: 'docs/VPS_BACKUP_AND_STATE.md' },
   { source: 'docs/AI_SETUP.md', target: 'docs/AI_SETUP.md' },
   { source: 'docs/CONFIGURATION.md', target: 'docs/CONFIGURATION.md' },
+  { source: 'docs/SEARCH_MODES_AND_ALERTS.md', target: 'docs/SEARCH_MODES_AND_ALERTS.md' },
   { source: 'docs/PRIVACY.md', target: 'docs/PRIVACY.md' },
   { source: 'docs/PRIVATE_REMOTE_ACCESS.md', target: 'docs/PRIVATE_REMOTE_ACCESS.md' },
   { source: 'docs/CV_QUALITY.md', target: 'docs/CV_QUALITY.md' },
   { source: 'docs/PROVIDERS.md', target: 'docs/PROVIDERS.md' },
+  { source: 'docs/RECONNECT_PROVIDER.md', target: 'docs/RECONNECT_PROVIDER.md' },
+  { source: 'docs/ACCEPTANCE.md', target: 'docs/ACCEPTANCE.md' },
   { source: 'docs/ADZUNA_AND_SOURCES.md', target: 'docs/ADZUNA_AND_SOURCES.md' },
   { source: 'docs/AUTOMATION.md', target: 'docs/AUTOMATION.md' },
   { source: 'docs/UPGRADES.md', target: 'docs/UPGRADES.md' },
@@ -67,13 +74,17 @@ export const PUBLIC_SOURCE_FILES = Object.freeze([
   { source: '.agents/skills', target: '.agents/skills', tree: true },
   { source: '.claude/skills', target: '.claude/skills', tree: true },
   { source: '.github', target: '.github', tree: true },
+  { source: 'tests/native', target: 'tests/native', tree: true },
   { source: 'installer', target: 'installer', tree: true, publicFilter: true },
   { source: 'templates', target: 'templates', tree: true },
   { source: 'skills', target: 'skills', tree: true },
   ...[
     'tools/build-release.mjs', 'tools/build-release.test.mjs',
     'tools/build-platform.mjs', 'tools/build-platform.test.mjs',
+    'tools/native-install-smoke.mjs', 'tools/native-provider.test.mjs', 'tools/windows-native.test.mjs',
+    'tools/nativeInstallBoundary.mjs', 'tools/nativeInstallBoundary.test.mjs',
     'tools/release-audit.mjs', 'tools/release-audit.test.mjs',
+    'tools/release-signing.mjs', 'tools/release-signing.test.mjs',
     'tools/fetch-adzuna.mjs', 'tools/fetch-ats.mjs', 'tools/fetch-hiring-cafe.mjs',
     'tools/scan-lock.mjs', 'tools/scan-lock.test.mjs', 'tools/scan-skill-parity.test.mjs',
     'tools/scout.mjs', 'tools/scout.test.mjs',
@@ -88,12 +99,13 @@ function normalise(relative) {
   return String(relative).replaceAll('\\', '/').replace(/^\.\/+/, '');
 }
 
-export function includeCopiedTreePath(relative) {
+export function includeCopiedTreePath(relative, { allowDependencyTrees = false } = {}) {
   const value = normalise(relative);
   const lower = value.toLocaleLowerCase('en-US');
   const base = path.posix.basename(lower);
   const parts = lower.split('/').filter(Boolean);
   if (parts.includes('.git')) return false;
+  if (!allowDependencyTrees && parts.includes('node_modules')) return false;
   if (
     base === 'workspace.json'
     && lower !== 'templates/workspace/workspace.json'
@@ -104,9 +116,9 @@ export function includeCopiedTreePath(relative) {
   return true;
 }
 
-export function includeReleasePath(relative) {
+export function includeReleasePath(relative, options) {
   const value = normalise(relative);
-  if (!includeCopiedTreePath(value)) return false;
+  if (!includeCopiedTreePath(value, options)) return false;
   const lower = value.toLocaleLowerCase('en-US');
   const base = path.posix.basename(lower);
   const parts = lower.split('/').filter(Boolean);
@@ -461,7 +473,8 @@ export function stageRelease({
       required(resolvedRoot, 'node_modules'),
       path.join(appDir, 'node_modules'),
       '',
-      (relative) => includeReleasePath(relative) && includeProductionDependency(relative),
+      (relative) => includeReleasePath(relative, { allowDependencyTrees: true })
+        && includeProductionDependency(relative),
       resolvedRoot,
     );
   }

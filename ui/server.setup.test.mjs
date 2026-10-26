@@ -6,11 +6,88 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { deflateSync } from 'node:zlib';
+import { approveLivingCv, approvedLivingCvEvidence, configureLivingCv, livingCvStatus } from './lib/livingCv.mjs';
+import { atomicWriteFile } from './lib/atomicWrite.mjs';
 
 const appRoot = path.resolve(import.meta.dirname, '..');
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-setup-http-'));
 const port = 19000 + Math.floor(Math.random() * 10000);
 let child;
+let controlId = 0;
+
+// Run the production entry point with an IPC-only fixture control. Holding one
+// real Git child makes checkpoint overlap reproducible on every host.
+async function setupServerFixture() {
+  const { default: childProcess } = await import('node:child_process');
+  const { syncBuiltinESMExports } = await import('node:module');
+  const { pathToFileURL } = await import('node:url');
+  const spawnChild = childProcess.spawn;
+  let holdRequest = null;
+  let heldChild = null;
+  childProcess.spawn = (command, args, options) => {
+    if (command !== 'git' || holdRequest === null) return spawnChild(command, args, options);
+    const id = holdRequest;
+    holdRequest = null;
+    const script = `
+      const { spawnSync } = require('node:child_process');
+      process.once('message', () => {
+        const result = spawnSync('git', process.argv.slice(1), { stdio: ['ignore', 'inherit', 'inherit'], env: process.env });
+        process.exit(result.status ?? 1);
+      });
+      process.send('ready');
+    `;
+    heldChild = spawnChild(process.execPath, ['-e', script, ...args], {
+      ...options, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    heldChild.once('message', () => process.send({ id, ok: true }));
+    return heldChild;
+  };
+  syncBuiltinESMExports();
+  // argv[1] remains the real server path, so its normal startup and shutdown
+  // paths execute just as they do when launched directly.
+  const server = await import(pathToFileURL(process.argv[1]));
+  process.on('message', async ({ id, action }) => {
+    try {
+      if (action === 'hold-checkpoint') {
+        holdRequest = id;
+        void server.scheduleCheckpoint('synthetic delayed checkpoint');
+        void server.drainScheduledCheckpoints();
+        return; // Reply only once the Git child is alive under the fence.
+      }
+      if (action !== 'drain-checkpoints') throw new Error('unknown fixture control');
+      if (heldChild) {
+        heldChild.send('continue');
+        heldChild = null;
+      }
+      await server.drainScheduledCheckpoints();
+      process.send({ id, ok: true });
+    } catch (error) {
+      process.send({ id, error: error.message });
+    }
+  });
+}
+
+function serverControl(action) {
+  const id = ++controlId;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { cleanup(); reject(new Error(`setup fixture control timed out: ${action}`)); }, 10000);
+    const onExit = () => { cleanup(); reject(new Error('setup fixture server exited during control')); };
+    const onMessage = (message) => {
+      if (message.id !== id) return;
+      cleanup();
+      if (message.error) reject(new Error(message.error));
+      else resolve();
+    };
+    function cleanup() {
+      clearTimeout(timer);
+      child.off('message', onMessage);
+      child.off('exit', onExit);
+    }
+    child.on('message', onMessage);
+    child.once('exit', onExit);
+    child.send({ id, action });
+  });
+}
 
 function simplePdf(text = '') {
   const escaped = text.replace(/([\\()])/g, '\\$1');
@@ -146,10 +223,10 @@ function request({ method = 'GET', route, body, rawBody }) {
 }
 
 before(async () => {
-  child = spawn(process.execPath, ['ui/server.mjs'], {
+  child = spawn(process.execPath, ['--input-type=module', '--eval', `(${setupServerFixture.toString()})();`, path.join(appRoot, 'ui/server.mjs')], {
     cwd: appRoot,
     env: { ...process.env, SCOUT_WORKSPACE: workspace, SCOUT_DEVICE_SETTINGS: path.join(workspace, '.scout', 'device-settings.json'), PORT: String(port) },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('setup test server did not start')), 10000);
@@ -171,6 +248,7 @@ after(async () => {
         body: { reason: 'setup test cleanup' },
       });
       assert.equal(drained.status, 200, drained.text);
+      await serverControl('drain-checkpoints');
     } catch (error) {
       drainError = error;
     } finally {
@@ -237,15 +315,75 @@ test('master CV saves reject an empty replacement without changing the active fi
   assert.equal(fs.readFileSync(file, 'utf8'), before);
 });
 
-test('fresh setup cannot be marked complete before trusted proposal activation', async () => {
-  const completed = await request({ method: 'POST', route: '/api/setup/complete', body: {} });
-  assert.equal(completed.status, 409);
-  assert.match(completed.json.error, /activate a complete onboarding proposal/);
+test('Living CV API requires exact review, rejects stale approval and preserves local history', async () => {
+  const source = path.join(os.tmpdir(), `scout-synthetic-cv-${process.pid}.md`);
+  const file = path.join(workspace, 'cv/master-cv.md');
+  const previous = fs.readFileSync(file, 'utf8');
+  const text = '# Synthetic CV\n' + 'Confirmed experience. '.repeat(40);
+  fs.writeFileSync(source, text);
+  try {
+    const configured = await request({ method: 'POST', route: '/api/cv/living/source', body: { sourcePath: source } });
+    assert.equal(configured.status, 200);
+    assert.equal(configured.json.state, 'changed');
+    assert.equal(fs.readFileSync(file, 'utf8'), previous);
+    const unconfirmed = await request({ method: 'POST', route: '/api/cv/living/approve', body: { revision: configured.json.revision } });
+    assert.equal(unconfirmed.status, 409);
+    fs.appendFileSync(source, '\nA later edit.');
+    const stale = await request({ method: 'POST', route: '/api/cv/living/approve', body: { revision: configured.json.revision, confirmed: true } });
+    assert.equal(stale.status, 409);
+    const status = await request({ route: '/api/cv/living' });
+    const accepted = await request({ method: 'POST', route: '/api/cv/living/approve', body: { revision: status.json.revision, confirmed: true } });
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.json.state, 'current');
+    assert.equal(accepted.json.versions.length, 2);
+    assert.equal(fs.readFileSync(file, 'utf8'), text + '\nA later edit.');
+  } finally {
+    fs.rmSync(source, { force: true });
+    fs.writeFileSync(file, previous);
+  }
+});
 
-  const status = await request({ route: '/api/setup/status' });
-  assert.equal(status.json.setupComplete, false);
-  const saved = JSON.parse(fs.readFileSync(path.join(workspace, 'workspace.json'), 'utf8'));
-  assert.equal(saved.setup.completedAt, null);
+test('the CV status API reconciles an interrupted approval before showing it as current', async () => {
+  const source = path.join(os.tmpdir(), `scout-synthetic-recovery-cv-${process.pid}.md`);
+  const content = '# Synthetic reviewed CV\n' + 'Current confirmed evidence. '.repeat(35);
+  fs.writeFileSync(source, content);
+  try {
+    await request({ method: 'POST', route: '/api/sync/backup', body: { reason: 'synthetic approval recovery' } });
+    await serverControl('hold-checkpoint');
+    // A manual backup response does not drain the coalesced automatic batch.
+    // Wait for this server's actual scheduled and active checkpoint work.
+    await serverControl('drain-checkpoints');
+    configureLivingCv(workspace, source);
+    assert.throws(() => approveLivingCv(workspace, { revision: livingCvStatus(workspace).revision, confirmed: true }, {
+      writeFile(file, value, options) { if (file.endsWith('living-cv.json')) throw new Error('synthetic interruption'); atomicWriteFile(file, value, options); },
+    }), /interruption/);
+    assert.equal(livingCvStatus(workspace).state, 'recovery-needed');
+    const status = await request({ route: '/api/cv/living' });
+    assert.equal(status.status, 200);
+    assert.equal(status.json.state, 'current');
+    assert.equal(approvedLivingCvEvidence(workspace), content);
+    assert.ok(!fs.existsSync(path.join(workspace, 'cv/living-cv-approval.json')));
+  } finally {
+    await serverControl('drain-checkpoints');
+    fs.rmSync(source, { force: true });
+  }
+});
+
+test('fresh setup cannot be marked complete before trusted proposal activation', async () => {
+  await serverControl('hold-checkpoint');
+  try {
+    await serverControl('drain-checkpoints');
+    const completed = await request({ method: 'POST', route: '/api/setup/complete', body: {} });
+    assert.equal(completed.status, 409);
+    assert.match(completed.json.error, /activate a complete onboarding proposal/);
+
+    const status = await request({ route: '/api/setup/status' });
+    assert.equal(status.json.setupComplete, false);
+    const saved = JSON.parse(fs.readFileSync(path.join(workspace, 'workspace.json'), 'utf8'));
+    assert.equal(saved.setup.completedAt, null);
+  } finally {
+    await serverControl('drain-checkpoints');
+  }
 });
 
 test('sync status is local-only by default and restore refuses an established workspace', async () => {
@@ -266,7 +404,7 @@ test('sync status is local-only by default and restore refuses an established wo
 test('configured categories and triage thresholds flow through the opportunities API', async () => {
   const configured = await request({
     method: 'POST', route: '/api/setup/config',
-    body: { triage: { actionScore: 82, checkScore: 64 } },
+    body: { mode: 'active', triage: { actionScore: 82, checkScore: 64 } },
   });
   assert.equal(configured.status, 200);
   fs.writeFileSync(path.join(workspace, 'data', 'search-categories.json'), JSON.stringify({

@@ -1,8 +1,10 @@
+import { runLocalTurn } from './localProvider.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import {
-  loadChat, saveChat, emptyChat, appendMessage, addFilesTouched, recordHandoff, chatPurpose,
+  loadChat, saveChat, consumeChatRetry, emptyChat, appendMessage, addFilesTouched, recordHandoff, chatPurpose,
 } from './chatStore.mjs';
 import { buildClaudeArgs, parseClaudeLine } from './chatClaude.mjs';
 import { buildCodexArgs, parseCodexLine } from './chatCodex.mjs';
@@ -16,10 +18,11 @@ import {
   detectedModels, effectiveProviderModel, isSafeModelId, providerModelCatalogue,
 } from './providerModels.mjs';
 import { loadWorkspaceConfig, modelForProvider } from './workspace.mjs';
-import { detectProviderModelCataloguesAsync, providerStatus } from './providers.mjs';
+import { detectProviderModelCataloguesAsync, providerFailureClassification, providerLocalHealthSignal, providerStatus } from './providers.mjs';
 import { runStructuredTurn } from './structuredTurn.mjs';
 import { withWorkspaceMutationAuthorityAsync } from './workspaceMutationAuthority.mjs';
-import { recordProviderResultHealth } from './providerHealth.mjs';
+import { assertLivingCvReady } from './livingCv.mjs';
+import { providerPreflight, recordProviderResultHealth } from './providerHealth.mjs';
 import {
   acquireProviderWork, assertProviderAuthIdle, createProviderWorkSupervisor,
   releaseProviderWork, renewProviderWork,
@@ -31,6 +34,7 @@ import {
 export const ENGINES = {
   claude: { build: buildClaudeArgs, parse: parseClaudeLine },
   codex: { build: buildCodexArgs, parse: parseCodexLine },
+  local: { build: () => ({}), parse: () => null },
 };
 
 const running = new Map(); // opportunity id -> { stop() }
@@ -108,6 +112,7 @@ function assistantUpdates(result) {
 }
 
 const TURN_FAILURE_MESSAGES = Object.freeze({
+  'authentication-required': 'Provider sign-in is required. Reconnect, then choose Resend.',
   'model-rejected': 'The provider rejected that model.',
   'output-limit': 'Provider output exceeded the safe limit.',
   'process-start-failed': 'Provider turn could not start.',
@@ -120,7 +125,8 @@ const TURN_FAILURE_MESSAGES = Object.freeze({
 function safeTurnFailure(result) {
   const reasonCode = Object.hasOwn(TURN_FAILURE_MESSAGES, result?.reasonCode)
     ? result.reasonCode
-    : 'provider-error';
+    : providerFailureClassification(result).reasonCode === 'authentication-required'
+      ? 'authentication-required' : 'provider-error';
   return {
     reasonCode,
     message: TURN_FAILURE_MESSAGES[reasonCode],
@@ -161,6 +167,7 @@ export function registerChatRoutes({
   withWorkspaceMutationAuthorityAsyncFn = withWorkspaceMutationAuthorityAsync,
 }) {
   let accepting = true;
+  const pendingSends = new Map();
   const activeHandlers = new Set();
   const trackHandler = (task) => {
     const pending = Promise.resolve(task);
@@ -191,6 +198,10 @@ export function registerChatRoutes({
     while (values.size > 100) values.delete(values.values().next().value);
   };
   function checkpoint(reason) { Promise.resolve(onCheckpoint(reason)).catch(() => {}); }
+  function rememberRetry(chat, engine, mode = null) {
+    const messageIndex = chat.messages.findLastIndex(({ role }) => role === 'user');
+    if (messageIndex >= 0) chat.retry = { id: randomUUID(), engine, mode, messageIndex };
+  }
   function superviseProviderWork(provider) {
     return createProviderWorkSupervisor(repoRoot, provider, {
       acquire: acquireProviderWorkFn,
@@ -203,6 +214,7 @@ export function registerChatRoutes({
     const result = await withWorkspaceMutationAuthorityAsyncFn(repoRoot, {
       kind: 'chat-provider', phase,
     }, async ({ coordinator }) => {
+      assertLivingCvReady(repoRoot);
       let childOperation = coordinator.beginChild(phase);
       try {
         turn = start();
@@ -241,25 +253,52 @@ export function registerChatRoutes({
   }
   // A conversation may pin its own model. Without one it follows the provider
   // default from settings, so existing chats keep working unchanged.
-  function engineStatus(engine, modelOverride = null) {
+  async function engineStatus(engine, modelOverride = null) {
+    assertLivingCvReady(repoRoot);
     const config = loadWorkspaceConfig(repoRoot);
     assertProviderAuthIdleFn(repoRoot, engine);
-    const status = providerStatusFn(engine);
-    if (!status.installed || !status.authenticated) throw new Error(`${engine} CLI is not installed and signed in`);
+    const status = providerStatusFn(engine, { local: config.ai?.local, root: repoRoot });
+    const health = await providerPreflight(repoRoot, engine, 'manual-run', {
+      source: 'manual-preflight',
+      probe: async () => providerLocalHealthSignal(status, { source: 'manual-preflight' }),
+    });
+    if (!health.ok) {
+      const error = new Error('Provider health blocks this turn.');
+      error.reasonCode = health.state === 'sign-in-required' ? 'authentication-required' : health.reasonCode;
+      throw error;
+    }
     return { config, status, model: modelOverride || modelForProvider(config, engine) };
   }
 
-  function engineBuild(engine, resumeId, modelOverride = null) {
-    const { status, model } = engineStatus(engine, modelOverride);
+  async function engineBuild(engine, resumeId, modelOverride = null) {
+    const { status, model } = await engineStatus(engine, modelOverride);
+    if (engine === 'local') return { localStatus: status, model };
     return ENGINES[engine].build(resumeId, {
       model, command: status.executable, env: status.env,
       ...(engine === 'codex' ? { reasoningEffort: 'medium' } : {}),
     });
   }
+  function startChatProviderTurn(engine, { localStatus, ...options }) {
+    return engine === 'local' ? runLocalTurn({ ...options, status: localStatus }) : runTurnFn(options);
+  }
+  function localConversation(chat, latest) {
+    const prior = [];
+    let characters = latest.length;
+    for (const message of [...(chat.messages || [])].reverse()) {
+      if (!['user', 'assistant'].includes(message.role)) continue;
+      const content = String(message.text || '');
+      if (characters + content.length > 256_000 || prior.length >= 40) break;
+      prior.unshift({ role: message.role, content });
+      characters += content.length;
+    }
+    return [...prior, { role: 'user', content: latest }];
+  }
   function turnStartMessage(error, fallback) {
     return error?.reasonCode === 'provider-auth-in-progress'
       ? 'Provider sign-in is being updated. Wait for it to finish, then retry.'
-      : fallback;
+      : error?.reasonCode === 'authentication-required'
+        ? 'Provider sign-in is required. Reconnect the provider, then resend explicitly.'
+        : fallback;
   }
   function entryOf(id) {
     if (id === ONBOARDING_CHAT_ID) {
@@ -343,9 +382,10 @@ export function registerChatRoutes({
     if (!entry) return replyJson(res, 404, { error: 'no such opportunity' });
     let chat;
     try { chat = loadChat(repoRoot, id, purpose); } catch { return replyJson(res, 400, { error: 'Chat history could not be read.' }); }
-    // A failed cold start has no resumable CLI session. Keep its error history,
-    // but expose an unset engine so the other installed CLI remains selectable.
-    const visibleChat = chat && !chat.cliSessionId && !chat.bounded ? { ...chat, engine: null } : chat;
+    // A failed CLI cold start has no resumable session. Keep its error history,
+    // but leave another CLI selectable. Local conversations retain their engine:
+    // their saved messages provide context without a provider-owned session.
+    const visibleChat = chat && chat.engine !== 'local' && !chat.cliSessionId && !chat.bounded ? { ...chat, engine: null } : chat;
     const config = loadWorkspaceConfig(repoRoot);
     const cvOptions = {
       xyz: url.searchParams.get('xyz') !== '0',
@@ -439,21 +479,37 @@ export function registerChatRoutes({
     try { chatPurpose(b.purpose || 'job'); } catch (e) { return replyJson(res, 400, { error: e.message }); }
     const turn = running.get(b.id || '');
     if (turn) turn.stop();
-    return replyJson(res, 200, { ok: true, stopped: !!turn });
+    const pending = pendingSends.get(b.id || '');
+    if (pending) pending.cancelled = true;
+    return replyJson(res, 200, { ok: true, stopped: !!turn || !!pending });
   };
 
   routes['POST /api/chat/send'] = (req, res, body) => {
     if (!accepting) return replyJson(res, 503, { error: 'Scout is shutting down' });
     const b = parseBody(body);
     if (!b) return replyJson(res, 400, { error: 'bad json' });
-    trackHandler(handleSend(req, res, b));
+    try { assertLivingCvReady(repoRoot); }
+    catch { return replyJson(res, 409, { error: 'Recover the pending CV approval before starting chat or fit assessment.' }); }
+    const id = b.id || '';
+    if (pendingSends.has(id)) return replyJson(res, 409, { error: 'a turn is already running for this job' });
+    const pending = { cancelled: false };
+    pendingSends.set(id, pending);
+    trackHandler(handleSend(req, res, b, pending)).finally(() => pendingSends.delete(id)).catch(() => {
+      if (res.headersSent) {
+        sseSend(res, 'error', { message: 'Provider turn could not complete.' });
+        sseEnd(res);
+      } else replyJson(res, 500, { error: 'Provider turn could not complete.' });
+    });
   };
 
   routes['POST /api/chat/handoff'] = (req, res, body) => {
     if (!accepting) return replyJson(res, 503, { error: 'Scout is shutting down' });
     const b = parseBody(body);
     if (!b) return replyJson(res, 400, { error: 'bad json' });
-    trackHandler(handleHandoff(req, res, b)).catch((e) => {
+    if (pendingSends.has(b.id || '')) return replyJson(res, 409, { error: 'a turn is already running for this job' });
+    const pending = { cancelled: false };
+    pendingSends.set(b.id || '', pending);
+    trackHandler(handleHandoff(req, res, b, pending)).finally(() => pendingSends.delete(b.id || '')).catch((e) => {
       const id = b.id || '';
       const turn = running.get(id);
       if (turn) turn.stop();
@@ -468,7 +524,7 @@ export function registerChatRoutes({
     });
   };
 
-  async function handleHandoff(req, res, b) {
+  async function handleHandoff(req, res, b, pending) {
     const id = b.id || '';
     let purpose;
     try { purpose = chatPurpose(b.purpose || 'job'); }
@@ -478,7 +534,7 @@ export function registerChatRoutes({
     try { chat = loadChat(repoRoot, id, purpose); } catch { return replyJson(res, 400, { error: 'Chat history could not be read.' }); }
     if (!chat || !chat.cliSessionId) return replyJson(res, 400, { error: 'no conversation to hand off yet' });
     const from = chat.engine;
-    if (!ENGINES[from]) return replyJson(res, 400, { error: 'saved chat engine must be claude or codex' });
+    if (!ENGINES[from] || from === 'local') return replyJson(res, 400, { error: 'saved chat engine must be claude, codex or local' });
     const to = from === 'claude' ? 'codex' : 'claude';
 
     sseStart(res);
@@ -493,9 +549,11 @@ export function registerChatRoutes({
     let r1StartError = null;
     try {
       work1 = superviseProviderWork(from);
+      const built = await engineBuild(from, chat.cliSessionId);
+      if (!accepting || pending.cancelled) throw Object.assign(new Error('Turn stopped.'), { reasonCode: 'stopped' });
       const execution = await runEditableProviderTurn(id, 'chat-handoff-summary', () => {
         t1 = runTurnFn({
-          ...engineBuild(from, chat.cliSessionId),
+          ...built,
           prompt: HANDOFF_SUMMARY_PROMPT,
           cwd: repoRoot,
           parseLine: ENGINES[from].parse,
@@ -514,14 +572,14 @@ export function registerChatRoutes({
       r1 = { ok: false, reasonCode: 'provider-error' };
     } finally {
       if (running.get(id) === t1) running.delete(id);
+      if (t1) await observeProviderResult(from, r1Health);
       if (work1) await work1.release(r1LifecycleError);
     }
     if (r1StartError) {
       sseSend(res, 'error', { message: turnStartMessage(r1StartError, 'Handoff summary could not start.') });
       return sseEnd(res);
     }
-    await observeProviderResult(from, r1Health);
-    if (!accepting) {
+    if (!accepting || pending.cancelled) {
       sseSend(res, 'error', { message: 'Scout is shutting down.' });
       return sseEnd(res);
     }
@@ -539,6 +597,7 @@ export function registerChatRoutes({
     }
 
     addFilesTouched(chat, r1.filesTouched);
+    delete chat.retry;
     recordHandoff(chat, to, nowIso());
     appendMessage(chat, 'system', `handoff summary:\n${r1.text}`, nowIso());
     try { saveChatFn(repoRoot, id, chat, purpose); } catch (e) {
@@ -561,9 +620,11 @@ export function registerChatRoutes({
     let r2StartError = null;
     try {
       work2 = superviseProviderWork(to);
+      const built = await engineBuild(to, null);
+      if (!accepting || pending.cancelled) throw Object.assign(new Error('Turn stopped.'), { reasonCode: 'stopped' });
       const execution = await runEditableProviderTurn(id, 'chat-handoff-resume', () => {
         t2 = runTurnFn({
-          ...engineBuild(to, null),
+          ...built,
           prompt: opening,
           cwd: repoRoot,
           parseLine: ENGINES[to].parse,
@@ -582,6 +643,7 @@ export function registerChatRoutes({
       r2 = { ok: false, reasonCode: 'provider-error' };
     } finally {
       if (running.get(id) === t2) running.delete(id);
+      if (t2) await observeProviderResult(to, r2Health);
       if (work2) await work2.release(r2LifecycleError);
     }
     if (r2StartError) {
@@ -591,7 +653,6 @@ export function registerChatRoutes({
       sseSend(res, 'error', { message, engine: to, sessionId: chat.cliSessionId });
       return sseEnd(res);
     }
-    await observeProviderResult(to, r2Health);
 
     appendMessage(chat, 'user', opening, nowIso());
     if (r2.sessionId) chat.cliSessionId = r2.sessionId;
@@ -617,7 +678,7 @@ export function registerChatRoutes({
     sseEnd(res);
   }
 
-  async function handleSend(req, res, b) {
+  async function handleSend(req, res, b, pending) {
     const id = b.id || '';
     let purpose;
     try { purpose = chatPurpose(b.purpose || 'job'); }
@@ -629,8 +690,18 @@ export function registerChatRoutes({
     if (running.has(id)) return replyJson(res, 409, { error: 'a turn is already running for this job' });
     let chat;
     try { chat = loadChat(repoRoot, id, purpose); } catch { return replyJson(res, 400, { error: 'Chat history could not be read.' }); }
+    const retrying = Object.hasOwn(b, 'retryId');
+    if (retrying) {
+      const retry = chat?.retry;
+      const message = chat?.messages?.[retry?.messageIndex];
+      if (!retry || typeof b.retryId !== 'string' || b.retryId !== retry.id
+        || message?.role !== 'user' || typeof message.text !== 'string') {
+        return replyJson(res, 409, { error: 'This failed message has changed or was already resent. Refresh the chat.' });
+      }
+      b = { ...b, engine: retry.engine, mode: retry.mode, text: message.text };
+    }
     const engine = chat && chat.cliSessionId ? chat.engine : b.engine;
-    if (!ENGINES[engine]) return replyJson(res, 400, { error: 'engine must be claude or codex' });
+    if (!ENGINES[engine]) return replyJson(res, 400, { error: 'engine must be claude, codex or local' });
     // The model is locked for the same reason the engine is: a resumed CLI
     // session is already bound to the model it started with.
     const requestedModel = b.model === null || b.model === undefined ? null : String(b.model).trim() || null;
@@ -643,7 +714,7 @@ export function registerChatRoutes({
 
     if (b.mode === 'fit-assessment') {
       if (purpose !== 'job') return replyJson(res, 400, { error: 'fit assessment belongs to the job conversation' });
-      return handleFitAssessment(req, res, { id, entry, engine, text, chat });
+      return handleFitAssessment(req, res, { id, entry, engine, text, chat, retrying, retryId: b.retryId, pending });
     }
 
     sseStart(res);
@@ -651,13 +722,27 @@ export function registerChatRoutes({
     let providerWork;
     try {
       providerWork = superviseProviderWork(engine);
-      built = engineBuild(engine, chat.cliSessionId, model);
+      built = await engineBuild(engine, chat.cliSessionId, model);
+      if (!accepting || pending.cancelled) throw Object.assign(new Error('Turn stopped.'), { reasonCode: 'stopped' });
+      if (retrying) {
+        consumeChatRetry(repoRoot, id, b.retryId, purpose);
+        delete chat.retry;
+      }
     } catch (e) {
       if (providerWork) await providerWork.release();
+      if (e?.reasonCode === 'authentication-required') {
+        if (!retrying) appendMessage(chat, 'user', text, nowIso());
+        appendMessage(chat, 'system', turnStartMessage(e, 'Provider turn could not start.'), nowIso());
+        rememberRetry(chat, engine);
+        try { saveChatFn(repoRoot, id, chat, purpose); } catch { console.error('Chat history could not be saved.'); }
+        checkpoint(`save failed chat - ${id}`);
+      }
       sseSend(res, 'error', {
         message: turnStartMessage(e, 'Provider turn could not start.'),
         reasonCode: e?.reasonCode === 'provider-auth-in-progress'
-          ? 'provider-auth-in-progress' : 'provider-unavailable',
+          ? 'provider-auth-in-progress' : e?.reasonCode === 'authentication-required'
+            ? 'authentication-required' : 'provider-unavailable',
+        ...(chat.retry ? { retry: chat.retry } : {}),
       });
       return sseEnd(res);
     }
@@ -668,13 +753,18 @@ export function registerChatRoutes({
     let lifecycleError = null;
     try {
       const execution = await runEditableProviderTurn(id, 'chat-edit', () => {
-        turn = runTurnFn({
+        const prompt = purpose === 'interview-prep'
+          ? `${selectedEntryContext(entry)}\n\n${interviewPrepAgentPrompt(entry, text)}`
+          : `${selectedEntryContext(entry)}\n\nUser request:\n${text}`;
+        const localContext = engine === 'local' ? JSON.stringify({
+          profile: boundedFile(path.join('profile', 'context.md')),
+          calibration: boundedFile(path.join('profile', 'calibration.md')),
+          masterCv: boundedFile(path.join('cv', 'master-cv.md')),
+        }) : '';
+        turn = startChatProviderTurn(engine, {
           ...built,
-          prompt: entry.id === ONBOARDING_CHAT_ID
-            ? text
-            : purpose === 'interview-prep'
-              ? `${selectedEntryContext(entry)}\n\n${interviewPrepAgentPrompt(entry, text)}`
-              : `${selectedEntryContext(entry)}\n\nUser request:\n${text}`,
+          ...(engine === 'local' ? { messages: localConversation(chat, `${localContext}\n\n${prompt}`) } : {}),
+          prompt,
           cwd: repoRoot,
           parseLine: ENGINES[engine].parse,
           onEvent: (ev) => {
@@ -700,25 +790,29 @@ export function registerChatRoutes({
       r = { ok: false, reasonCode: 'provider-error' };
     } finally {
       running.delete(id);
-      if (turn) await providerWork.release(lifecycleError);
+      if (turn) {
+        await observeProviderResult(engine, healthResult);
+        await providerWork.release(lifecycleError);
+      }
     }
-    await observeProviderResult(engine, healthResult);
     if (attemptedModel && isSafeModelId(attemptedModel)) {
       if (r.ok) rejectedModels.get(engine).delete(attemptedModel);
       else if (r.reasonCode === 'model-rejected') rememberRejectedModel(engine, attemptedModel);
     }
 
-    appendMessage(chat, 'user', text, nowIso());
+    if (!retrying) appendMessage(chat, 'user', text, nowIso());
     if (r.sessionId) chat.cliSessionId = r.sessionId;
     addFilesTouched(chat, r.filesTouched);
     addFilesTouched(chat, refreshCvQuality(entry, r.filesTouched));
     if (r.ok) {
+      delete chat.retry;
       for (const update of assistantUpdates(r)) appendMessage(chat, 'assistant', update, nowIso());
     } else {
       appendMessage(chat, 'system', safeTurnFailure(r).message, nowIso());
+      if (safeTurnFailure(r).reasonCode === 'authentication-required') rememberRetry(chat, engine);
     }
     try { saveChatFn(repoRoot, id, chat, purpose); } catch (e) {
-      console.error('chat transcript save failed:', e.message); // transcript loss only - agent session still resumable
+      console.error('Chat history could not be saved.'); // transcript loss only - agent session still resumable
     }
     checkpoint(`save chat - ${id}`);
 
@@ -729,6 +823,8 @@ export function registerChatRoutes({
     } else {
       sseSend(res, 'error', {
         message: safeTurnFailure(r).message,
+        reasonCode: safeTurnFailure(r).reasonCode,
+        ...(chat.retry ? { retry: chat.retry } : {}),
         sessionId: chat.cliSessionId,
         filesTouched: chat.filesTouched,
       });
@@ -736,7 +832,7 @@ export function registerChatRoutes({
     sseEnd(res);
   }
 
-  async function handleFitAssessment(req, res, { id, entry, engine, text, chat }) {
+  async function handleFitAssessment(req, res, { id, entry, engine, text, chat, retrying, retryId, pending }) {
     sseStart(res);
     let operation = null;
     let stopRequested = false;
@@ -753,8 +849,15 @@ export function registerChatRoutes({
     let providerWork;
     let lifecycleError = null;
     try {
+      assertLivingCvReady(repoRoot);
       providerWork = superviseProviderWork(engine);
-      const { status, model } = engineStatus(engine);
+      const { status, model } = await engineStatus(engine);
+      if (!accepting || pending.cancelled) throw Object.assign(new Error('Turn stopped.'), { reasonCode: 'stopped' });
+      if (retrying) {
+        consumeChatRetry(repoRoot, id, retryId);
+        delete chat.retry;
+      }
+      assertLivingCvReady(repoRoot);
       const context = {
         selectedOpportunity: JSON.parse(selectedEntryContext(entry).split('\n').slice(1).join('\n')),
         profile: boundedFile(path.join('profile', 'context.md')),
@@ -768,6 +871,7 @@ export function registerChatRoutes({
       ].join('\n\n');
       let result;
       try {
+        assertLivingCvReady(repoRoot);
         operation = runStructuredTurnFn({
           provider: engine, status, schema: FIT_SCHEMA, prompt, model, maxInputTokens: 50_000,
         });
@@ -789,7 +893,8 @@ export function registerChatRoutes({
         `Recommendation: ${value.recommendation}`,
       ].join('\n');
       chat.bounded = true;
-      appendMessage(chat, 'user', text, nowIso());
+      if (!retrying) appendMessage(chat, 'user', text, nowIso());
+      delete chat.retry;
       appendMessage(chat, 'assistant', answer, nowIso());
       saveChatFn(repoRoot, id, chat);
       checkpoint(`save fit assessment - ${id}`);
@@ -799,15 +904,18 @@ export function registerChatRoutes({
       lifecycleError = error;
       const message = turnStartMessage(error, 'Fit assessment failed.');
       if (error?.reasonCode !== 'provider-auth-in-progress') {
-        appendMessage(chat, 'user', text, nowIso());
+        if (!retrying) appendMessage(chat, 'user', text, nowIso());
         appendMessage(chat, 'system', message, nowIso());
+        if (error?.reasonCode === 'authentication-required') rememberRetry(chat, engine, 'fit-assessment');
       }
       try { saveChatFn(repoRoot, id, chat); } catch { /* preserve the primary provider error */ }
       checkpoint(`save failed chat - ${id}`);
       sseSend(res, 'error', {
         message,
         reasonCode: error?.reasonCode === 'provider-auth-in-progress'
-          ? 'provider-auth-in-progress' : 'provider-error',
+          ? 'provider-auth-in-progress' : error?.reasonCode === 'authentication-required'
+            ? 'authentication-required' : 'provider-error',
+        ...(chat.retry ? { retry: chat.retry } : {}),
         engine,
         filesTouched: chat.filesTouched,
       });

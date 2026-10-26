@@ -7,6 +7,7 @@ import {
   buildConfig,
   bytesToBase64,
   firstScanProfileReady,
+  firstRunPreferenceDefaults,
   formatLocalDateTime,
   matchingPreset,
   presetDays,
@@ -25,6 +26,45 @@ import {
   splitList,
   validateCvName,
 } from './setup.js';
+
+test('first-run proposes local language, timezone and currency while preserving established choices', () => {
+  const existing = { locale: 'en-GB', currency: 'GBP', timezone: 'Europe/London' };
+  assert.deepEqual(firstRunPreferenceDefaults(existing, { locale: 'en-CA', timeZone: 'America/Toronto' }), { locale: 'en-CA', currency: 'CAD', timezone: 'America/Toronto', country: 'ca' });
+  assert.deepEqual(firstRunPreferenceDefaults(existing, { locale: 'ja-JP', timeZone: 'Asia/Tokyo' }), { locale: 'ja-JP', currency: 'JPY', timezone: 'Asia/Tokyo', country: 'jp' });
+  assert.deepEqual(firstRunPreferenceDefaults(existing, { locale: 'en-CA', timeZone: 'America/Toronto', established: true }), { ...existing, country: '' });
+  assert.equal(firstRunPreferenceDefaults({}, { locale: 'und', timeZone: 'UTC' }).currency, '');
+  const unanswered = buildConfig({ currency: '', locale: '', timezone: '' }, existing);
+  assert.equal(unanswered.currency, '');
+  assert.equal(unanswered.locale, '');
+  assert.equal(unanswered.timezone, '');
+});
+
+test('a blocked provider has consistent card, sign-in and verification advice', () => {
+  const provider = {
+    installed: true, authenticated: true, healthState: 'network-unavailable',
+    capabilities: { structuredOutput: true },
+  };
+  assert.equal(providerCardPresentation(provider).available, false);
+  const panel = providerLoginPanelHtml('codex', provider);
+  assert.match(panel, /network (?:access|unavailable)|network access/i);
+  assert.doesNotMatch(panel, /Codex is signed in\./);
+});
+
+test('a completed local login still offers remote verification until the provider is usable', () => {
+  const panel = providerLoginPanelHtml('claude', {
+    installed: true, authenticated: false, healthState: 'sign-in-required',
+    capabilities: { structuredOutput: true },
+  }, { provider: 'claude', state: 'succeeded', sessionId: 'synthetic-session' });
+  assert.match(panel, /data-provider-login-action="retry"/);
+  assert.doesNotMatch(panel, /Sign-in succeeded\./);
+});
+
+test('fresh local sign-out still offers guided sign-in when remote health is older', () => {
+  const panel = providerLoginPanelHtml('codex', {
+    installed: true, authenticated: false, healthState: 'ready', capabilities: { structuredOutput: true },
+  });
+  assert.match(panel, /Sign in to Codex with Scout/);
+});
 
 test('feedback learning review separates job events, pending proposals and published undo', () => {
   const html = feedbackLearningHtml({
@@ -304,7 +344,7 @@ test('provider login panel exposes only accessible state-specific guided actions
   assert.match(pending, /disabled aria-disabled="true"/);
 
   const succeeded = providerLoginPanelHtml('codex', {
-    installed: true, authenticated: false,
+    installed: true, authenticated: true, healthState: 'ready', capabilities: { structuredOutput: true },
   }, {
     provider: 'codex',
     sessionId: 'synthetic-session',
@@ -502,7 +542,7 @@ test('backup details explain safe and manual divergence without exposing paths',
 // Renders renderFirstScan for real and inspects the output, so a behavioural
 // regression fails here even if the source text is rewritten, and a harmless
 // reformat does not.
-async function renderFirstScanHtml({ scanHealth, jobs = [], runs = [] }) {
+async function renderFirstScanHtml({ scanHealth, jobs = [], runs = [], schedule = {} }) {
   globalThis.window = globalThis.window || {};
   // A query string gives a module instance loaded after `window` exists, so the
   // module's `window.ScoutSetup = Setup` export runs. `document` is deliberately
@@ -519,7 +559,7 @@ async function renderFirstScanHtml({ scanHealth, jobs = [], runs = [] }) {
     view.view = 'section';
     view.operations = {};
     view.status = {
-      scanHealth, schedule: { runs },
+      scanHealth, schedule: { ...schedule, runs },
       config: { ai: { provider: 'claude' }, locale: 'en-GB', schedule: { jobs } },
       providers: {},
     };
@@ -590,4 +630,18 @@ test('day presets round-trip to the selection they describe', () => {
   }
   assert.equal(matchingPreset([1, 4], 'primary'), 'custom');
   assert.equal(matchingPreset([], 'primary'), 'every');
+});
+
+test('headless schedule settings explain owner system timers and keep the manual scan action', async () => {
+  const html = await renderFirstScanHtml({
+    scanHealth: { lastRunAt: '2026-10-26T08:00:00.000Z', healthy: true },
+    jobs: [{ id: 'claude-primary', enabled: true }],
+    runs: [{ id: 'claude-primary', configured: true }],
+    schedule: { managedExternally: true, managementMessage: 'Your server owner manages per-person system timers.' },
+  });
+  assert.match(html, /server owner manages per-person system timers/);
+  assert.match(html, /Home server guide/);
+  assert.doesNotMatch(html, /data-schedule-enable|data-schedule-disable|data-schedule-row/);
+  assert.match(html, /id="setup-run-scan"/);
+  assert.match(html, />Scan now</);
 });

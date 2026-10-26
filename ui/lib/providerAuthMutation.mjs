@@ -6,7 +6,7 @@ import {
   currentLeaseOwner, observeProcessOwner, processOwnerIsLiveOrAmbiguous,
 } from './scanLease.mjs';
 
-const PROVIDERS = new Set(['codex', 'claude']);
+const PROVIDERS = new Set(['codex', 'claude', 'local']);
 const PHASES = new Set(['login', 'logout']);
 const SCHEMA_VERSION = 1;
 const DEFAULT_DURATION_MS = 11 * 60 * 1000;

@@ -98,6 +98,8 @@ test('remote owner setup does not request the host-only recovery key', async ({ 
   await expect(page.getByRole('dialog')).toBeHidden();
 });
 
+test.describe('service worker installation', () => {
+  test.use({ serviceWorkers: 'allow' });
 test('first service worker installation does not pretend Scout has updated', async ({ page }) => {
   await page.evaluate(async () => {
     await navigator.serviceWorker.ready;
@@ -106,6 +108,8 @@ test('first service worker installation does not pretend Scout has updated', asy
     }
   });
   await expect(page.locator('#ui-update-banner')).toBeHidden();
+});
+
 });
 
 test('a verified update download presents a safe package name and actionable location alias', async ({ page }) => {
@@ -720,6 +724,7 @@ test('settings is a single usable scroll surface on a phone viewport', async ({ 
 });
 
 test('guided provider login supports code, failure, retry and cancel without browser persistence', async ({ page }) => {
+  let session = null;
   await page.unroute('**/api/setup/status');
   await page.route('**/api/setup/status', async (route) => {
     await route.fulfill({
@@ -728,13 +733,16 @@ test('guided provider login supports code, failure, retry and cancel without bro
         ...establishedStatus,
         providers: {
           ...establishedStatus.providers,
-          claude: { installed: true, authenticated: false, capabilities: { structuredOutput: true } },
+          claude: {
+            installed: true, authenticated: session?.state === 'succeeded',
+            healthState: session?.state === 'succeeded' ? 'ready' : 'sign-in-required',
+            capabilities: { structuredOutput: true },
+          },
         },
       }),
     });
   });
   await page.unroute('**/api/provider-login/status?*');
-  let session = null;
   let startCount = 0;
   let retryCount = 0;
   let statusRequests = 0;
@@ -961,6 +969,39 @@ test('guided login preserves failed logout state and reports no false success', 
   await expect(page.locator('#setup-status')).not.toContainText('sign-in cleared');
 });
 
+test('a late initial sign-in status preserves model settings typed before Save', async ({ page }) => {
+  let releaseStatus;
+  const statusReady = new Promise((resolve) => { releaseStatus = resolve; });
+  let statusRequested;
+  const statusStarted = new Promise((resolve) => { statusRequested = resolve; });
+  await page.route('**/api/provider-login/status?*', async (route) => {
+    const provider = new URL(route.request().url()).searchParams.get('provider');
+    if (provider === 'claude') {
+      statusRequested();
+      await statusReady;
+    }
+    await route.fulfill({ json: { provider, csrfToken: `csrf-${provider}-synthetic-000000000000`, session: provider === 'claude' ? {
+      provider, state: 'failed', reasonCode: 'credentials-expired', codeRequired: false,
+      sessionId: '00000000-0000-4000-8000-000000000005',
+    } : null } });
+  });
+  let saved;
+  await page.route('**/api/setup/config', async (route) => {
+    saved = route.request().postDataJSON();
+    await route.fulfill({ json: { ok: true, config: { ...establishedStatus.config, ...saved } } });
+  });
+  await page.getByRole('button', { name: 'Settings' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'AI providers' }).click();
+  await statusStarted;
+  await dialog.locator('#setup-chat-model-codex').fill('example-codex-model');
+  await dialog.locator('#setup-chat-model-claude').fill('example-claude-model');
+  releaseStatus();
+  await expect(dialog.getByRole('button', { name: 'Retry Claude sign-in' })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Save AI settings' }).click();
+  await expect.poll(() => saved?.ai?.models).toEqual({ codex: 'example-codex-model', claude: 'example-claude-model' });
+});
+
 test('guided login ignores stale polls and suppresses duplicate mutations', async ({ page }) => {
   await page.unroute('**/api/setup/status');
   await page.route('**/api/setup/status', (route) => route.fulfill({
@@ -1171,4 +1212,20 @@ test('a service-worker or build upgrade waits for CV edits, operations, and sett
     page.waitForNavigation(),
     banner.getByRole('button', { name: 'Refresh Scout' }).click({ force: true }),
   ]);
+});
+
+test('Adzuna country can be reviewed and saved without replacing credentials', async ({ page }) => {
+  let saved;
+  await page.route('**/api/setup/config', async (route) => {
+    saved = route.request().postDataJSON();
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+      ok: true, config: { ...establishedStatus.config, sources: { adzuna: { country: saved.sources.adzuna.country } } },
+    }) });
+  });
+  await page.evaluate(() => window.ScoutSetup.openSettings('sources'));
+  await expect(page.getByLabel('Adzuna search country')).toBeVisible();
+  await page.getByLabel('Adzuna search country').selectOption('us');
+  await page.getByRole('button', { name: 'Save search country' }).click();
+  await expect.poll(() => saved?.sources?.adzuna?.country).toBe('us');
+  await expect(page.locator('#setup-body')).toContainText('country');
 });

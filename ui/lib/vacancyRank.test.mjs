@@ -11,7 +11,7 @@ function profile({
   primaryTitles = [], locations = [], workingPatterns = [], employmentTypes = [],
   responsibilities = [], skills = [], qualifications = [], industries = [], sectors = [],
   eligibility = [], mobility = [], seniority = [], employers = [],
-  excludedResponsibilities = [], compensation = {},
+  excludedTitles = [], excludedResponsibilities = [], compensation = {},
   unknownPolicies, selection,
 } = {}) {
   return {
@@ -20,7 +20,7 @@ function profile({
       primaryTitles, locations, workingPatterns, employmentTypes, responsibilities,
       skills, qualifications, eligibility, mobility, industries, sectors, seniority, employers,
     },
-    negative: { excludedTitles: [], excludedResponsibilities },
+    negative: { excludedTitles, excludedResponsibilities },
     compensation: {
       currency: null, period: 'year', minimum: null, minimumStrength: 'neutral', unknownPolicy: 'include',
       ...compensation,
@@ -443,4 +443,198 @@ test('published learning adjusts ranking transparently without changing base pro
   assert.equal(ranked[0].preRankScore, Math.min(100, ranked[0].basePreRankScore + 8));
   assert.equal(ranked[0].learningVersionId, 'learning-v1');
   assert.equal(ranked[0].learningContributions[0].proposalId, 'proposal-v1');
+});
+
+test('every dimension score is fully accounted for by explainable contributions', () => {
+  const result = rankVacancies([vacancy({
+    vacancyId: 'fully-explained',
+    title: 'Weekend Support Engineer',
+    employer: 'Preferred Co',
+    location: null,
+    responsibilities: ['Operate reliable services'],
+    skills: ['TypeScript'],
+    compensation: {
+      minimum: 70000, maximum: 80000, currency: 'GBP', period: 'year', rateType: 'salary',
+    },
+    postedAt: '2026-07-28T00:00:00.000Z',
+    lastSeenAt: '2026-07-30T00:00:00.000Z',
+  })], profile({
+    primaryTitles: [rule('Engineer', 'mandatory')],
+    excludedTitles: [rule('weekend', 'strong-negative')],
+    locations: [rule('London', 'strong-preference')],
+    responsibilities: [rule('reliable services', 'nice-to-have')],
+    skills: [rule('TypeScript', 'strong-preference')],
+    employers: [rule('Preferred Co', 'nice-to-have')],
+    compensation: {
+      currency: 'GBP', period: 'year', rateType: 'salary', minimum: 65000,
+      minimumStrength: 'strong-preference', unknownPolicy: 'include',
+    },
+    selection: { breadth: 'balanced', relevanceThreshold: 45, exploration: 0.1 },
+    unknownPolicies: { location: 'penalise' },
+  }))[0];
+
+  for (const contribution of result.contributions) {
+    assert.ok(typeof contribution.name === 'string' && contribution.name, 'contribution name');
+    assert.ok(typeof contribution.profileRuleId === 'string' && contribution.profileRuleId, 'contribution profileRuleId');
+    assert.ok(Number.isFinite(contribution.score), 'contribution score');
+    assert.ok(contribution.evidence && typeof contribution.evidence === 'object', 'contribution evidence');
+  }
+  assert.ok(result.contributions.some(({ score }) => score > 0));
+  assert.ok(result.contributions.some(({ score }) => score < 0));
+
+  const dimensionNames = new Set(result.dimensions.map(({ name }) => name));
+  const grouped = new Map();
+  for (const contribution of result.contributions) {
+    assert.ok(dimensionNames.has(contribution.name), `contribution names dimension ${contribution.name}`);
+    grouped.set(contribution.name, [...(grouped.get(contribution.name) || []), contribution]);
+  }
+  for (const dimension of result.dimensions) {
+    const total = (grouped.get(dimension.name) || []).reduce((sum, item) => sum + item.score, 0);
+    assert.ok(Math.abs(total - dimension.score) <= 1e-9,
+      `${dimension.name} contributions ${total} must account for score ${dimension.score}`);
+  }
+});
+
+test('each contribution traces to a profile rule or a documented policy with match evidence', () => {
+  const excludedWeekend = rule('weekend', 'strong-negative');
+  const result = rankVacancies([vacancy({
+    vacancyId: 'traceable',
+    title: 'Weekend Support Engineer',
+    location: null,
+    skills: ['TypeScript'],
+    compensation: {
+      minimum: 70000, maximum: 80000, currency: 'GBP', period: 'year', rateType: 'salary',
+    },
+    postedAt: '2026-07-28T00:00:00.000Z',
+    lastSeenAt: '2026-07-30T00:00:00.000Z',
+  })], profile({
+    primaryTitles: [rule('Engineer', 'mandatory')],
+    excludedTitles: [excludedWeekend],
+    locations: [rule('London', 'strong-preference')],
+    skills: [rule('TypeScript', 'strong-preference')],
+    compensation: {
+      currency: 'GBP', period: 'year', rateType: 'salary', minimum: 65000,
+      minimumStrength: 'strong-preference', unknownPolicy: 'include',
+    },
+    selection: { breadth: 'balanced', relevanceThreshold: 45, exploration: 0.1 },
+    unknownPolicies: { location: 'penalise' },
+  }))[0];
+
+  const dimensions = new Map(result.dimensions.map((dimension) => [dimension.name, dimension]));
+  for (const contribution of result.contributions) {
+    const dimension = dimensions.get(contribution.name);
+    assert.ok(dimension.profileRuleIds.includes(contribution.profileRuleId)
+      || contribution.profileRuleId === `policy-${dimension.name}-unknown`,
+    `${contribution.name} contribution ${contribution.profileRuleId} must trace to dimension rules or its unknown policy`);
+  }
+
+  const positiveTitle = result.contributions.find(({ profileRuleId: id }) => id
+    === profileRuleId('target', 'primaryTitles', rule('Engineer', 'mandatory')));
+  assert.equal(positiveTitle.score, 1);
+  assert.equal(positiveTitle.evidence.matched, true);
+  assert.equal(positiveTitle.evidence.rule, 'Engineer');
+  assert.equal(positiveTitle.evidence.vacancy, 'Weekend Support Engineer');
+
+  const negativeTitle = result.contributions.find(({ profileRuleId: id }) => id
+    === profileRuleId('negative', 'excludedTitles', excludedWeekend));
+  assert.equal(negativeTitle.score, -0.7);
+  assert.equal(negativeTitle.evidence.matched, true);
+  assert.equal(negativeTitle.evidence.rule, 'weekend');
+  assert.equal(negativeTitle.evidence.vacancy, 'Weekend Support Engineer');
+
+  const skills = result.contributions.find(({ name }) => name === 'skills');
+  assert.equal(skills.evidence.matched, true);
+  assert.deepEqual(skills.evidence.vacancy, { itemCount: 1, matchedValue: 'TypeScript' });
+  assert.equal(skills.evidence.rule, 'TypeScript');
+
+  const penalty = result.contributions.find(({ profileRuleId: id }) => id === 'policy-location-unknown');
+  assert.ok(penalty.score < 0);
+  assert.equal(penalty.evidence.comparison, 'unknown');
+  assert.equal(penalty.evidence.rule, 'unknown location policy: penalise');
+  assert.equal(penalty.evidence.vacancy, null);
+
+  const compensation = result.contributions.find(({ profileRuleId: id }) => id === 'policy-compensation-minimum');
+  assert.equal(compensation.score, 0.8);
+  assert.equal(compensation.evidence.comparison, 'meets-minimum');
+  assert.equal(compensation.evidence.rule, 65000);
+  assert.deepEqual(compensation.evidence.vacancy, {
+    minimum: 70000, maximum: 80000, currency: 'GBP', period: 'year', rateType: 'salary',
+  });
+
+  const freshness = result.contributions.find(({ name }) => name === 'freshness');
+  assert.equal(freshness.profileRuleId, 'search-breadth-balanced-freshness');
+  assert.equal(freshness.score, 0.7822);
+  assert.equal(freshness.evidence.comparison, 'within-horizon');
+  assert.equal(freshness.evidence.observedDate, '2026-07-28T00:00:00.000Z');
+  assert.equal(freshness.evidence.referenceDate, '2026-07-30T00:00:00.000Z');
+  assert.equal(freshness.evidence.ageDays, 2);
+  assert.equal(freshness.evidence.horizonDays, 90);
+  assert.equal(freshness.evidence.breadth, 'balanced');
+  assert.equal(freshness.evidence.rule, 'balanced freshness');
+
+  const novelty = result.contributions.find(({ name }) => name === 'novelty');
+  assert.equal(novelty.profileRuleId, 'search-breadth-balanced-novelty');
+  assert.equal(novelty.score, 0.8);
+  assert.equal(novelty.evidence.comparison, 'unseen');
+  assert.equal(novelty.evidence.identity, 'stable-identity');
+  assert.equal(novelty.evidence.breadth, 'balanced');
+});
+
+test('equal inputs produce identical explanations across repeated runs and input order', () => {
+  const rankedProfile = profile({
+    primaryTitles: [rule('Platform Engineer', 'mandatory')],
+    locations: [rule('London', 'strong-preference')],
+    selection: { breadth: 'focused', relevanceThreshold: 45, exploration: 0 },
+    unknownPolicies: { location: 'penalise' },
+  });
+  const jobs = [
+    vacancy({ vacancyId: 'seen-other', title: 'Office Administrator', postedAt: '2026-07-20T00:00:00.000Z' }),
+    vacancy({ vacancyId: 'unknown-location', title: 'Platform Engineer', location: null, postedAt: '2026-07-28T00:00:00.000Z' }),
+    vacancy({ vacancyId: 'london-fresh', title: 'Platform Engineer', location: 'London', postedAt: '2026-07-29T00:00:00.000Z' }),
+  ];
+  const history = [{ vacancyId: 'seen-other', status: 'rejected', sourceUrl: 'https://jobs.example/seen-other' }];
+
+  const first = rankVacancies(jobs, rankedProfile, history);
+  const second = rankVacancies(jobs, rankedProfile, history);
+  const reversed = rankVacancies([...jobs].reverse(), rankedProfile, history);
+
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.map(({ vacancyId }) => vacancyId), reversed.map(({ vacancyId }) => vacancyId));
+  assert.equal(first[0].vacancyId, 'london-fresh');
+  for (const result of reversed) {
+    const reference = first.find(({ vacancyId }) => vacancyId === result.vacancyId);
+    assert.deepEqual(result.dimensions, reference.dimensions, result.vacancyId);
+    assert.deepEqual(result.contributions, reference.contributions, result.vacancyId);
+    assert.equal(result.preRankScore, reference.preRankScore);
+    assert.equal(result.preRankConfidence, reference.preRankConfidence);
+  }
+});
+
+test('identical vacancies with different ids receive equal scores and equal contributions', () => {
+  const shared = {
+    title: 'Platform Engineer',
+    employer: 'Twin Ltd',
+    location: 'London',
+    skills: ['TypeScript'],
+    responsibilities: ['Operate reliable platforms'],
+    compensation: { minimum: 70000, maximum: 90000, currency: 'GBP', period: 'year', rateType: 'salary' },
+    postedAt: '2026-07-28T00:00:00.000Z',
+    lastSeenAt: '2026-07-30T00:00:00.000Z',
+  };
+  const ranked = rankVacancies([
+    vacancy({ vacancyId: 'twin-b', ...shared }),
+    vacancy({ vacancyId: 'twin-a', ...shared }),
+  ], profile({
+    primaryTitles: [rule('Platform Engineer', 'mandatory')],
+    skills: [rule('TypeScript', 'strong-preference')],
+    selection: { breadth: 'balanced', relevanceThreshold: 45, exploration: 0.1 },
+  }));
+
+  assert.deepEqual(ranked.map(({ vacancyId }) => vacancyId), ['twin-a', 'twin-b']);
+  const [first, second] = ranked;
+  assert.ok(first.contributions.length > 0);
+  assert.equal(first.preRankScore, second.preRankScore);
+  assert.equal(first.preRankConfidence, second.preRankConfidence);
+  assert.deepEqual(first.dimensions, second.dimensions);
+  assert.deepEqual(first.contributions, second.contributions);
 });

@@ -11,11 +11,13 @@
     "start": "node ui/server.mjs",
     "test": "node --test ui/*.test.mjs ui/lib/*.test.mjs tools/*.test.mjs",
     "test:browser": "playwright test",
+    "test:acceptance": "node --test tests/acceptance/*.test.mjs",
     "doctor": "node tools/scout.mjs doctor",
     "remote:preflight": "node tools/remote-hosting-preflight.mjs",
     "release:audit": "node tools/release-audit.mjs"
   },
   "dependencies": {
+    "ajv": "8.20.0",
     "mammoth": "1.11.0",
     "pdf-parse": "2.4.5"
   },

@@ -103,6 +103,40 @@ test('zero-keeper results remain visible and expose the complete sanitised audit
   await expect(page.locator('.card[data-id]')).toHaveCount(0);
 });
 
+test('a late initial configuration response cannot swallow the scan-review click', async ({ page }) => {
+  let releaseProposal;
+  const proposalReady = new Promise((resolve) => { releaseProposal = resolve; });
+  let proposalRequested;
+  const proposalStarted = new Promise((resolve) => { proposalRequested = resolve; });
+  await page.route('**/api/setup/status', (route) => route.fulfill({ json: {
+    bootstrap: false, established: true, ready: true, setupComplete: true, trackerExists: true,
+    config: { profile: { displayName: 'Synthetic late configuration' }, locale: 'en-GB', ai: { provider: 'codex' }, search: {}, commute: {} },
+    providers: {}, sync: { state: 'disabled' }, pendingSetupSections: [],
+  } }));
+  await page.route('**/api/setup/proposal', async (route) => {
+    proposalRequested();
+    await proposalReady;
+    await route.fulfill({ json: { proposal: null } });
+  });
+  await page.reload();
+  await proposalStarted;
+  await expect(page.getByText('40 assessed, 0 kept').first()).toBeVisible();
+  const review = page.getByRole('button', { name: 'Review this scan' }).first();
+  await review.scrollIntoViewIfNeeded();
+  const bounds = await review.boundingBox();
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  releaseProposal();
+  await expect.poll(() => page.evaluate(() => window.Scout?.workspaceConfig?.profile?.displayName)).toBe('Synthetic late configuration');
+  await page.mouse.up();
+  const dialog = page.getByRole('dialog', { name: 'Latest scan result' });
+  await expect(dialog.getByText('Mandatory gates (16)')).toBeVisible();
+  await expect(dialog.getByText('Assessment discards (24)')).toBeVisible();
+  await expect(dialog.getByText('Coverage by source (1)')).toBeVisible();
+  await expect(dialog.getByText('Why roles missed detailed assessment (2)')).toBeVisible();
+  await expect(dialog.locator('.scan-review-item:not(.scan-explanation-item)')).toHaveCount(49);
+});
+
 test('journal-backed recovery and queued overlap stay visible without diagnostic identity', async ({ page }) => {
   await expect(page.locator('#scan-status')).toContainText(/Repairing affected jobs/i);
   await expect(page.getByText(/batch 2 of 4/i).first()).toBeVisible();
