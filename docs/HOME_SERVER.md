@@ -80,6 +80,19 @@ Selection affects the next CLI or web process without `--workspace` or `SCOUT_WO
 
 The systemd filesystem sandbox blocks accidental access to sibling state from an instance. A single Unix account is still an administrator trust boundary: the account owner can change the units or run commands outside that sandbox. Use separate Unix accounts, independent provider credentials and separately authorised private access when household members must be protected from one another. A loopback port is not a household authentication system; the owner must map each person's private access to only their instance.
 
+## Reviewed scan storage maintenance
+
+Storage warnings appear in the local summary API and the normal notification
+outbox before pressure blocks new scans. On the instance's host, use
+`scout cleanup --workspace YOUR_PRIVATE_WORKSPACE --plan` to list eligible data.
+Select runs explicitly, save a private plan, inspect its digest and apply only
+that confirmed plan. `--plan --queue` separately reviews queue compaction.
+The [reviewed cleanup procedure](OPERATIONS.md#scan-storage-and-reviewed-cleanup)
+covers credentials, retained/recovery-critical work, encrypted archives and
+interruption recovery. There is no unattended deletion policy. Run the command
+as the owning instance account with its explicit workspace; household selection
+does not authorize maintenance on a different person's data.
+
 ## Local dashboard API
 
 `GET /api/summary` is read-only, local-only and uncached. It never starts a provider, scan, digest or tracker mutation. The response has `schemaVersion: 1` and:

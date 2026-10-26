@@ -25,17 +25,22 @@ export function buildHomeSummary({ config = {}, tracker = {}, scanHealth = {}, p
     score: item.score, link: link(item.url || item.link || item.sources?.[0]), firstSeen: time(item.firstSeen || item.firstSeenAt),
   })).filter((item) => item.id).sort((a, b) => b.score - a.score || String(b.firstSeen).localeCompare(String(a.firstSeen)) || a.id.localeCompare(b.id));
   const alerts = (notifications.alerts || []).filter((item) => !item.acknowledgedAt).map((item) => ({
-    id: bounded(item.id, 64), kind: ['match', 'digest', 'provider'].includes(item.kind) ? item.kind : 'provider',
+    id: bounded(item.id, 64), kind: ['match', 'digest', 'provider', 'storage'].includes(item.kind) ? item.kind : 'provider',
     provider: ['codex', 'claude', 'local'].includes(item.provider) ? item.provider : null,
     count: Number.isSafeInteger(item.count) && item.count > 0 ? Math.min(item.count, 10000) : 1,
     createdAt: time(item.createdAt), delivered: Boolean(item.deliveredAt),
   }));
-  if (alerts.length > 1064) throw new Error('notification projection exceeds its storage boundary');
+  if (alerts.length > 1128) throw new Error('notification projection exceeds its storage boundary');
   return {
     schemaVersion: HOME_SUMMARY_SCHEMA_VERSION, generatedAt: now.toISOString(), mode,
     scanHealth: {
       healthy: scanHealth.healthy === true, stale: scanHealth.stale !== false,
       degraded: scanHealth.degraded === true, lastRunAt: time(scanHealth.lastRunAt),
+    },
+    storagePressure: {
+      state: ['healthy', 'warning', 'blocked'].includes(scanHealth.storagePressure?.state) ? scanHealth.storagePressure.state : 'unavailable',
+      warnings: (scanHealth.storagePressure?.warnings || []).filter((item) => ['runs', 'artifacts', 'queue'].includes(item.area)
+        && ['warning', 'blocked'].includes(item.level)).slice(0, 3).map((item) => ({ area: item.area, level: item.level })),
     },
     providers: providers.filter((item) => ['codex', 'claude', 'local'].includes(item.provider)).map((item) => ({
       provider: item.provider, state: STATES.has(item.state) ? item.state : 'provider-error', checkedAt: time(item.checkedAt),

@@ -107,3 +107,24 @@ test('a real coordinated scan publishes first-seen dates and preserves them thro
     assert.equal(Object.hasOwn(canonicalMutationRecipe('tracker', legacyRecipe).upserts[0], 'firstSeen'), false, 'old recipe canonical bytes keep the absent optional field absent');
   } finally { await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('local summary reports fresh physical storage pressure without mutating workspace files', async () => {
+  const { RUN_STORAGE_WARNING_BYTES } = await import('./lib/runRetention.mjs');
+  fs.mkdirSync(root, { recursive: true });
+  seedWorkspace(path.resolve('.'), root);
+  const directory = path.join(root, '.scout/scan-input');
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, 'synthetic-storage.json');
+  const descriptor = fs.openSync(file, 'w');
+  try { fs.ftruncateSync(descriptor, RUN_STORAGE_WARNING_BYTES.artifacts); }
+  finally { fs.closeSync(descriptor); }
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const summary = await (await fetch(`http://127.0.0.1:${server.address().port}/api/summary`)).json();
+    assert.equal(summary.storagePressure.state, 'warning');
+    assert.deepEqual(summary.storagePressure.warnings, [{ area: 'artifacts', level: 'warning' }]);
+    assert.equal(JSON.stringify(summary).includes(root), false);
+    assert.equal(fs.existsSync(path.join(root, '.scout/notifications-runtime.json')), false, 'summary remains read-only');
+  } finally { await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); }
+});

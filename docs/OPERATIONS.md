@@ -271,12 +271,50 @@ can be selected for the same fenced, encrypted archive process as old runs. The
 newest 20 legacy bundles and the previous 30 days are kept by default; no legacy
 bundle is silently deleted or moved during upgrade.
 
-Maintenance integrations use `planRunCleanup` and `archiveSelectedRuns` from
-`ui/lib/runRetention.mjs`. The plan binds the explicit selection, file digests,
-queue and recovery evidence. Deletion requires the existing persisted recovery
-data key, a current fenced lease and a verified encrypted archive. The dashboard
-reports storage pressure; it does not currently provide a cleanup button or a
-public cleanup command. No automatic deletion is added by these changes.
+Use `scout cleanup` on the Scout host to recover space without discarding
+unreviewed scan history. Nothing is selected or deleted by default:
+
+```bash
+scout cleanup --workspace YOUR_PRIVATE_WORKSPACE --plan
+scout cleanup --workspace YOUR_PRIVATE_WORKSPACE --plan --select RUN_ID --output PRIVATE_PLAN_FILE
+scout cleanup --workspace YOUR_PRIVATE_WORKSPACE --apply PRIVATE_PLAN_FILE --confirm REVIEW_DIGEST
+```
+
+The first command lists eligible old runs and legacy scan-input bundles. Copy
+only the run IDs you intend to archive into `--select` (comma separated), inspect
+the new plan, then copy its `reviewDigest` into `--confirm`. `--output` creates a
+new owner-only file; keep it outside the application repository, in an existing
+private directory. The plan contains private workspace paths and run metadata,
+so do not attach it to a public issue or log. It binds the workspace filesystem
+identity, policy, exact selection/content digests, queue and recovery evidence.
+The newest 20 runs/bundles, the previous 30 days and recovery-critical work stay
+protected. There is no CLI option to lower those protections.
+
+Apply uses the existing unlocked encrypted-backup key cache. If it is unavailable,
+`--secret-file PRIVATE_SECRET_FILE` can read the workspace's existing recovery
+passphrase or recovery key from a small protected ordinary file (owner-only
+access, mode `0600` on Unix). Never put the secret itself in command arguments,
+configuration examples or logs. Cleanup never creates a replacement key. A
+current fenced lease, shared mutation coordinator and verified encrypted archive
+must authorize deletion. Changed data, changed recovery/queue evidence, a foreign
+worker or a missing key stops the operation with the selected data retained.
+After interruption, repeat the same apply command: the durable operation resumes
+from its verified archive, and completed operations return the same receipt.
+
+For queue-only pressure, generate a separate plan using `--plan --queue --output
+PRIVATE_PLAN_FILE`, inspect its event counts/digests, and apply with its review
+digest. Queue compaction preserves live requests and one year of terminal evidence,
+keeps durable before/after recovery snapshots until verified completion, then
+removes the completed plaintext snapshots and retains bounded audit receipts. It never selects runs unless `--select` is also supplied.
+
+The local dashboard summary includes bounded storage state and affected areas.
+Periodic daemon notification polls and completed CLI scan attempts record one
+generic storage warning episode, with a new episode after recovery or escalation
+to blocked storage. Delivery/acknowledgement remain distinct; optional outbound
+hooks stay disabled unless explicitly configured. No automatic deletion or
+cleanup button is added. If every item is still retained or recovery-critical,
+stop additional scans and review the existing backup/retention state; cleanup
+never overrides those protections merely to clear pressure.
 
 After reviewed cleanup, recovery-selection compaction retains the newest 256
 records plus the latest mention and terminal disposition for every run still on
