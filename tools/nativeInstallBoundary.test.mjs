@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { nativeInstallEnvironment, nativeWorkspaceSnapshot, runIsolatedNativeCommand } from './nativeInstallBoundary.mjs';
+import { createNativeScanBoundary, finishNativeInstallCleanup, nativeInstallEnvironment, nativeWorkspaceSnapshot, runIsolatedNativeCommand, uninstallWindowsNative } from './nativeInstallBoundary.mjs';
 
 test('native installation and uninstall helpers cannot write caller-owned device state', (t) => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-native-command-'));
@@ -45,4 +45,56 @@ test('uninstall verification detects career-file changes, deletion and unexpecte
   }
   put('cv/unexpected.md', 'Unexpected synthetic addition');
   assert.notDeepEqual(nativeWorkspaceSnapshot(root), before, 'unexpected addition');
+});
+
+test('native cleanup preserves the first acceptance failure while still failing a cleanup-only error', async () => {
+  const primary = new Error('Synthetic native scan failed.');
+  const cleanup = Object.assign(new Error('Synthetic cleanup path must not escape.'), { code: 'EPERM' });
+  let observed;
+  try {
+    try { throw primary; }
+    finally { await finishNativeInstallCleanup(async () => { throw cleanup; }, { primaryError: primary }); }
+  } catch (error) { observed = error; }
+  assert.equal(observed, primary);
+  assert.match(primary.message, /cleanup.*EPERM/i);
+  assert.doesNotMatch(primary.message, /path must not escape/);
+  await assert.rejects(finishNativeInstallCleanup(async () => { throw cleanup; }), /cleanup.*EPERM/i);
+});
+
+test('a synthetic scan route failure reaches the owning acceptance flow without an unhandled route rejection', async () => {
+  const failure = new Error('Synthetic installed scan failed.');
+  let cleaned = false;
+  let reply;
+  const boundary = createNativeScanBoundary(async () => { throw failure; }, { id: 'synthetic-scan' });
+  const response = { fulfill: async (value) => { reply = value; } };
+  await assert.doesNotReject(boundary.route(response));
+  try { await assert.rejects(boundary.completion, (error) => error === failure); }
+  finally { cleaned = true; }
+  assert.equal(cleaned, true);
+  assert.equal(reply.status, 500);
+});
+
+test('Windows native uninstall waits for its owned helper before temporary files can be removed', async (t) => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-native-uninstall-wait-'));
+  const home = path.join(temporary, 'home'); fs.mkdirSync(home);
+  const env = nativeInstallEnvironment(process.env, { home, temporary, workspace: path.join(temporary, 'workspace') });
+  const receipt = path.join(temporary, 'receipt');
+  const gate = path.join(temporary, 'release-helper');
+  const executable = path.join(temporary, 'synthetic-uninstaller.mjs');
+  const child = "const fs=require('node:fs');const timer=setInterval(()=>{if(fs.existsSync(process.argv[1])){clearInterval(timer);fs.writeFileSync(process.argv[2],'closed');}},10);setTimeout(()=>process.exit(88),5000).unref();";
+  fs.writeFileSync(executable, `import fs from 'node:fs';import {spawn} from 'node:child_process';\nconst child=spawn(process.execPath,['-e',${JSON.stringify(child)},${JSON.stringify(gate)},${JSON.stringify(receipt)}],{stdio:'ignore'});\nif(process.argv.slice(2).some(arg=>arg.startsWith('_?='))){fs.writeFileSync(${JSON.stringify(gate)},'release');child.on('close',code=>{process.exitCode=code});}else child.unref();\n`);
+  t.after(async () => {
+    fs.writeFileSync(gate, 'release');
+    const deadline = Date.now() + 2000;
+    while (!fs.existsSync(receipt) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    fs.rmSync(temporary, { recursive: true, force: true });
+  });
+  uninstallWindowsNative(path.join(temporary, 'installed'), {
+    env,
+    run(command, args, options) {
+      assert.equal(path.basename(command), 'unins000.exe');
+      return runIsolatedNativeCommand(process.execPath, [executable, ...args], options);
+    },
+  });
+  assert.equal(fs.existsSync(receipt), true, 'Uninstall must await the helper, not only its initial launcher');
 });

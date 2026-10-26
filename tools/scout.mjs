@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { applyRunCleanupReview, createRunCleanupReview } from '../ui/lib/runCleanup.mjs';
 import { atomicWriteFile } from '../ui/lib/atomicWrite.mjs';
 import { assertLivingCvReady, hasPendingLivingCvApproval, recoverLivingCvApproval } from '../ui/lib/livingCv.mjs';
 import { workspaceModePolicy } from '../ui/lib/workspaceMode.mjs';
@@ -8,8 +9,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { activateHouseholdRuntime, assertDesktopScheduleAllowed, createHouseholdInstance, householdScheduleManagement, readHousehold, switchHouseholdInstance } from '../ui/lib/household.mjs';
+import { activateHouseholdRuntime, assertDesktopScheduleAllowed, createHouseholdInstance, householdScheduleManagement, listHousehold, switchHouseholdInstance } from '../ui/lib/household.mjs';
 import { dispatchHeadlessNotifications } from '../ui/lib/headlessNotifications.mjs';
+import { refreshNotificationDigest } from '../ui/lib/notifications.mjs';
 import { doctor } from '../ui/lib/doctor.mjs';
 import { fetchAdzuna, resolveAdzunaCredentials } from '../ui/lib/adzuna.mjs';
 import { fetchConfiguredPortals, loadPortals } from '../ui/lib/ats.mjs';
@@ -1360,8 +1362,18 @@ function print(value) { process.stdout.write(`${typeof value === 'string' ? valu
 async function main() {
   const argv = process.argv.slice(2);
   const command = argv[0] || 'help';
-  const root = selectedWorkspace(argv);
+  const root = command === 'household' ? null : selectedWorkspace(argv);
   if (command !== 'household') activateHouseholdRuntime(root);
+  if (command === 'cleanup') {
+    if (argv.includes('--plan') === argv.includes('--apply')) throw new Error('cleanup requires exactly one of --plan or --apply FILE');
+    if (argv.includes('--plan')) {
+      if (argv.includes('--confirm') || argv.includes('--secret-file')) throw new Error('Cleanup planning does not use recovery credentials or confirmation');
+      const selectedRunIds = (argValue('--select', argv) || '').split(',').filter(Boolean);
+      return print(createRunCleanupReview(root, { selectedRunIds, output: argValue('--output', argv), appRoot: APP_ROOT, queue: argv.includes('--queue') }));
+    }
+    if (argv.includes('--select') || argv.includes('--output') || argv.includes('--queue')) throw new Error('Cleanup apply uses only the previously reviewed plan');
+    return print(applyRunCleanupReview(root, { file: argValue('--apply', argv), confirm: argValue('--confirm', argv), secretFile: argValue('--secret-file', argv) }));
+  }
   if (command === 'notifications') {
     if (argv[1] !== 'dispatch') throw new Error('notifications action must be dispatch');
     const result = await dispatchHeadlessNotifications(root);
@@ -1371,7 +1383,7 @@ async function main() {
   }
   if (command === 'household') {
     const action = argv[1] || 'list';
-    if (action === 'list') return print({ ok: true, ...readHousehold() });
+    if (action === 'list') return print({ ok: true, ...listHousehold() });
     if (action === 'switch') return print(switchHouseholdInstance(argv[2]));
     if (action === 'create') return print(createHouseholdInstance({
       appRoot: APP_ROOT, directory: argValue('--directory', argv), id: argv[2],
@@ -1449,6 +1461,7 @@ async function main() {
       scheduleId,
       logicalWindowId,
     });
+    try { refreshNotificationDigest(root, loadWorkspaceConfig(root)); } catch { /* retry the private notification poll after a busy workspace settles */ }
     await dispatchHeadlessNotifications(root).catch(() => {});
     print(result);
     if (!result.ok) process.exitCode = 1;
@@ -1538,7 +1551,7 @@ async function main() {
       }));
     }
   }
-  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  household create ID --directory PATH --port PORT\n  household list|switch ID\n  notifications dispatch [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  workspace snapshot-beta22 [--workspace PATH]\n  workspace rollback-beta22 --workspace PATH --to PATH [--snapshot PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude|local [--mode primary|second-pass] [--model MODEL]\n  schedule install|status|remove|run-now [--id ID] [--time HH:MM] [--days 0,1,2] [--provider PROVIDER] [--mode primary|second-pass] [--model MODEL]`);
+  print(`Scout CLI\n\nCommands:\n  doctor [--workspace PATH]\n  household create ID --directory PATH --port PORT\n  household list|switch ID\n  cleanup --plan [--select ID,ID] [--queue] [--output PRIVATE_FILE]\n  cleanup --apply PRIVATE_FILE --confirm REVIEW_DIGEST [--secret-file PRIVATE_FILE]\n  notifications dispatch [--workspace PATH]\n  remote preflight [--require-enabled] [--url URL]\n  workspace init|migrate [--from PATH] [--to PATH]\n  workspace snapshot-beta22 [--workspace PATH]\n  workspace rollback-beta22 --workspace PATH --to PATH [--snapshot PATH]\n  cv quality <application-slug> [--workspace PATH]\n  lock acquire|release|status\n  source ats|adzuna|hiring-cafe\n  scan --provider codex|claude|local [--mode primary|second-pass] [--model MODEL]\n  schedule install|status|remove|run-now [--id ID] [--time HH:MM] [--days 0,1,2] [--provider PROVIDER] [--mode primary|second-pass] [--model MODEL]`);
 }
 
 const isMain = isMainModule(import.meta.url);

@@ -28,17 +28,17 @@ test('native pre-package audits accept the reviewed vendor bytes in each complet
     // An unrelated staged file is included in the same packaging authorization.
     fs.writeFileSync(path.join(stage, 'package-input.txt'), 'Synthetic public package input.');
     const env = { SCOUT_RELEASE_MARKERS: 'Synthetic Native Packaging Marker' };
-    const audit = auditStageBeforePackaging(stage, { env });
+    const audit = auditStageBeforePackaging(stage, { env, authorizationRoot: root });
     try {
       assert.match(audit.output, new RegExp(`scanned ${apps.length * 2 + 1} files with 1 configured`));
       for (const app of apps) {
         assert.deepEqual(fs.readFileSync(path.join(audit.stageDir, app, 'node_modules/ajv/dist/refs/json-schema-secure.json')), payload);
       }
     } finally {
-      removeAuditedStage(audit.stageDir);
+      removeAuditedStage(audit.stageDir, { expectedRecord: audit.stageRecord });
     }
     fs.writeFileSync(path.join(stage, 'package-input.txt'), env.SCOUT_RELEASE_MARKERS);
-    assert.throws(() => auditStageBeforePackaging(stage, { env }), /package-input\.txt:1 personal-marker-1/);
+    assert.throws(() => auditStageBeforePackaging(stage, { env, authorizationRoot: root }), /package-input\.txt:1 personal-marker-1/);
     assert.deepEqual(fs.readdirSync(root).filter((name) => name.includes('.audited-')), []);
   }
 });
@@ -64,14 +64,24 @@ test('macOS packaging compiles a native AppKit launcher instead of bundling a sh
 test('platform packaging consumes verified staged inputs and audits payloads before archive creation', () => {
   const build = fs.readFileSync(new URL('./build-platform.mjs', import.meta.url), 'utf8');
   assert.match(build, /copyVerifiedReleaseFile/);
-  assert.match(build, /auditStageBeforePackaging\(stage\)/);
+  assert.match(build, /auditStageBeforePackaging\(stage, \{ authorizationRoot: ROOT \}\)/);
   assert.doesNotMatch(build, /copy\(path\.join\(ROOT, 'installer\/unix\/ScoutLauncher\.sh'/);
   assert.doesNotMatch(build, /copy\(path\.join\(ROOT, 'ui\/assets\/scout-icon\.png'/);
   assert.match(build, /path\.join\(stage, 'app\/ui\/assets\/scout-icon\.png'\)/);
   assert.match(
     build.match(/export function buildMac[\s\S]*?return \{ output/)?.[0] || '',
-    /fs\.symlinkSync\('\/Applications'[\s\S]*auditStageBeforePackaging\(stage\)/,
+    /fs\.symlinkSync\('\/Applications'[\s\S]*auditStageBeforePackaging\(stage, \{ authorizationRoot: ROOT \}\)/,
   );
+  for (const body of [
+    build.match(/export function buildMac[\s\S]*?^\}/m)?.[0] || '',
+    build.match(/export function buildLinux[\s\S]*?^\}/m)?.[0] || '',
+  ]) {
+    assert.match(body, /createArtifactPublication/);
+    assert.match(body, /authorizeArtifactPublication/);
+    assert.match(body, /promoteArtifactPublication/);
+    assert.match(body, /finishArtifactPublication/);
+    assert.match(body, /publication\.temporaryPaths/);
+  }
 });
 
 test('macOS package-root verification covers the exact app and Applications link', () => {

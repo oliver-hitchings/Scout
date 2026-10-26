@@ -59,7 +59,8 @@ import {
   releaseProviderWork, renewProviderAuthMutation,
 } from './lib/providerAuthMutation.mjs';
 import { createProviderLoginManager } from './lib/providerLogin.mjs';
-import { localProviderHealthSignal } from './lib/localProvider.mjs';
+import { localProviderHealthSignal, validateLocalProviderConfig } from './lib/localProvider.mjs';
+import { isDeepStrictEqual } from 'node:util';
 import { runStructuredTurn } from './lib/structuredTurn.mjs';
 import { doctor, publicDoctor } from './lib/doctor.mjs';
 import { extractCvText } from './lib/cvImport.mjs';
@@ -626,6 +627,7 @@ const LOCAL_ONLY_ROUTES = new Set([
   'POST /api/update/download',
   'POST /api/setup/section',
   'POST /api/setup/recovery',
+  'POST /api/cv/living/source',
   'POST /api/remote-access/enable',
   'POST /api/remote-access/disable',
   'POST /api/shutdown',
@@ -1169,6 +1171,7 @@ async function handleRead(req, res, url) {
     return sendJson(res, 200, readScanHealth());
   }
   if (req.method === 'GET' && url.pathname === '/api/notifications') {
+    if (req.scoutAccess !== 'local') return sendJson(res, 403, { error: 'local dashboard access required' });
     if (!fs.existsSync(WORKSPACE_ROOT)) return sendJson(res, 200, { alerts: [], outbox: [] });
     return sendJson(res, 200, notificationView(readNotifications(WORKSPACE_ROOT)));
   }
@@ -2598,11 +2601,22 @@ for (const [route, action] of [['delivered', 'delivered'], ['acknowledge', 'ackn
 
 routes['POST /api/setup/config'] = (req, res, body) => {
   const b = parseBody(body); if (!b) return replyJson(res, 400, { error: 'bad json' });
+  const changesLocalProvider = (current) => Object.hasOwn(b.ai || {}, 'local')
+    && !isDeepStrictEqual(b.ai.local, current.ai?.local);
+  const localOnlyError = () => replyJson(res, 403, {
+    error: 'Local model settings can only be changed on the Scout host.', reasonCode: 'local-provider-settings-local-only',
+  });
   try {
+    if (req.scoutAccess !== 'local' && changesLocalProvider(loadWorkspaceConfig(WORKSPACE_ROOT))) return localOnlyError();
     if (!fs.existsSync(TRACKER)) seedWorkspace(APP_ROOT, WORKSPACE_ROOT);
     const next = mutateWorkspaceConfig(WORKSPACE_ROOT, {
       kind: 'setup-config', phase: 'update-config',
     }, (current) => {
+      if (req.scoutAccess !== 'local' && changesLocalProvider(current)) {
+        const error = new Error('local provider settings require host access');
+        error.code = 'LOCAL_PROVIDER_SETTINGS_LOCAL_ONLY';
+        throw error;
+      }
       const stored = {
         ...current,
         ...b,
@@ -2623,11 +2637,15 @@ routes['POST /api/setup/config'] = (req, res, body) => {
       // Derived policy is never input or persisted authority, including when a
       // caller submits a previously projected config or an older stored copy.
       delete stored.modePolicy;
+      if (stored.ai?.local !== undefined) validateLocalProviderConfig(stored.ai.local, { root: WORKSPACE_ROOT });
       return stored;
     });
     void scheduleCheckpoint('update setup');
     return replyJson(res, 200, { ok: true, config: withModePolicy(next) });
-  } catch (error) { return replyJson(res, 400, publicSetupConfigError(error)); }
+  } catch (error) {
+    if (error?.code === 'LOCAL_PROVIDER_SETTINGS_LOCAL_ONLY') return localOnlyError();
+    return replyJson(res, 400, publicSetupConfigError(error));
+  }
 };
 
 routes['POST /api/setup/complete'] = async (req, res, body) => {

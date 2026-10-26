@@ -6,8 +6,10 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isMainModule } from '../ui/lib/mainModule.mjs';
 import {
-  assertAuditedStage, auditStageBeforePackaging, copyVerifiedReleaseFile, removeAuditedStage, sha256, stageRelease,
-  verifiedReleaseFileDigest, verifiedReleaseTreeDigest, writeChecksums,
+  assertAuditedStage, auditStageBeforePackaging, authorizeArtifactPublication, copyVerifiedReleaseFile,
+  createArtifactPublication, finishArtifactPublication, finishAuditedStageCleanup,
+  promoteArtifactPublication, sha256, stageRelease, verifiedReleaseFileDigest,
+  verifiedReleaseTreeDigest, writeArtifactChecksums,
 } from './build-release.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -43,20 +45,34 @@ export function buildMac({ arch = process.arch, nodeExecutable = process.execPat
   const plist = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleName</key><string>Scout</string><key>CFBundleDisplayName</key><string>Scout</string><key>CFBundleIdentifier</key><string>app.scout.local</string><key>CFBundleVersion</key><string>${VERSION}</string><key>CFBundleShortVersionString</key><string>${VERSION}</string><key>CFBundleExecutable</key><string>Scout</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>13.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>`;
   fs.writeFileSync(path.join(contents, 'Info.plist'), plist);
   fs.symlinkSync('/Applications', path.join(stage, 'dmg-root', 'Applications'));
-  const audit = auditStageBeforePackaging(stage);
+  const audit = auditStageBeforePackaging(stage, { authorizationRoot: ROOT });
   const auditedStage = audit.stageDir;
+  let primaryError = null;
+  let publication = null;
   try {
     assertAuditedStage(audit);
     const auditedPayloadDigest = verifiedMacDmgRootDigest(path.join(auditedStage, 'dmg-root'));
-    const output = path.join(ROOT, 'installer', 'output'); fs.mkdirSync(output, { recursive: true }); const name = arch === 'arm64' ? artifactNames().macArm : artifactNames().macIntel;
-    run('hdiutil', ['create', '-volname', 'Scout', '-srcfolder', path.join(auditedStage, 'dmg-root'), '-ov', '-format', 'UDZO', path.join(output, name)]);
+    const output = path.join(ROOT, 'installer', 'output'); const name = arch === 'arm64' ? artifactNames().macArm : artifactNames().macIntel;
+    publication = createArtifactPublication({
+      outputDir: output,
+      authorityRoot: ROOT,
+      artifactNames: [name],
+    });
+    run('hdiutil', ['create', '-volname', 'Scout', '-srcfolder', path.join(auditedStage, 'dmg-root'), '-ov', '-format', 'UDZO', publication.temporaryPaths[name]]);
     if (verifiedMacDmgRootDigest(path.join(auditedStage, 'dmg-root')) !== auditedPayloadDigest) {
       throw new Error('audited macOS package root changed during packaging');
     }
     assertAuditedStage(audit);
-    return { output: path.join(output, name), sha256: sha256(path.join(output, name)) };
+    const authorization = authorizeArtifactPublication(publication);
+    const promoted = promoteArtifactPublication(publication, authorization);
+    const finalOutput = promoted.finalPaths[name];
+    return { output: finalOutput, sha256: sha256(finalOutput) };
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    removeAuditedStage(auditedStage);
+    if (publication) finishArtifactPublication(publication, { primaryError });
+    finishAuditedStageCleanup(auditedStage, { primaryError, expectedRecord: audit.stageRecord });
   }
 }
 
@@ -83,7 +99,7 @@ export function buildLinux({ nodeExecutable = process.execPath } = {}) {
   const launcherSource = path.join(packageInputs, 'ScoutLauncher.sh');
   copyVerifiedReleaseFile(path.join(ROOT, 'installer/unix/ScoutLauncher.sh'), launcherSource, { verifiedRoot: ROOT });
   const launcherSourceDigest = verifiedReleaseFileDigest(launcherSource, { verifiedRoot: stage });
-  const output = path.join(ROOT, 'installer', 'output'); fs.mkdirSync(output, { recursive: true });
+  const output = path.join(ROOT, 'installer', 'output');
   const pkg = path.join(stage, 'deb'); reset(pkg); copy(path.join(stage, 'app'), path.join(pkg, 'opt/scout/app')); copy(path.join(stage, 'runtime'), path.join(pkg, 'opt/scout/runtime'));
   copy(launcherSource, path.join(pkg, 'opt/scout/launcher/ScoutLauncher.sh')); executable(path.join(pkg, 'opt/scout/launcher/ScoutLauncher.sh'));
   fs.mkdirSync(path.join(pkg, 'usr/bin'), { recursive: true }); fs.writeFileSync(path.join(pkg, 'usr/bin/scout-dashboard'), launcher('/opt/scout')); executable(path.join(pkg, 'usr/bin/scout-dashboard'));
@@ -100,20 +116,41 @@ export function buildLinux({ nodeExecutable = process.execPath } = {}) {
   if (verifiedReleaseFileDigest(launcherSource, { verifiedRoot: stage }) !== launcherSourceDigest) {
     throw new Error('verified Linux package input changed during staging');
   }
-  const audit = auditStageBeforePackaging(stage);
+  const audit = auditStageBeforePackaging(stage, {
+    authorizationRoot: ROOT,
+    sealedDirectoryModes: { 'deb/DEBIAN': 0o755 },
+  });
   const auditedStage = audit.stageDir;
+  let primaryError = null;
+  let publication = null;
   try {
     assertAuditedStage(audit);
     const auditedPayloadDigest = verifiedReleaseTreeDigest(auditedStage);
-    run('dpkg-deb', ['--build', '--root-owner-group', path.join(auditedStage, path.relative(stage, pkg)), deb]);
-    const tar = path.join(output, artifactNames().linuxTar); run('tar', ['-czf', tar, '-C', auditedStage, path.basename(portable)]);
+    const tar = path.join(output, artifactNames().linuxTar);
+    publication = createArtifactPublication({
+      outputDir: output,
+      authorityRoot: ROOT,
+      artifactNames: [path.basename(deb), path.basename(tar), 'checksums.txt'],
+    });
+    run('dpkg-deb', ['--build', '--root-owner-group', path.join(auditedStage, path.relative(stage, pkg)), publication.temporaryPaths[path.basename(deb)]]);
+    run('tar', ['-czf', publication.temporaryPaths[path.basename(tar)], '-C', auditedStage, path.basename(portable)]);
     if (verifiedReleaseTreeDigest(auditedStage) !== auditedPayloadDigest) {
       throw new Error('audited Linux release payload changed during packaging');
     }
     assertAuditedStage(audit);
-    writeChecksums(output); return { deb, tar };
+    writeArtifactChecksums(publication);
+    const authorization = authorizeArtifactPublication(publication);
+    const promoted = promoteArtifactPublication(publication, authorization);
+    return {
+      deb: promoted.finalPaths[path.basename(deb)],
+      tar: promoted.finalPaths[path.basename(tar)],
+    };
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    removeAuditedStage(auditedStage);
+    if (publication) finishArtifactPublication(publication, { primaryError });
+    finishAuditedStageCleanup(auditedStage, { primaryError, expectedRecord: audit.stageRecord });
   }
 }
 

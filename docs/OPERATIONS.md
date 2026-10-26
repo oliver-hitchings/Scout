@@ -25,7 +25,17 @@ The maintained beta deployment uses one private, single-owner Ubuntu VPS:
 - A first-class `local` provider uses OpenAI-compatible HTTP chat completions
   directly, without a Codex/Claude executable. Private `ai.local` settings hold
   the explicit base URL, exact model, optional API-key file selector and bounded
-  timeout/retry limits. Key contents and raw transport errors never enter health
+  timeout/retry limits. Changes to `ai.local` require local host access; remote
+  owners can use approved settings and save an identical roundtrip. API-key files
+  must resolve physically inside that workspace's `.scout` directory or the
+  explicit Linux `/etc/scout/secrets` directory, with ancestor and descriptor
+  identity checks around reads. Public HTTP endpoints are refused; HTTP requires
+  loopback or a numeric RFC1918/tailnet address, while other hosts require HTTPS.
+  The UI explains remote data disclosure and unencrypted private HTTP.
+  Legacy transport selectors remain readable for host repair without provider
+  authority or disk rewrites; requests and persisted configuration always pass
+  the strict endpoint and secret-file checks.
+  Key contents and raw transport errors never enter health
   or durable run evidence. Structured output always receives local JSON-schema
   validation, including the one explicit capability-rejection fallback to plain
   JSON. Fixed structured health probes verify the selected endpoint/model;
@@ -249,11 +259,23 @@ Do not assume a developer computer's local application checkout or workspace is 
 
 ## Optional household home-server deployment
 
-The [home server guide](HOME_SERVER.md) describes an owner-managed Linux alternative: an unprivileged `scout` account, immutable application under `/srv/apps/scout/app`, one private workspace/provider home/device settings file and loopback port per person, and system-level service/timer templates. Each instance keeps an explicit workspace for its lifetime. Household create/list/switch changes only host-local selection for the next process and never copies career data. Registered instances pin their device-settings file and provider home, overriding inherited sibling device paths. New keepers persist a bounded first-seen date through receipted tracker recipes and subsequent rechecks; unknown legacy dates remain null. The systemd filesystem sandbox exposes only the current instance's state; mutually untrusted household members require separate Unix accounts and separately authorised private routes.
+The [home server guide](HOME_SERVER.md) describes an owner-managed Linux alternative: an unprivileged `scout` account, immutable application under `/srv/apps/scout/app`, one private workspace/provider home/device settings file and loopback port per person, and system-level service/timer templates. Each instance keeps an explicit workspace for its lifetime. Household create/list/switch changes only host-local selection for the next process and never copies career data. Registry updates use a separate process-start-aware guard with token/identity checks, recovering proven-dead owners without borrowing a workspace scan lease. Live or ambiguous owners remain protected. Registered instances pin their device-settings file and provider home, overriding inherited sibling device paths. Registry structure and overlap checks remain global; filesystem identity checks apply to the selected instance. A missing or replaced sibling is listed as unavailable without blocking healthy instances. Living CV source selectors are host-local and reject every registered household workspace and `.scout` directory through lexical and physical paths. New keepers persist a bounded first-seen date through receipted tracker recipes and subsequent rechecks; unknown legacy dates remain null. The systemd filesystem sandbox is intended to expose only the current instance's state; verify actual writable bindings and hidden siblings using the synthetic real-host rehearsal in the home server guide before enabling schedules. Static unit checks do not establish runtime isolation. Mutually untrusted household members require separate Unix accounts and separately authorised private routes.
 
 `GET /api/health` is a local-only versioned liveness/configuration check. `GET /api/summary` is a read-only schema-v1 dashboard projection of mode, bounded scan/provider status, above-threshold new/shortlisted matches and every pending alert within the durable storage boundary. It omits CV/profile/notes, private paths, raw errors/provider output and URL queries/fragments. It never marks results read or triggers work.
 
 Outbound command/webhook notification hooks are owner-configured and disabled by default. The headless process polls the existing alert/digest outbox at startup and every five minutes; CLI scans also dispatch after outcomes. Delivery uses fixed executable argv with `shell: false` or bounded HTTP(S) POST without redirects, and normal delivery receipts are recorded only after success. Shared workspace delivery locks prevent overlap; recovery preserves pending alerts and receipts. Back up complete quiesced workspaces, host selection/unit configuration and separately encrypted provider credentials. No home-server installation or private-network access is performed by application development.
+
+Delivery-lock ownership records bind a random token to PID, process-start identity
+and acquisition time. Short metadata changes reuse the existing crash-safe lease
+guard in a separate lock root; they grant no scan lease. Proven-dead owners can be
+reclaimed, while live or ambiguous owners remain protected even when old. Empty
+legacy mkdir locks recover after ten minutes without recursive removal. Sender
+ownership is rechecked before sending and before delivery receipts. Command
+selection checks protected executable/ancestor ownership and write permissions,
+including Windows owner/DACL checks. `GET /api/notifications` requires local
+access, like health and summary. Windows tray poll/receipt failures append fixed
+reason codes to the local AppData `Scout/logs/host-notifications.log`, capped at
+64 KiB; exception messages, response bodies and notification contents are excluded.
 
 Registered household instances and explicit `SCOUT_HEADLESS=1` services cannot install/remove/run desktop-native schedules or query another person’s user-global task state. CLI/API status labels schedules owner-managed and the UI points to per-instance system timers. Direct scheduled scan execution remains supported.
 
@@ -271,12 +293,50 @@ can be selected for the same fenced, encrypted archive process as old runs. The
 newest 20 legacy bundles and the previous 30 days are kept by default; no legacy
 bundle is silently deleted or moved during upgrade.
 
-Maintenance integrations use `planRunCleanup` and `archiveSelectedRuns` from
-`ui/lib/runRetention.mjs`. The plan binds the explicit selection, file digests,
-queue and recovery evidence. Deletion requires the existing persisted recovery
-data key, a current fenced lease and a verified encrypted archive. The dashboard
-reports storage pressure; it does not currently provide a cleanup button or a
-public cleanup command. No automatic deletion is added by these changes.
+Use `scout cleanup` on the Scout host to recover space without discarding
+unreviewed scan history. Nothing is selected or deleted by default:
+
+```bash
+scout cleanup --workspace YOUR_PRIVATE_WORKSPACE --plan
+scout cleanup --workspace YOUR_PRIVATE_WORKSPACE --plan --select RUN_ID --output PRIVATE_PLAN_FILE
+scout cleanup --workspace YOUR_PRIVATE_WORKSPACE --apply PRIVATE_PLAN_FILE --confirm REVIEW_DIGEST
+```
+
+The first command lists eligible old runs and legacy scan-input bundles. Copy
+only the run IDs you intend to archive into `--select` (comma separated), inspect
+the new plan, then copy its `reviewDigest` into `--confirm`. `--output` creates a
+new owner-only file; keep it outside the application repository, in an existing
+private directory. The plan contains private workspace paths and run metadata,
+so do not attach it to a public issue or log. It binds the workspace filesystem
+identity, policy, exact selection/content digests, queue and recovery evidence.
+The newest 20 runs/bundles, the previous 30 days and recovery-critical work stay
+protected. There is no CLI option to lower those protections.
+
+Apply uses the existing unlocked encrypted-backup key cache. If it is unavailable,
+`--secret-file PRIVATE_SECRET_FILE` can read the workspace's existing recovery
+passphrase or recovery key from a small protected ordinary file (owner-only
+access, mode `0600` on Unix). Never put the secret itself in command arguments,
+configuration examples or logs. Cleanup never creates a replacement key. A
+current fenced lease, shared mutation coordinator and verified encrypted archive
+must authorize deletion. Changed data, changed recovery/queue evidence, a foreign
+worker or a missing key stops the operation with the selected data retained.
+After interruption, repeat the same apply command: the durable operation resumes
+from its verified archive, and completed operations return the same receipt.
+
+For queue-only pressure, generate a separate plan using `--plan --queue --output
+PRIVATE_PLAN_FILE`, inspect its event counts/digests, and apply with its review
+digest. Queue compaction preserves live requests and one year of terminal evidence,
+keeps durable before/after recovery snapshots until verified completion, then
+removes the completed plaintext snapshots and retains bounded audit receipts. It never selects runs unless `--select` is also supplied.
+
+The local dashboard summary includes bounded storage state and affected areas.
+Periodic daemon notification polls and completed CLI scan attempts record one
+generic storage warning episode, with a new episode after recovery or escalation
+to blocked storage. Delivery/acknowledgement remain distinct; optional outbound
+hooks stay disabled unless explicitly configured. No automatic deletion or
+cleanup button is added. If every item is still retained or recovery-critical,
+stop additional scans and review the existing backup/retention state; cleanup
+never overrides those protections merely to clear pressure.
 
 After reviewed cleanup, recovery-selection compaction retains the newest 256
 records plus the latest mention and terminal disposition for every run still on
@@ -329,12 +389,26 @@ Run it alongside the normal suite. The owner-only current-provider check is in
 4. Run the complete test suite, release privacy audit, packaging checks, and relevant manual acceptance. For a workspace-format release, also migrate a production-shaped synthetic workspace, materialise its beta.22 rollback into a separate directory, compare every manifest digest and prove the live synthetic workspace retained its newer data.
    Platform packagers consume only the audit-created content snapshot, recheck
    its privacy-authorized digest immediately before and after packaging, and
-   remove the sealed snapshot in a `finally` path.
+   remove the sealed snapshot in a `finally` path. Each native artifact is first
+   written inside a private, unpredictable directory on the destination
+   filesystem (`0700` on Unix and a protected current-user-only DACL on
+   Windows). Scout binds that privacy state, directory and every real ancestor to the
+   repository root, authorizes the temporary file after the payload postcheck,
+   then creates the final name atomically without overwrite. A destination
+   collision or changed output identity fails closed. Pre-publication crashes
+   can leave only the clearly named temporary directory and publication lock,
+   which are eligible for identity-checked runner cleanup; once the atomic link
+   succeeds, the authorized final inode exists even if temporary cleanup is
+   interrupted.
    Update downloads require an exact-version Ed25519 release manifest and
    detached signature trusted by the locally bundled public-key registry.
    Installer preflight uses the same verifier. CI uses generated temporary test
    keys; production signing requires owner public-key enrollment and the
-   protected `release-signing` environment. Candidate `-rc` tags do not deploy, upload artifacts
+   protected `release-signing` environment. Public-key readiness cleanly skips
+   production signing, tag deployment and publication until enrollment, with a
+   visible workflow summary; invalid trust still fails. CI explicitly verifies
+   all five synthetic artifact formats using temporary test keys on all four OS
+   runners. See [Release key enrollment](RELEASE_KEYS.md). Candidate `-rc` tags do not deploy, upload artifacts
    or publish. Signed metadata does not supersede the F-1 packaging gate.
    Workflow-policy tests check immutable action pins throughout every workflow
    receiving secrets. Allowlisted application and public-source trees exclude
@@ -357,9 +431,21 @@ Run it alongside the normal suite. The owner-only current-provider check is in
 
 Pushing or merging a branch does not by itself update the live VPS.
 
+Release-candidate preparation keeps package, root lockfile, installer fallback,
+versioned artifacts and candidate notes in agreement. The requested tag must
+match that exact package version before packaging. Candidate refs retain the
+existing no-upload, no-deploy and no-publish guards; changing version metadata
+does not create a tag or satisfy hosted installation, privacy or owner gates.
+
 ## Maintenance contract
 
 Critical mutable workspace records are replaced atomically. Scout writes new contents to a temporary file in the same directory, flushes that file, and then renames it over the canonical path. This covers configuration, tracker state, chats, company timelines, CV-quality records, onboarding state, scan artifacts, recovery metadata, and imported CV text. Code that adds another critical workspace write must use the shared atomic-write helper; temporary files are never a source of truth.
+
+Managed instructions copied from a sealed installation are bounded, regular
+files atomically replaced only within the private workspace. Those copies have
+owner write permission so later scans can refresh them; the installed source
+stays sealed. Source and destination links, special files and shared destination
+inodes fail closed rather than redirecting a refresh outside its intended tree.
 
 Living CV source configuration, approved master replacements and content-addressed CV versions use the same workspace mutation authority. External files are read-only, explicitly selected Markdown or JSON, and are never included merely because their path is configured. Regular-file validation, non-blocking/no-follow open flags and descriptor identity checks reject pipes/devices and source replacement races before reading. Approved copies under `cv/` are private backup material. A prepared digest-bound approval intent precedes master/configuration replacement; startup, status and scan entry reconcile expected revisions only, preserving conflicting post-crash edits and both immutable versions. Pending approvals block evidence use. Source checking has no provider work or automatic approval; profile regeneration uses the approved version through the existing staged onboarding proposal. CV changes affect the existing assessment prompt digest and six-per-scan historical-rejection reassessment cap. Fresh workspaces use neutral language/time-zone defaults and no Adzuna country; first-run setup proposes browser-local settings for explicit review. Cover-letter Markdown uses the existing bounded Typst render operation with source-hash freshness checks and a visible DRAFT label. See [Living CV and drafts](LIVING_CV.md).
 
@@ -373,8 +459,18 @@ Multi-file onboarding activation additionally writes a prepared intent before
 the first replacement and reconciles it at startup under the shared workspace
 mutation authority. Proposal staging and discard cannot erase that intent;
 conflicting post-crash bytes are preserved for review, and terminal marker
-cleanup is idempotent. Setup approval is valid only while every activated file
-matches the marker hash. Shutdown and restart synchronously gate HTTP, chat,
+cleanup is idempotent. Setup approval keeps exact hashes for the four reviewed evidence files and a
+versioned canonical binding for the reviewed configuration. The binding is
+minted only at successful activation. Mode, schedules, completed/deferred setup
+section bookkeeping, the published-profile identifier and internal mutation
+receipts are operational metadata; changing them does not revoke the reviewed
+evidence. Provider/model/endpoint, profile, search, calibration/triage, locale,
+currency, timezone, sources, commute and unknown configuration fields remain
+bound. These saves never rewrite an approval marker or approve unrelated edits.
+Legacy markers retain exact raw-config verification, or compare only against the
+original staged configuration whose bytes still match the recorded staged hash;
+missing or changed staged evidence fails closed. Activation transaction/recovery
+continues to verify full raw hashes of all five files. Shutdown and restart synchronously gate HTTP, chat,
 operation and startup-recovery admission, cancel managed child processes, await
 admitted handlers and settle checkpoint producers, then drain acknowledged
 backup batches and provider-health probes before process handoff. A failed

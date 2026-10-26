@@ -36,6 +36,17 @@ A preload rejects source HTTP before loading the server and scan command, so
 the explicit post-reconnection scan reports degraded coverage without contacting
 job sources. The tests use Node's HTTP client only for the loopback Scout API.
 
+Installed-artifact CI separately runs `node tools/native-install-smoke.mjs`
+against the built native package (also `--portable` on Linux). Scan failures
+return to the owning acceptance flow so its cleanup runs. The installed scan
+uses production readiness and the real scan pipeline with only collection and
+advert liveness replaced at synthetic boundaries; result checks target the
+visible job card rather than a matching row in a hidden audit table. Windows uninstall
+waits for the actual Inno uninstaller rather than a temporary launcher. The
+first acceptance failure remains visible if cleanup also fails; cleanup-only
+failures still fail the job. Temporary-directory removal has a bounded retry
+for operating-system handles that close just after the owned processes exit.
+
 ## Once with real accounts
 
 Use a separate test workspace and the same operating-system account that runs

@@ -55,6 +55,48 @@ test('source edits, local CV edits and workspace boundaries invalidate an old ap
   assert.throws(() => configureLivingCv(root, path.join(root, 'cv/master-cv.md')), /external|outside/i);
 });
 
+test('Living CV refuses registered sibling data even through a directory alias or replaced sibling root', async (t) => {
+  const { root } = fixture(t);
+  const { createHouseholdInstance } = await import('./household.mjs');
+  const parent = path.dirname(root);
+  const registry = path.join(parent, 'household.json');
+  const previous = process.env.SCOUT_HOUSEHOLD_SETTINGS;
+  process.env.SCOUT_HOUSEHOLD_SETTINGS = registry;
+  t.after(() => {
+    if (previous === undefined) delete process.env.SCOUT_HOUSEHOLD_SETTINGS;
+    else process.env.SCOUT_HOUSEHOLD_SETTINGS = previous;
+  });
+  const sibling = createHouseholdInstance({
+    appRoot: process.cwd(), directory: parent, id: 'synthetic-sibling', port: 8463, file: registry,
+    initialise(workspace) { fs.mkdirSync(path.join(workspace, 'cv')); },
+  });
+  const source = path.join(sibling.workspace, 'cv/master-cv.md');
+  fs.writeFileSync(source, changed);
+  assert.throws(() => configureLivingCv(root, source), /household workspace/i);
+  const alias = path.join(parent, 'alias');
+  fs.symlinkSync(sibling.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => configureLivingCv(root, path.join(alias, 'cv/master-cv.md')), /household workspace/i);
+  fs.renameSync(sibling.workspace, `${sibling.workspace}-held`);
+  fs.mkdirSync(path.join(sibling.workspace, 'cv'), { recursive: true });
+  fs.writeFileSync(source, changed);
+  assert.throws(() => configureLivingCv(root, source), /household workspace/i);
+  assert.equal(livingCvStatus(root).state, 'disconnected');
+  assert.equal(fs.readFileSync(path.join(root, 'cv/master-cv.md'), 'utf8'), original);
+});
+
+test('Living CV refuses external .scout state through lexical and physical paths', (t) => {
+  const { root } = fixture(t);
+  const hidden = path.join(path.dirname(root), '.scout');
+  fs.mkdirSync(hidden);
+  const source = path.join(hidden, 'private-source.md');
+  fs.writeFileSync(source, changed);
+  assert.throws(() => configureLivingCv(root, source), /\.scout/i);
+  const alias = path.join(path.dirname(root), 'external-alias');
+  fs.symlinkSync(hidden, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => configureLivingCv(root, path.join(alias, 'private-source.md')), /\.scout/i);
+  assert.equal(livingCvStatus(root).state, 'disconnected');
+});
+
 test('JSON sources are bounded Markdown envelopes; invalid or missing sources keep the CV and versions', (t) => {
   const { root, source } = fixture(t);
   const json = source.replace(/md$/, 'json');

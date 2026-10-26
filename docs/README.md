@@ -48,9 +48,12 @@ Read [CONTRIBUTING.md](../CONTRIBUTING.md), then use:
 - [provider acceptance](ACCEPTANCE.md) for synthetic expiry/recovery checks and the owner's real-account check;
 - [scan protocol](SCOUT_SCAN_PROTOCOL.md) for scan behaviour;
 - [release process](RELEASE.md) for packaging and publishing;
+- [release key enrollment](RELEASE_KEYS.md) for owner-controlled signing and rotation;
 - [release package verification and signing](SUPPLY_CHAIN_SECURITY.md) for checksums, attestations and platform-signing boundaries; and
 - [documentation maintenance](DOCUMENTATION.md) whenever a change affects users, setup, operations, security, or support.
 
 Historical release notes live in [`docs/releases`](releases/). They describe a release as it was and are not current setup instructions.
+The [current release-candidate notes](releases/0.1.0-beta.24-rc1.md) describe the
+prepared candidate and its remaining acceptance and owner gates.
 The [native packaging privacy-audit note](releases/native-packaging-privacy-audit.md)
 describes the scoped vendor metadata correction and remaining packaging gate.

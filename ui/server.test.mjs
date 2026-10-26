@@ -1323,6 +1323,24 @@ test('remote pages and APIs require the configured Tailscale owner', async () =>
   assert.equal(alteredOrigin.status, 403);
 });
 
+test('notification reads require local access even for the configured remote owner', async () => {
+  const file = process.env.SCOUT_DEVICE_SETTINGS;
+  const previous = fs.existsSync(file) ? fs.readFileSync(file) : null;
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 3, remoteAccess: {
+    enabled: true, ownerLogin: 'owner@example.test', origin: 'https://scout.example.ts.net', httpsPort: 443,
+    managedMapping: { protocol: 'https', port: 443, target: 'http://127.0.0.1:8459' },
+  } }));
+  try {
+    const local = await request({ path: '/api/notifications' });
+    assert.equal(local.status, 200);
+    const remote = await request({ path: '/api/notifications', headers: {
+      host: 'scout.example.ts.net', 'tailscale-user-login': 'owner@example.test',
+    } });
+    assert.equal(remote.status, 403);
+    assert.deepEqual(JSON.parse(remote.text), { error: 'local dashboard access required' });
+  } finally { if (previous) fs.writeFileSync(file, previous); else fs.rmSync(file, { force: true }); }
+});
+
 test('Codex deep-link capability is device-local, bounded and private', async () => {
   const settingsFile = process.env.SCOUT_DEVICE_SETTINGS;
   const previousSettings = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile) : null;
@@ -1440,6 +1458,27 @@ test('remote owner mutations require HTTPS Origin and administration remains loc
   assert.match(JSON.parse(rotatePassphrase.text).error, /only be changed on the Scout host/);
   const remoteUpdate = await request({ method: 'POST', path: '/api/update/download', headers: { ...remote, origin: 'https://scout-host.example.ts.net' }, body: '{}' });
   assert.equal(remoteUpdate.status, 403);
+});
+
+test('the actual Living CV source route rejects the authenticated remote owner before source mutation', async () => {
+  const settingsFile = process.env.SCOUT_DEVICE_SETTINGS;
+  const previous = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile) : null;
+  const headers = {
+    host: 'scout-household.example.ts.net', origin: 'https://scout-household.example.ts.net',
+    'tailscale-user-login': 'synthetic-owner@example.test', 'content-type': 'application/json',
+  };
+  fs.writeFileSync(settingsFile, JSON.stringify({ schemaVersion: 3, remoteAccess: {
+    enabled: true, ownerLogin: headers['tailscale-user-login'], origin: headers.origin,
+  } }));
+  try {
+    assert.equal((await request({ path: '/api/app-info', headers })).status, 200, 'remote identity must be authenticated');
+    const result = await request({ method: 'POST', path: '/api/cv/living/source', headers, body: '{"sourcePath":null}' });
+    assert.equal(result.status, 403);
+    assert.match(JSON.parse(result.text).error, /only be changed on the Scout host/);
+  } finally {
+    if (previous) fs.writeFileSync(settingsFile, previous);
+    else fs.rmSync(settingsFile, { force: true });
+  }
 });
 
 test('backup divergence confirmation cannot acquire authority while a scan owns the fence', async () => {

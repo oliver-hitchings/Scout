@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import { after, test } from 'node:test';
 // Hosted Node tool caches may be group-writable. Exercise the production
 // protected-executable boundary with an owner-only disposable copy instead.
@@ -77,6 +78,17 @@ test('headless command delivery runs a real process with literal arguments and l
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('a protected executable in a writable directory cannot be selected for outbound delivery', { skip: process.platform === 'win32' }, async () => {
+  const { validateOutboundConfig } = await import('./headlessNotifications.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-outbound-writable-parent-'));
+  try {
+    const command = path.join(root, 'command');
+    fs.copyFileSync(process.execPath, command); fs.chmodSync(command, 0o700);
+    fs.chmodSync(root, 0o770);
+    assert.throws(() => validateOutboundConfig({ schemaVersion: 1, enabled: true, type: 'command', command, args: [] }), /protected.*director/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('outbound configuration cannot be borrowed through a linked workspace directory', async () => {
   const { loadOutboundConfig } = await import('./headlessNotifications.mjs');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-outbound-links-'));
@@ -103,6 +115,42 @@ test('overlapping headless senders do not both deliver the same notification', a
     finish({ ok: true });
     assert.equal((await first).delivered, 1);
   } finally { finish?.({ ok: false }); await first; fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a killed headless sender does not permanently lock subsequent delivery', async () => {
+  const { dispatchHeadlessNotifications } = await import('./headlessNotifications.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-outbound-crash-'));
+  const file = path.join(root, 'outbound.json');
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, enabled: true, type: 'command', command: protectedRuntime, args: [] }), { mode: 0o600 });
+  const moduleUrl = new URL('./headlessNotifications.mjs', import.meta.url).href;
+  const source = `import { dispatchHeadlessNotifications } from ${JSON.stringify(moduleUrl)};
+    setInterval(() => {}, 1000);
+    await dispatchHeadlessNotifications(process.argv[1], { file: process.argv[2], config: {},
+      api: { refreshNotificationDigest: () => ({ outbox: [${JSON.stringify(alert)}] }), markNotification() {} },
+      send: async () => { process.send('sending'); return new Promise(() => {}); } });`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source, root, file], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Synthetic sender did not acquire its lock')), 10000);
+      child.once('message', () => { clearTimeout(timer); resolve(); });
+      child.once('error', reject);
+    });
+    const closed = new Promise((resolve) => child.once('close', resolve));
+    child.kill('SIGKILL');
+    await closed;
+    const result = await dispatchHeadlessNotifications(root, { file, config: {},
+      api: { refreshNotificationDigest: () => ({ outbox: [alert] }), markNotification() {} },
+      send: async () => ({ ok: true }),
+    });
+    assert.equal(result.busy, undefined);
+    assert.equal(result.delivered, 1);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = new Promise((resolve) => child.once('close', resolve));
+      child.kill('SIGKILL'); await closed;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('runtime quiescence stops further outbound alerts after the current child closes', async () => {

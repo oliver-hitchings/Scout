@@ -24,6 +24,23 @@ permissions:
   contents: read
 
 jobs:
+  signing-readiness:
+    runs-on: ubuntu-22.04
+    outputs:
+      enrolled: ${{ steps.trust.outputs.enrolled }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 24 }
+      - name: Check public release-key enrollment before protected signing
+        id: trust
+        run: |
+          set -euo pipefail
+          node tools/release-signing.mjs readiness | tee -a "$GITHUB_OUTPUT"
+          if grep -qx 'enrolled=false' "$GITHUB_OUTPUT"; then
+            echo 'Release signing, tag deployment and publication skipped: no active release key is enrolled. The updater fails closed. See docs/RELEASE_KEYS.md.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   windows:
     runs-on: windows-2022
     outputs:
@@ -164,8 +181,8 @@ jobs:
             installer/output/*.tar.gz
 
   deploy-vps:
-    if: (startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-rc')) || (github.event_name == 'workflow_dispatch' && inputs.deploy_vps)
-    needs: [windows, macos, linux]
+    if: (startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-rc') && needs.signing-readiness.outputs.enrolled == 'true') || (github.event_name == 'workflow_dispatch' && inputs.deploy_vps)
+    needs: [windows, macos, linux, signing-readiness]
     runs-on: ubuntu-22.04
     environment: beta-vps
     concurrency:
@@ -232,8 +249,8 @@ jobs:
           fi
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-rc')
-    needs: [windows, macos, linux, deploy-vps]
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-rc') && needs.signing-readiness.outputs.enrolled == 'true'
+    needs: [windows, macos, linux, deploy-vps, signing-readiness]
     runs-on: ubuntu-22.04
     environment: release-signing
     permissions:

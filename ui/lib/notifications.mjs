@@ -5,6 +5,7 @@ import { atomicWriteFile } from './atomicWrite.mjs';
 import { validatePhysicalWorkspacePath } from './physicalPath.mjs';
 import { withWorkspaceMutationAuthority } from './workspaceMutationAuthority.mjs';
 import { workspaceModePolicy } from './workspaceMode.mjs';
+import { readPublicStoragePressure } from './scanHealth.mjs';
 
 const HASH = /^[a-f0-9]{64}$/;
 const BLOCKING = new Set(['sign-in-required', 'network-unavailable', 'rate-limited', 'cli-update-required', 'provider-error']);
@@ -12,6 +13,8 @@ const MAX_BYTES = 4 * 1024 * 1024;
 const MAX_MATCHES = 10_000;
 const MAX_ALERTS = 1_000;
 const MAX_PROVIDER_ALERTS = 64;
+const MAX_STORAGE_ALERTS = 64;
+const ordinaryAlert = (item) => !['provider', 'storage'].includes(item.kind);
 const keys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join(',') === [...expected].sort().join(',');
 const hash = (value) => createHash('sha256').update(String(value)).digest('hex');
@@ -35,7 +38,7 @@ export function validateNotifications(value) {
     || value.pending.length > MAX_MATCHES || new Set(value.pending).size !== value.pending.length
     || !value.pending.every((item) => HASH.test(item)) || !nullableTime(value.digestAfter)
     || !value.providerEpisodes || typeof value.providerEpisodes !== 'object' || Array.isArray(value.providerEpisodes)
-    || !Array.isArray(value.alerts) || value.alerts.length > MAX_ALERTS + MAX_PROVIDER_ALERTS) fail();
+    || !Array.isArray(value.alerts) || value.alerts.length > MAX_ALERTS + MAX_PROVIDER_ALERTS + MAX_STORAGE_ALERTS) fail();
   for (const [id, item] of Object.entries(value.matches)) if (!HASH.test(id) || !tuple(item)) fail();
   for (const [provider, item] of Object.entries(value.providerEpisodes)) {
     if (!['codex', 'claude', 'local'].includes(provider) || !(keys(item, ['state', 'episode']) || keys(item, ['state', 'episode', 'intentId']))
@@ -46,7 +49,7 @@ export function validateNotifications(value) {
   const ids = new Set();
   for (const item of value.alerts) {
     if (!keys(item, ['id', 'kind', 'provider', 'count', 'createdAt', 'deliveredAt', 'acknowledgedAt'])
-      || !HASH.test(item.id) || ids.has(item.id) || !['match', 'digest', 'provider'].includes(item.kind)
+      || !HASH.test(item.id) || ids.has(item.id) || !['match', 'digest', 'provider', 'storage'].includes(item.kind)
       || ![null, 'codex', 'claude', 'local'].includes(item.provider)
       || (item.kind === 'provider') !== (item.provider !== null)
       || !Number.isSafeInteger(item.count) || item.count < 1 || item.count > MAX_MATCHES
@@ -93,8 +96,8 @@ function readReceipts(root) {
 }
 
 function trimAcknowledged(alerts) {
-  while (alerts.length > MAX_ALERTS) {
-    const index = alerts.findIndex((item) => item.acknowledgedAt !== null);
+  while (alerts.filter(ordinaryAlert).length > MAX_ALERTS) {
+    const index = alerts.findIndex((item) => ordinaryAlert(item) && item.acknowledgedAt !== null);
     if (index < 0) throw new Error('Review older notifications before creating more alerts');
     alerts.splice(index, 1);
   }
@@ -106,10 +109,10 @@ function combine(base, runtime, receipts, providerState = emptyNotifications(), 
   state.pending = state.pending.filter((id) => !consumed.has(id));
   if (!state.pending.length) state.digestAfter = null;
   state.providerEpisodes = structuredClone(providerState.providerEpisodes);
-  state.alerts = [...new Map([...base.alerts, ...runtime.alerts].filter((item) => item.kind !== 'provider').map((item) => [item.id, item])).values()]
+  state.alerts = [...new Map([...base.alerts, ...runtime.alerts].filter(ordinaryAlert).map((item) => [item.id, item])).values()]
     .map((item) => ({ ...item, ...(receipts.receipts[item.id] || {}) }));
   trimAcknowledged(state.alerts);
-  state.alerts.push(...providerState.alerts.map((item) => ({ ...item, ...(receipts.receipts[item.id] || {}) })));
+  state.alerts.push(...[...providerState.alerts, ...runtime.alerts.filter((item) => item.kind === 'storage')].map((item) => ({ ...item, ...(receipts.receipts[item.id] || {}) })));
   if (state.pending.length && state.alerts.some((item) => item.id === pendingDigestId(state.pending))) {
     state.pending = [];
     state.digestAfter = null;
@@ -130,7 +133,12 @@ function persistJson(root, name, state) {
 }
 
 function readRuntime(root) {
-  const { consumedPending = [], ...state } = readJson(root, 'notifications-runtime.json') || emptyNotifications();
+  const { consumedPending = [], storageEpisode = { level: 'healthy', episode: 0 }, ...state } = readJson(root, 'notifications-runtime.json') || emptyNotifications();
+  if (!keys(storageEpisode, ['level', 'episode']) || !['healthy', 'warning', 'blocked'].includes(storageEpisode.level)
+    || !Number.isSafeInteger(storageEpisode.episode) || storageEpisode.episode < 0
+    || (state.alerts || []).filter((item) => item.kind === 'storage').length > MAX_STORAGE_ALERTS) {
+    throw new Error('storage notification episode has an unsupported schema');
+  }
   if (!Array.isArray(consumedPending) || consumedPending.length > MAX_MATCHES
     || new Set(consumedPending).size !== consumedPending.length || !consumedPending.every((id) => HASH.test(id))) {
     throw new Error('notification runtime storage has an unsupported schema');
@@ -139,7 +147,7 @@ function readRuntime(root) {
   const receipts = readReceipts(root);
   state.alerts = state.alerts.filter((item) => item.kind !== 'provider').map((item) => ({ ...item, ...(receipts.receipts[item.id] || {}) }));
   state.providerEpisodes = {};
-  return { state, consumedPending };
+  return { state, consumedPending, storageEpisode };
 }
 
 function persistRuntime(root, runtime) {
@@ -152,7 +160,7 @@ function persistRuntime(root, runtime) {
   const merged = combine(base, validateNotifications(state), readReceipts(root), readProviderState(root), consumedPending);
   const retained = new Set(merged.alerts.map((item) => item.id));
   state.alerts = state.alerts.filter((item) => retained.has(item.id));
-  const stored = { ...state, consumedPending };
+  const stored = { ...state, consumedPending, storageEpisode: runtime.storageEpisode };
   if (Buffer.byteLength(JSON.stringify(stored)) > MAX_BYTES) throw new Error('notification storage needs review');
   persistJson(root, 'notifications-runtime.json', stored);
 }
@@ -162,11 +170,12 @@ function addAlert(state, kind, identity, at, count = 1, provider = null) {
   const id = hash(`${kind}:${identity}`);
   if (state.alerts.some((item) => item.id === id)) return;
   const providerAlert = kind === 'provider';
-  const limit = providerAlert ? MAX_PROVIDER_ALERTS : MAX_ALERTS;
+  const group = (item) => providerAlert ? item.kind === 'provider' : kind === 'storage' ? item.kind === 'storage' : ordinaryAlert(item);
+  const limit = providerAlert ? MAX_PROVIDER_ALERTS : kind === 'storage' ? MAX_STORAGE_ALERTS : MAX_ALERTS;
   const activeProviderIds = new Set(Object.entries(state.providerEpisodes).filter(([, value]) => value.state !== null)
     .map(([name, value]) => hash(`provider:${name}:${value.episode}`)));
-  while (state.alerts.filter((item) => (item.kind === 'provider') === providerAlert).length >= limit) {
-    const index = state.alerts.findIndex((item) => (item.kind === 'provider') === providerAlert
+  while (state.alerts.filter(group).length >= limit) {
+    const index = state.alerts.findIndex((item) => group(item)
       && (item.acknowledgedAt !== null || (providerAlert && !activeProviderIds.has(item.id))));
     if (index < 0) throw new Error('Review older notifications before creating more alerts');
     state.alerts.splice(index, 1);
@@ -226,7 +235,7 @@ export function flushNotificationDigest(input, config, at, { tracker } = {}) {
 // pending obligations rather than accumulating every historically good job.
 export function notificationsForAssessment(input, config, reviewed, at, { tracker } = {}) {
   const initial = structuredClone(validateNotifications(input));
-  initial.alerts = initial.alerts.filter((item) => item.kind !== 'provider');
+  initial.alerts = initial.alerts.filter(ordinaryAlert);
   const index = trackerReferences(tracker);
   for (const entry of tracker?.opportunities || []) {
     const id = hash(identityOf(entry));
@@ -385,6 +394,17 @@ export function markNotification(root, id, action, at = new Date().toISOString()
 export function refreshNotificationDigest(root, config, at = new Date().toISOString()) {
   return withWorkspaceMutationAuthority(root, { kind: 'notifications', phase: 'digest' }, () => {
     for (const provider of ['codex', 'claude', 'local']) publishProviderNotificationIntentUnderFence(root, provider);
+    const runtime = readRuntime(root);
+    const storage = readPublicStoragePressure(root);
+    const previousLevel = runtime.storageEpisode.level;
+    const newStorageEpisode = storage.state !== 'healthy'
+      && (previousLevel === 'healthy' || (previousLevel === 'warning' && storage.state === 'blocked'));
+    if (newStorageEpisode) {
+      runtime.storageEpisode.episode += 1;
+      addAlert(runtime.state, 'storage', `storage:${runtime.storageEpisode.episode}`, at, storage.warnings.length);
+    }
+    runtime.storageEpisode.level = storage.state;
+    if (newStorageEpisode || previousLevel !== storage.state) persistRuntime(root, runtime);
     const current = readNotifications(root);
     const next = flushNotificationDigest(current, config, at, { tracker: loadNotificationTracker(root) });
     const known = new Set(current.alerts.map((item) => item.id));
@@ -410,9 +430,9 @@ export function notificationView(input) {
     .map(([name, value]) => hash(`provider:${name}:${value.episode}`)));
   const view = (item) => ({
     ...item,
-    title: item.kind === 'provider' ? `${({ codex: 'Codex', claude: 'Claude', local: 'Local model' })[item.provider]} provider warning`
+    title: item.kind === 'storage' ? 'Scout scan storage needs review' : item.kind === 'provider' ? `${({ codex: 'Codex', claude: 'Claude', local: 'Local model' })[item.provider]} provider warning`
       : item.kind === 'digest' ? 'Your daily Scout matches' : 'An exceptional match is ready',
-    body: item.kind === 'provider' ? 'A provider problem was recorded. Open Scout to review its current state and any missed work.'
+    body: item.kind === 'storage' ? 'Scan storage is running low. On the Scout host, run scout cleanup --plan, review eligible data, then explicitly archive a selection.' : item.kind === 'provider' ? 'A provider problem was recorded. Open Scout to review its current state and any missed work.'
       : item.kind === 'digest' ? `${item.count} new match${item.count === 1 ? '' : 'es'} to review. Your feedback helps Scout learn what matters.`
         : 'Open Scout to review a newly assessed exceptional match.',
   });

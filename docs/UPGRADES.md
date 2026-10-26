@@ -2,6 +2,11 @@
 
 Scout application versions and workspace schema versions are separate. Installer upgrades replace application files and managed instructions; they must not delete the private workspace, its credentials or Git history.
 
+Installed application files remain read-only. Scout refreshes its managed
+instruction copies inside the private workspace with owner write permission,
+including copies made read-only by an older package. Scans and upgrades can
+refresh these copies without changing the installed application's permissions.
+
 The installer currently exposes the UI through shortcuts but does not add
 `scout` to `PATH`. Installer users can run diagnostics through the UI or use the
 explicit bundled CLI invocation in [Quick Start](QUICK_START.md).
@@ -53,6 +58,19 @@ VPS source checkouts continue to use the protected release workflow described in
 [VPS installation](INSTALL_VPS.md). It refuses dirty or unexpected checkouts,
 runs the complete tests, rolls back a failed health check, and preserves the
 separate workspace, provider credentials and existing Tailscale Serve mapping.
+
+## Regional settings when fields are missing
+
+Existing explicit regional settings are preserved: a workspace with locale
+`en-GB`, currency `GBP`, timezone `Europe/London` and Adzuna country `gb` keeps
+those choices. Only missing keys receive the neutral defaults `en`, `USD`,
+`UTC` and country `null`. Scout does not infer a country from the machine or
+silently restore a UK default. Check **Settings → Search & profile** after an
+upgrade if an older workspace omitted any of these fields; review and save the
+language, currency, time zone and optional source country you actually want.
+Reading a current-schema workspace fills missing defaults in memory without
+rewriting its file. An older-schema migration saves the original configuration
+before persisting the filled defaults.
 
 ## Legacy/private checkout migration
 

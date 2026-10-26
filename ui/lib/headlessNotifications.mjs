@@ -5,6 +5,8 @@ import https from 'node:https';
 import { runProviderCommand } from './providers.mjs';
 import { validatePhysicalWorkspacePath } from './physicalPath.mjs';
 import { loadWorkspaceConfig } from './workspace.mjs';
+import { acquireProcessDirectoryLock } from './processDirectoryLock.mjs';
+import { validateNotificationExecutable } from './notificationExecutable.mjs';
 
 export function validateOutboundConfig(value) {
   if (!value || value.schemaVersion !== 1 || typeof value.enabled !== 'boolean') throw new Error('outbound notification configuration is invalid');
@@ -14,9 +16,7 @@ export function validateOutboundConfig(value) {
   if (value.type === 'command') {
     if (!path.isAbsolute(value.command || '') || !Array.isArray(value.args) || value.args.length > 32
       || value.args.some((arg) => typeof arg !== 'string' || arg.length > 2000 || arg.includes('\0'))) throw new Error('notification command requires an absolute executable and bounded argv');
-    const command = fs.realpathSync(value.command);
-    const stat = fs.statSync(command);
-    if (!stat.isFile() || (process.platform !== 'win32' && ((stat.mode & 0o022) || !(stat.mode & 0o111)))) throw new Error('notification executable must be a protected executable file');
+    const command = validateNotificationExecutable(value.command);
     return { schemaVersion: 1, enabled: true, type: 'command', command, args: value.args, timeoutMs };
   }
   if (value.type === 'webhook') {
@@ -42,7 +42,7 @@ export function loadOutboundConfig(root, { file = process.env.SCOUT_NOTIFICATION
 }
 
 function payloadFor(alert) {
-  if (!/^[a-f0-9]{64}$/.test(alert?.id || '') || !['match', 'digest', 'provider'].includes(alert.kind)
+  if (!/^[a-f0-9]{64}$/.test(alert?.id || '') || !['match', 'digest', 'provider', 'storage'].includes(alert.kind)
     || !Number.isSafeInteger(alert.count) || alert.count < 1 || alert.count > 10000
     || !Number.isFinite(Date.parse(alert.createdAt || ''))) throw new Error('outbound notification is invalid');
   return { schemaVersion: 1, notification: {
@@ -82,8 +82,8 @@ export async function sendHeadlessAlert(config, alert, { root, runCommand = runP
   });
 }
 
-// One sender per workspace, shared by the daemon and CLI. A crash preserves the
-// lock for owner inspection; it never permits overlapping delivery on a guess.
+// One sender per workspace, shared by the daemon and CLI. Durable process-start
+// identity permits recovery after a crash while preserving a live sender.
 export async function dispatchHeadlessNotifications(root, { file, api, config, send = sendHeadlessAlert, shouldContinue = () => true } = {}) {
   const outbound = loadOutboundConfig(root, { ...(file ? { file } : {}) });
   if (!outbound.enabled) return { enabled: false, delivered: 0, failed: 0 };
@@ -91,22 +91,23 @@ export async function dispatchHeadlessNotifications(root, { file, api, config, s
   validatePhysicalWorkspacePath(root, runtime, 'outbound storage');
   fs.mkdirSync(runtime, { recursive: true, mode: 0o700 });
   const lock = validatePhysicalWorkspacePath(root, path.join(runtime, 'outbound-dispatch.lock'), 'outbound lock');
-  try { fs.mkdirSync(lock, { mode: 0o700 }); } catch (error) {
-    if (error.code === 'EEXIST') return { enabled: true, busy: true, delivered: 0, failed: 0 };
-    throw error;
-  }
+  const ownership = acquireProcessDirectoryLock(lock);
+  if (!ownership) return { enabled: true, busy: true, delivered: 0, failed: 0 };
   let delivered = 0; let failed = 0;
   try {
     api ||= await import('./notifications.mjs');
+    ownership.assertOwned();
     const view = api.refreshNotificationDigest(root, config || loadWorkspaceConfig(root));
     for (const alert of view.outbox.slice(0, 16)) {
       if (!shouldContinue()) break;
       try {
+        ownership.assertOwned();
         if (!(await send(outbound, alert, { root })).ok) { failed += 1; break; }
+        ownership.assertOwned();
         api.markNotification(root, alert.id, 'delivered');
         delivered += 1;
       } catch { failed += 1; break; }
     }
     return { enabled: true, delivered, failed };
-  } finally { fs.rmdirSync(lock); }
+  } finally { ownership.release(); }
 }

@@ -2,12 +2,66 @@ import { isSafeModelId } from './modelIdentifier.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import Ajv from 'ajv';
+import { validatePhysicalWorkspacePath } from './physicalPath.mjs';
 
 const ajv = new Ajv({ strict: false, allErrors: false, validateFormats: false });
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const HEALTH_SCHEMA = Object.freeze({ type: 'object', additionalProperties: false, required: ['ready'], properties: { ready: { const: true } } });
+
+function privateIPv4(parts) {
+  const [a, b] = parts;
+  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+}
+
+function privateEndpointHost(hostname) {
+  if (hostname === 'localhost') return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return privateIPv4(hostname.split('.').map(Number));
+  if (!hostname.startsWith('[') || !hostname.endsWith(']')) return false;
+  // URL canonicalises IPv6, including embedded dotted IPv4 and unusual IPv4
+  // spellings, before classification. DNS names never stand in for private IPs.
+  const halves = hostname.slice(1, -1).split('::');
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves[1] ? halves[1].split(':') : [];
+  const words = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right].map((word) => parseInt(word, 16));
+  if (words.length !== 8) return false;
+  if (words.slice(0, 7).every((word) => word === 0) && words[7] === 1) return true;
+  if (words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff) {
+    return privateIPv4([words[6] >> 8, words[6] & 255, words[7] >> 8, words[7] & 255]);
+  }
+  return words[0] === 0xfd7a && words[1] === 0x115c && words[2] === 0xa1e0;
+}
+
+function contains(parent, file) {
+  const relative = path.relative(parent, file);
+  return relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function localKeySelection(config, root) {
+  const workspace = path.resolve(root || process.cwd());
+  const file = path.resolve(workspace, config.apiKeyFile);
+  let boundary;
+  if (contains(path.join(workspace, '.scout'), file)) boundary = workspace;
+  else if (process.platform !== 'win32' && contains('/etc/scout/secrets', file)) boundary = '/etc';
+  else throw new Error('local provider API-key file must be inside workspace .scout or /etc/scout/secrets');
+  validatePhysicalWorkspacePath(boundary, file, 'local provider API-key file');
+  const parents = [];
+  let current = path.dirname(file);
+  while (true) {
+    if (fs.existsSync(current)) {
+      const stat = fs.lstatSync(current, { bigint: true });
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw failure('authentication-required');
+      parents.push(`${stat.dev}:${stat.ino}`);
+    }
+    if (path.relative(boundary, current) === '') break;
+    const parent = path.dirname(current);
+    if (parent === current) throw failure('authentication-required');
+    current = parent;
+  }
+  return { file, parentIdentity: parents.join('|') };
+}
 
 function failure(reasonCode = 'provider-error') {
   const error = new Error(`Local provider request failed (${reasonCode}). Check the local model server and settings.`);
@@ -17,24 +71,28 @@ function failure(reasonCode = 'provider-error') {
 
 // Configuration contains only an explicit endpoint, a model identifier and an
 // optional credential FILE selector. Inline credentials are never supported.
-export function validateLocalProviderConfig(value = {}, { requireConfigured = false } = {}) {
+export function validateLocalProviderConfig(value = {}, { requireConfigured = false, root, allowLegacyTransport = false } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('local provider settings must be an object');
   const allowed = new Set(['baseUrl', 'apiKeyFile', 'model', 'timeoutMs', 'retries']);
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error('local provider settings contain unsupported fields; use an API-key file');
   const baseUrl = value.baseUrl || '';
   const model = value.model || '';
   if (baseUrl) {
+    if (typeof baseUrl !== 'string' || baseUrl.length > 2048 || /[\x00-\x20\x7f]/.test(baseUrl)) throw new Error('local provider base URL is invalid');
     let parsed;
     try { parsed = new URL(baseUrl); } catch { throw new Error('local provider base URL is invalid'); }
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
       throw new Error('local provider base URL must use HTTP(S) without credentials, query or fragment');
     }
-    if (typeof baseUrl !== 'string' || baseUrl.length > 2048) throw new Error('local provider base URL is invalid');
+    if (!allowLegacyTransport && parsed.protocol !== 'https:' && !privateEndpointHost(parsed.hostname)) {
+      throw new Error('local provider base URL requires HTTPS, loopback, or a private numeric network address');
+    }
   }
   if (model && !isSafeModelId(model)) throw new Error('local provider model is invalid');
   if (value.apiKeyFile != null && (typeof value.apiKeyFile !== 'string' || value.apiKeyFile.length > 4096 || /[\x00-\x1f]/.test(value.apiKeyFile))) {
     throw new Error('local provider API-key file path is invalid');
   }
+  if (value.apiKeyFile && root !== undefined) localKeySelection(value, root);
   if (value.timeoutMs !== undefined && (!Number.isSafeInteger(value.timeoutMs) || value.timeoutMs < 1 || value.timeoutMs > MAX_TIMEOUT_MS)) {
     throw new Error('local provider timeout must be between 1 ms and 30 minutes');
   }
@@ -47,11 +105,11 @@ export function validateLocalProviderConfig(value = {}, { requireConfigured = fa
 
 function readKey(config, root) {
   if (!config.apiKeyFile) return null;
-  const file = path.resolve(root || process.cwd(), config.apiKeyFile);
   // Read by descriptor, enforce the bound before allocation, and never place
   // the key or a filesystem error in a thrown/public result.
   let descriptor;
   try {
+    const { file, parentIdentity } = localKeySelection(config, root);
     const selected = fs.lstatSync(file, { bigint: true });
     if (!selected.isFile() || selected.isSymbolicLink() || selected.size < 1n || selected.size > 8192n) throw failure('authentication-required');
     // O_NONBLOCK prevents a regular-file -> FIFO replacement from blocking
@@ -65,6 +123,12 @@ function readKey(config, root) {
     const bytes = Buffer.alloc(8193);
     const count = fs.readSync(descriptor, bytes, 0, bytes.length, 0);
     if (count > 8192) throw failure('authentication-required');
+    const afterRead = fs.fstatSync(descriptor, { bigint: true });
+    const after = fs.lstatSync(file, { bigint: true });
+    if (after.isSymbolicLink() || !after.isFile() || after.dev !== stat.dev || after.ino !== stat.ino
+      || afterRead.size !== stat.size || afterRead.mtimeNs !== stat.mtimeNs || afterRead.ctimeNs !== stat.ctimeNs
+      || after.size !== afterRead.size || after.mtimeNs !== afterRead.mtimeNs || after.ctimeNs !== afterRead.ctimeNs
+      || localKeySelection(config, root).parentIdentity !== parentIdentity) throw failure('authentication-required');
     const key = bytes.subarray(0, count).toString('utf8').trim();
     if (!key || /[\x00-\x20\x7f]/.test(key)) throw failure('authentication-required');
     return key;

@@ -1188,22 +1188,8 @@ function reconcileQueueOperation(root, lease, currentDigest) {
   return null;
 }
 
-export function compactScanQueue(root, lease, {
-  now = new Date(),
-  summaryDays = 365,
-  beforeQueueReplace,
-  afterQueueReplace,
-} = {}) {
-  now = checkedDate(now, 'queue compaction time');
-  if (!Number.isSafeInteger(summaryDays) || summaryDays < 0) {
-    throw new TypeError('queue summary retention must be a non-negative whole number');
-  }
-  assertScanLeaseScope(lease, root, lease?.runId);
-  currentFence(lease, () => {
-    recoverScanQueueTail(root);
-    reduceCompletedQueueOperations(root);
-  });
-  const snapshot = currentFence(lease, () => queueEvents(root));
+function queueCleanupContents(root, now, summaryDays) {
+  const snapshot = queueEvents(root);
   const projection = projectScanQueue(root, now);
   const cutoff = now.getTime() - summaryDays * DAY_MS;
   const keepIds = new Set();
@@ -1228,6 +1214,52 @@ export function compactScanQueue(root, lease, {
   } while (changed);
   const kept = snapshot.events.filter((record) => queueEventIds(record).some((id) => keepIds.has(id)));
   const next = kept.length ? `${kept.map((record) => JSON.stringify(record)).join('\n')}\n` : '';
+  return { snapshot, kept, next };
+}
+
+export function planScanQueueCleanup(root, { now = new Date(), summaryDays = 365 } = {}) {
+  now = checkedDate(now, 'queue compaction time');
+  if (!Number.isSafeInteger(summaryDays) || summaryDays < 0) throw new TypeError('queue summary retention must be a non-negative whole number');
+  const { snapshot, kept, next } = queueCleanupContents(root, now, summaryDays);
+  return Object.freeze({
+    schemaVersion: 1, generatedAt: now.toISOString(), summaryDays,
+    beforeDigest: sha256(snapshot.contents), afterDigest: sha256(next),
+    removedEvents: snapshot.events.length - kept.length, keptEvents: kept.length,
+  });
+}
+
+export function compactScanQueue(root, lease, {
+  now = new Date(),
+  summaryDays = 365,
+  reviewedPlan = null,
+  beforeQueueReplace,
+  afterQueueReplace,
+} = {}) {
+  now = checkedDate(now, 'queue compaction time');
+  if (!Number.isSafeInteger(summaryDays) || summaryDays < 0) {
+    throw new TypeError('queue summary retention must be a non-negative whole number');
+  }
+  assertScanLeaseScope(lease, root, lease?.runId);
+  currentFence(lease, () => {
+    recoverScanQueueTail(root);
+    reduceCompletedQueueOperations(root);
+  });
+  const { snapshot, kept, next } = queueCleanupContents(root, now, summaryDays);
+  if (reviewedPlan) {
+    const current = {
+      schemaVersion: 1, generatedAt: now.toISOString(), summaryDays,
+      beforeDigest: sha256(snapshot.contents), afterDigest: sha256(next),
+      removedEvents: snapshot.events.length - kept.length, keptEvents: kept.length,
+    };
+    // Losing scans may legitimately append compatible requests while cleanup
+    // owns the lease. Bind the snapshot taken here, not only the CLI precheck.
+    const resumed = reviewedPlan.schemaVersion === 1
+      && current.beforeDigest === reviewedPlan.afterDigest
+      && current.afterDigest === reviewedPlan.afterDigest;
+    if (!resumed && stableJson(current) !== stableJson(reviewedPlan)) {
+      throw new Error('Queue changed after cleanup review; generate and inspect a new plan');
+    }
+  }
   if (next === snapshot.contents) {
     return reconcileQueueOperation(root, lease, sha256(snapshot.contents))
       || { changed: false, removedEvents: 0, keptEvents: kept.length };

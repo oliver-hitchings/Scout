@@ -19,7 +19,8 @@ async function fixture(t, handle) {
   const requests = [];
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-local-http-'));
   const key = randomBytes(24).toString('hex');
-  const apiKeyFile = path.join(root, 'credential');
+  const apiKeyFile = path.join(root, '.scout', 'credential');
+  fs.mkdirSync(path.dirname(apiKeyFile), { recursive: true });
   fs.writeFileSync(apiKeyFile, `${key}\n`, { mode: 0o600 });
   const server = http.createServer(async (req, res) => {
     let raw = '';
@@ -35,12 +36,12 @@ async function fixture(t, handle) {
 }
 function respond(res, status, body) { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); }
 function run(local, options = {}) {
-  return runStructuredTurn({ provider: 'local', status: providerStatus('local', { local }), schema, prompt: 'Synthetic readiness check.', ...options });
+  return runStructuredTurn({ provider: 'local', status: providerStatus('local', { local, root: local.apiKeyFile ? path.dirname(path.dirname(local.apiKeyFile)) : undefined }), schema, prompt: 'Synthetic readiness check.', ...options });
 }
 
 test('local provider executes validated structured HTTP without any CLI and keeps key/path private', async (t) => {
   const f = await fixture(t, (_req, res) => respond(res, 200, completion()));
-  const status = providerStatus('local', { local: f.local, spawn: () => assert.fail('local provider must not spawn') });
+  const status = providerStatus('local', { local: f.local, root: f.root, spawn: () => assert.fail('local provider must not spawn') });
   assert.equal(status.installed, true);
   assert.equal(status.authenticated, true);
   assert.equal(providerLocalHealthSignal(status).kind, 'local-credentials-present');
@@ -91,7 +92,7 @@ for (const [status, reason] of [[401, 'authentication-required'], [403, 'authent
         if (body === 'oversized') res.end('synthetic private error '.repeat(100_000));
         else { res.flushHeaders(); res.write('synthetic private error'); }
       });
-      const selected = providerStatus('local', { local: { ...f.local, retries: 2, timeoutMs: 300 } });
+      const selected = providerStatus('local', { local: { ...f.local, retries: 2, timeoutMs: 300 }, root: f.root });
       const result = await runLocalTurn({ status: selected, prompt: 'Synthetic request.' }).finished;
       assert.equal(result.reasonCode, reason, 'known HTTP status must survive the unneeded error-body boundary');
       assert.equal(f.requests.length, 1, 'authentication and rate limits must never retry');
@@ -112,7 +113,7 @@ test('an oversized local authentication response establishes a durable barrier u
     if (healthy) respond(res, 200, completion());
     else { res.writeHead(401); res.end('synthetic private error '.repeat(100_000)); }
   });
-  const status = providerStatus('local', { local: f.local });
+  const status = providerStatus('local', { local: f.local, root: f.root });
   const failed = await localProviderHealthSignal(status, { source: 'manual-preflight' });
   const blocked = recordProviderHealth(f.root, 'local', failed, { purpose: 'manual-run' });
   assert.equal(blocked.state, 'sign-in-required');
@@ -149,7 +150,7 @@ test('local refuses credential forwarding through redirects', async (t) => {
 test('missing local API-key files fail as authentication-required before any HTTP request', async (t) => {
   const f = await fixture(t, (_req, res) => respond(res, 200, completion()));
   fs.unlinkSync(f.local.apiKeyFile);
-  const status = providerStatus('local', { local: f.local });
+  const status = providerStatus('local', { local: f.local, root: f.root });
   assert.equal(status.installed, true);
   assert.equal(status.authenticated, false);
   await assert.rejects(run(f.local), (error) => error.reasonCode === 'authentication-required');
@@ -166,7 +167,8 @@ for (const substitution of [false, true]) {
   test(`local API-key ${substitution ? 'FIFO substitution' : 'FIFO'} cannot block provider detection`, { skip: process.platform === 'win32' }, (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scout-local-key-file-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const keyFile = path.join(root, 'key-file');
+    const keyFile = path.join(root, '.scout', 'key-file');
+    fs.mkdirSync(path.dirname(keyFile), { recursive: true });
     if (substitution) fs.writeFileSync(keyFile, randomBytes(24).toString('hex'));
     else assert.equal(spawnSync('mkfifo', [keyFile]).status, 0);
     // This runs in its own bounded process: the pre-fix blocking open must
@@ -186,7 +188,7 @@ for (const substitution of [false, true]) {
           return original(value, ...args);
         };
       }
-      const status = providerStatus('local', { local: { baseUrl: 'http://localhost:8000/v1', model: 'synthetic-model', apiKeyFile: file } });
+      const status = providerStatus('local', { root: ${JSON.stringify(root)}, local: { baseUrl: 'http://localhost:8000/v1', model: 'synthetic-model', apiKeyFile: file } });
       process.stdout.write(JSON.stringify({ authenticated: status.authenticated, reasonCode: status.reasonCode }));
     `;
     const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 2000 });
@@ -198,9 +200,9 @@ for (const substitution of [false, true]) {
 
 test('local API-key selectors reject final symlinks without reading their target', { skip: process.platform === 'win32' }, async (t) => {
   const f = await fixture(t, (_req, res) => respond(res, 200, completion()));
-  const link = path.join(f.root, 'key-link');
+  const link = path.join(f.root, '.scout', 'key-link');
   fs.symlinkSync(f.local.apiKeyFile, link);
-  const status = providerStatus('local', { local: { ...f.local, apiKeyFile: link } });
+  const status = providerStatus('local', { root: f.root, local: { ...f.local, apiKeyFile: link } });
   assert.equal(status.authenticated, false);
   assert.equal(status.reasonCode, 'authentication-required');
   assert.equal(f.requests.length, 0);

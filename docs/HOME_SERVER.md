@@ -36,6 +36,94 @@ Run one Scout instance per person, without a desktop or tray. Each instance has 
    A successful response includes `schemaVersion: 1`, the application version and `status: "ready"`. `setup-required` means the workspace has not been initialised. This is a liveness/configuration check; provider and scan readiness are reported separately.
 7. Open this instance through an owner-controlled private connection and complete setup: choose background watch or active job hunt, import that person's CV, set their location, currency and timezone, and choose an AI provider. A local OpenAI-compatible provider does not require the Codex CLI. No public port, remote proxy or tray is configured by these examples.
 
+## Verify the filesystem sandbox on the real host
+
+Before enabling household schedules, rehearse the shipped service restrictions
+on the Linux host that will run Scout. A static unit-file check does not prove
+runtime mount behaviour. In particular, `ProtectSystem=strict` must leave the
+selected `BindPaths` workspace writable while `TemporaryFileSystem` hides its
+siblings. Repeat this after changing systemd, unit overrides or storage mounts.
+
+The following requires the dedicated `scout` account and administrator access.
+It creates only synthetic directories in the OS volatile runtime area (`/run`), starts a
+short-lived transient unit with the same restrictions as both Scout service
+templates, checks the actual namespace with `findmnt`, then removes the synthetic
+state. It never starts Scout, contacts a provider or opens a real workspace.
+The fixture uses `/run` so `PrivateTmp=true` cannot hide its host source before
+the bind-mount rehearsal. Both shipped templates bind `/srv/appdata/scout`,
+which is also outside the private `/tmp` and `/var/tmp` mounts. Run the complete
+block in Bash on the real host:
+
+<!-- scout-sandbox-rehearsal:start -->
+```bash
+bash <<'SCOUT_SANDBOX_REHEARSAL'
+set -eu
+if [ ! -d /run/systemd/system ]; then
+  printf '%s\n' 'No running systemd manager; runtime verification remains pending.' >&2
+  exit 1
+fi
+command -v systemd-run >/dev/null
+command -v findmnt >/dev/null
+probe_root=$(sudo mktemp -d /run/scout-sandbox.XXXXXX)
+case "$probe_root" in /run/scout-sandbox.*) ;; *) exit 1 ;; esac
+probe_unit="scout-sandbox-check-$$.service"
+cleanup_probe() {
+  sudo systemctl stop "$probe_unit" >/dev/null 2>&1 || true
+  sudo rm -rf -- "$probe_root"
+}
+trap cleanup_probe EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+sudo chown scout:scout -- "$probe_root"
+sudo -u scout mkdir "$probe_root/workspace-selected" "$probe_root/workspace-sibling"
+sudo -u scout sh -c 'printf "%s\n" "Synthetic sandbox fixture" > "$1/sentinel"' \
+  sh "$probe_root/workspace-sibling"
+systemctl --version
+sudo systemd-run --unit="$probe_unit" --wait --collect --pipe --quiet \
+  --property=User=scout --property=Group=scout \
+  --property=ProtectSystem=strict --property=ProtectHome=true \
+  --property=PrivateTmp=true --property=NoNewPrivileges=true --property=UMask=0077 \
+  --property="TemporaryFileSystem=$probe_root:ro" \
+  --property="BindPaths=$probe_root/workspace-selected" \
+  /bin/sh -eu -s -- "$probe_root/workspace-selected" "$probe_root" <<'SCOUT_SANDBOX_CHECK'
+workspace=$1
+masked_parent=$2
+workspace_options=$(findmnt -n -o OPTIONS --target "$workspace")
+parent_options=$(findmnt -n -o OPTIONS --target "$masked_parent")
+system_options=$(findmnt -n -o OPTIONS --target /usr)
+case ",$workspace_options," in *,rw,*) ;; *) exit 1 ;; esac
+case ",$parent_options," in *,ro,*) ;; *) exit 1 ;; esac
+case ",$system_options," in *,ro,*) ;; *) exit 1 ;; esac
+printf '%s\n' 'Synthetic writable workspace check' > "$workspace/sandbox-write-check"
+test -s "$workspace/sandbox-write-check"
+rm "$workspace/sandbox-write-check"
+if [ -e "$masked_parent/workspace-sibling" ]; then
+  printf '%s\n' 'FAIL: a sibling workspace is visible.' >&2
+  exit 1
+fi
+if (printf '%s\n' 'must not persist' > "$masked_parent/unbound-write-check") 2>/dev/null; then
+  printf '%s\n' 'FAIL: the unbound parent is writable.' >&2
+  exit 1
+fi
+findmnt -n -o TARGET,FSTYPE,OPTIONS --target "$workspace"
+findmnt -n -o TARGET,FSTYPE,OPTIONS --target "$masked_parent"
+printf '%s\n' 'PASS: selected workspace writable; sibling hidden; unbound parent and system read-only.'
+SCOUT_SANDBOX_CHECK
+SCOUT_SANDBOX_REHEARSAL
+```
+<!-- scout-sandbox-rehearsal:end -->
+
+Accept only exit status zero and the final `PASS` line after all positive and
+negative checks. Record the systemd version, unit-template revision, exit status
+and sanitised mount/result evidence in the private operator context; share only
+the synthetic result in the release gate. An error, a skipped invocation or a
+machine without a running systemd manager leaves this gate open. Do not remove
+`ProtectSystem`, change read-only mounts or expose sibling paths to pass it.
+
+Until a successful rehearsal is recorded for the intended host, runtime
+verification remains pending. Automated tests check the procedure syntax and
+required unit properties, not live mount isolation.
+
 ## Schedule scans without a desktop
 
 Use the system timer templates above for a system account. Registered household instances and explicitly headless services (`SCOUT_HEADLESS=1`, set by the templates) reject desktop-native schedule install, remove and run-now actions in both the CLI and UI/API. Their native status is marked owner-managed rather than guessed from another person's user-global task name. The settings screen directs the owner to this guide and keeps manual scans available. Manage each instance's system timer with the administrator commands below. Scout's desktop `schedule install` command remains available outside household/headless mode and needs a working user service manager.
@@ -76,9 +164,30 @@ sudo -u scout env SCOUT_HOUSEHOLD_SETTINGS=/srv/appdata/scout/household.json \
   /usr/bin/node /srv/apps/scout/app/tools/scout.mjs household switch person-b
 ```
 
-Selection affects the next CLI or web process without `--workspace` or `SCOUT_WORKSPACE`; those explicit settings take precedence. A selected household instance supplies its own port, device settings and private provider home. It clears inherited provider API-key/token variables and selects isolated Codex/Claude configuration directories; sign in separately for each person. Local-provider API-key files still come from that workspace’s explicit configuration. `PORT` remains an explicit owner override. Registered household instances always pin their device settings to their own workspace, even when a command inherits another instance’s `SCOUT_DEVICE_SETTINGS`; explicit external device-file overrides apply only outside household selection. The registry stores only instance identifiers, paths, ports and filesystem identities. Linked/replaced roots fail closed. It does not combine results or offer browser switching into someone else's workspace. Moving/restoring a workspace requires rebuilding its host-local registry; do not edit stored filesystem identities to bypass validation.
+Selection affects the next CLI or web process without `--workspace` or `SCOUT_WORKSPACE`; those explicit settings take precedence. A selected household instance supplies its own port, device settings and private provider home. It clears inherited provider API-key/token variables and selects isolated Codex/Claude configuration directories; sign in separately for each person. Local-provider API-key files still come from that workspace’s explicit configuration. `PORT` remains an explicit owner override. Registered household instances always pin their device settings to their own workspace, even when a command inherits another instance’s `SCOUT_DEVICE_SETTINGS`; explicit external device-file overrides apply only outside household selection. The registry stores only instance identifiers, paths, ports and filesystem identities. Selecting a linked, missing or replaced root fails closed. `household list` reports each instance as `available` or `unavailable`; an unavailable sibling does not prevent a healthy instance from starting or being selected. Registry-format errors, duplicate identifiers/ports and overlapping workspaces still fail closed for the whole registry. It does not combine results or offer browser switching into someone else's workspace. Moving/restoring a workspace requires rebuilding its host-local registry; do not edit stored filesystem identities to bypass validation.
 
-The systemd filesystem sandbox blocks accidental access to sibling state from an instance. A single Unix account is still an administrator trust boundary: the account owner can change the units or run commands outside that sandbox. Use separate Unix accounts, independent provider credentials and separately authorised private access when household members must be protected from one another. A loopback port is not a household authentication system; the owner must map each person's private access to only their instance.
+Living CV source selection is available only on the host-local dashboard. It rejects source paths inside all registered household workspaces and `.scout` directories, resolving directory aliases before reading. These application checks also apply without systemd. The systemd filesystem sandbox blocks accidental access to sibling state from an instance. A single Unix account is still an administrator trust boundary: the account owner can change the units or run commands outside that sandbox. Use separate Unix accounts, independent provider credentials and separately authorised private access when household members must be protected from one another. A loopback port is not a household authentication system; the owner must map each person's private access to only their instance.
+
+Household registry updates record the owning process, its start identity and the
+acquisition time in private coordination state. A later command can reclaim a
+proven-dead owner. An old empty lock left by earlier versions becomes eligible
+after ten minutes; cleanup never removes a non-empty unknown directory. Live or
+unverifiable owners remain busy even when old, preventing overlapping writes.
+The coordination directory can remain after a successful command and is not
+itself evidence that a command is still running.
+
+## Reviewed scan storage maintenance
+
+Storage warnings appear in the local summary API and the normal notification
+outbox before pressure blocks new scans. On the instance's host, use
+`scout cleanup --workspace YOUR_PRIVATE_WORKSPACE --plan` to list eligible data.
+Select runs explicitly, save a private plan, inspect its digest and apply only
+that confirmed plan. `--plan --queue` separately reviews queue compaction.
+The [reviewed cleanup procedure](OPERATIONS.md#scan-storage-and-reviewed-cleanup)
+covers credentials, retained/recovery-critical work, encrypted archives and
+interruption recovery. There is no unattended deletion policy. Run the command
+as the owning instance account with its explicit workspace; household selection
+does not authorize maintenance on a different person's data.
 
 ## Local dashboard API
 
@@ -130,6 +239,15 @@ For a local executable:
 
 Scout invokes that absolute, protected executable with the fixed argument array followed by one JSON argument using the same payload. It never invokes a shell. The child receives a minimal environment without provider keys, a bounded lifetime/output, and this workspace as its working directory. The owner explicitly authorises that executable to run as the Scout account; keep it read-only to untrusted users and available inside the service sandbox. Configure paths rather than shell pipelines. On timeout Scout terminates the child process group and waits for it to close.
 
+The executable and its directory must also be protected against replacement.
+Unix commands require trusted ownership and no group/world write permission;
+ancestor checks allow a normal sticky temporary directory only when the owned
+child is protected. On Windows, Scout checks the executable and parent owner and
+DACL, including ancestor permissions that could replace the protected directory.
+Only the current user, SYSTEM, Administrators and TrustedInstaller may control
+these paths. Unverifiable ACLs fail closed; choose an administrator-managed or
+private user directory rather than a shared writable command folder.
+
 The headless web service checks the normal alert/digest outbox at startup and every five minutes. Standalone CLI scans also dispatch after completion or a failed preflight. Active-hunt digests become due under the normal notification policy even when no tray is running. A tick delivers at most 16 alerts, stopping on the first failure; unsent alerts remain pending for a later tick. Only successful command exit or HTTP 2xx records the normal delivery receipt. Acknowledgement remains a separate reviewed action in Scout.
 
 Run a delivery check explicitly (with an enabled configuration this sends pending alerts):
@@ -140,7 +258,7 @@ sudo -u scout env HOME=/srv/appdata/scout/workspace-person-a/.scout/provider-hom
   --workspace /srv/appdata/scout/workspace-person-a
 ```
 
-The command reports only enabled/busy and delivered/failed counts. Failures exit nonzero; raw command output and destination URLs are not printed. Set `enabled` to `false` or remove the configuration file to disable delivery. A workspace-local `outbound-dispatch.lock` prevents overlapping daemon/CLI sends. After a crash, stop that instance's web and scan services, verify no dispatcher remains, and remove only that empty lock directory before restarting. Never delete the notification files or receipts to clear a delivery lock.
+The command reports only enabled/busy and delivered/failed counts. Failures exit nonzero; raw command output and destination URLs are not printed. Set `enabled` to `false` or remove the configuration file to disable delivery. A workspace-local `outbound-dispatch.lock` prevents overlapping daemon/CLI sends. It records a random ownership token, acquisition time, host, PID and process-start identity. A proven-dead sender is reclaimed on the next delivery attempt. A live or unobservable sender remains protected regardless of age. Old empty lock directories from earlier versions become eligible after ten minutes; nonempty or unverifiable state is retained. Lock metadata remains after normal release for safe coordination. Never delete notification files, receipts or an active sender's lock state to clear a delivery failure.
 
 ## Upgrade, backup and restore
 
