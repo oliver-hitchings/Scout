@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
 
 const EXPIRED = {
   provider: 'claude',
@@ -174,4 +175,46 @@ test('local provider settings preserve edits and save a model without a CLI sign
   expect(config.ai.local.model).toBe('synthetic/model-27b');
   expect(config.ai.local.apiKeyFile).toBeNull();
   await expect(dialog.locator('[data-provider-login="local"]')).toHaveCount(0);
+});
+
+test('remote settings keep local model transport read-only and roundtrip its exact approved settings', async ({ page }) => {
+  const local = { baseUrl: 'https://model.example.test/v1', model: 'synthetic/model' };
+  let saved;
+  const config = { locale: 'en-GB', ai: { provider: 'codex', models: {}, local }, search: {}, commute: {} };
+  await page.route('**/api/setup/status', (route) => route.fulfill(json({
+    bootstrap: false, established: true, ready: true, setupComplete: true, trackerExists: true,
+    requestAccess: 'remote-owner', config,
+    providers: { codex: { installed: true, authenticated: true, healthState: 'ready' }, claude: {}, local: {} },
+    scanHealth: { healthy: true }, schedule: { enabled: false, runs: [] }, sync: { state: 'disabled' },
+    device: { updates: { policy: 'notify' }, startupStatus: {} }, remoteAccess: {}, pendingSetupSections: [],
+  })));
+  await page.route('**/api/provider-login/status**', (route) => route.fulfill(json({ session: null, csrfToken: randomUUID() })));
+  await page.route('**/api/setup/config', (route) => {
+    saved = route.request().postDataJSON();
+    return route.fulfill(json({ ok: true, config }));
+  });
+  await page.goto('/');
+  await page.evaluate(() => window.ScoutSetup.openSettings('providers'));
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('Server base URL')).toBeDisabled();
+  await expect(dialog.getByLabel('API-key file (optional)')).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'Save and check local model' })).toBeDisabled();
+  await expect(dialog).toContainText('Local model settings can only be changed on the Scout host');
+  await dialog.getByRole('button', { name: 'Save AI settings' }).click();
+  await expect.poll(() => saved?.ai.local).toEqual(local);
+});
+
+test('local model URL editing explains remote data disclosure and unencrypted transport', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => window.ScoutSetup.openSettings('providers'));
+  const dialog = page.getByRole('dialog');
+  const warning = dialog.locator('#setup-local-transport-warning');
+  await dialog.getByLabel('Server base URL').fill('https://model.example.test/v1');
+  await expect(warning).toContainText('receives your CV and job text');
+  await dialog.getByLabel('Server base URL').fill('https://127.model.example.test/v1');
+  await expect(warning).toContainText('receives your CV and job text');
+  await dialog.getByLabel('Server base URL').fill('http://192.168.2.1:8000/v1');
+  await expect(warning).toContainText('without transport encryption');
+  await dialog.getByLabel('Server base URL').fill('http://127.0.0.1:8000/v1');
+  await expect(warning).toBeEmpty();
 });

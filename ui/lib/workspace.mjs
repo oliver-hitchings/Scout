@@ -147,7 +147,7 @@ export function mergeWorkspaceDefaults(value = {}) {
   };
 }
 
-export function validateWorkspaceConfig(value) {
+export function validateWorkspaceConfig(value, { root, allowLegacyLocalTransport = false } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('workspace.json must contain an object');
   if (!Number.isInteger(value.schemaVersion) || value.schemaVersion < 1) throw new Error('workspace schemaVersion must be a positive integer');
   if (value.schemaVersion > CURRENT_WORKSPACE_SCHEMA) throw new Error(`workspace schema ${value.schemaVersion} is newer than this Scout version`);
@@ -172,7 +172,10 @@ export function validateWorkspaceConfig(value) {
     if (!['codex', 'claude', 'local'].includes(provider)) throw new Error('workspace ai.models keys must be codex, claude or local');
     if (model !== null && !isSafeModelId(model)) throw new Error(`workspace ai.models.${provider} is invalid`);
   }
-  if (value.ai?.local !== undefined) validateLocalProviderConfig(value.ai.local);
+  if (value.ai?.local !== undefined) validateLocalProviderConfig(value.ai.local, {
+    root: allowLegacyLocalTransport ? undefined : root,
+    allowLegacyTransport: allowLegacyLocalTransport,
+  });
   if (!value.schedule || !Array.isArray(value.schedule.jobs)) throw new Error('workspace schedule.jobs must be an array');
   const ids = new Set();
   for (const job of value.schedule.jobs) {
@@ -211,11 +214,14 @@ export function loadWorkspaceConfig(root, { allowMissing = true } = {}) {
   }
   const value = JSON.parse(fs.readFileSync(file, 'utf8'));
   delete value._scoutMutation;
-  return validateWorkspaceConfig(mergeWorkspaceDefaults(value));
+  // Existing transport/key selectors stay visible for local correction. Reads
+  // mint no provider authority: status/turns and every config write use strict
+  // transport and physical key-path validation before any request or key read.
+  return validateWorkspaceConfig(mergeWorkspaceDefaults(value), { allowLegacyLocalTransport: true });
 }
 
 function persistWorkspaceConfig(root, config) {
-  const checked = validateWorkspaceConfig(config);
+  const checked = validateWorkspaceConfig(config, { root });
   atomicWriteFile(workspacePaths(root).config, `${JSON.stringify(checked, null, 2)}\n`);
   return checked;
 }

@@ -25,7 +25,17 @@ The maintained beta deployment uses one private, single-owner Ubuntu VPS:
 - A first-class `local` provider uses OpenAI-compatible HTTP chat completions
   directly, without a Codex/Claude executable. Private `ai.local` settings hold
   the explicit base URL, exact model, optional API-key file selector and bounded
-  timeout/retry limits. Key contents and raw transport errors never enter health
+  timeout/retry limits. Changes to `ai.local` require local host access; remote
+  owners can use approved settings and save an identical roundtrip. API-key files
+  must resolve physically inside that workspace's `.scout` directory or the
+  explicit Linux `/etc/scout/secrets` directory, with ancestor and descriptor
+  identity checks around reads. Public HTTP endpoints are refused; HTTP requires
+  loopback or a numeric RFC1918/tailnet address, while other hosts require HTTPS.
+  The UI explains remote data disclosure and unencrypted private HTTP.
+  Legacy transport selectors remain readable for host repair without provider
+  authority or disk rewrites; requests and persisted configuration always pass
+  the strict endpoint and secret-file checks.
+  Key contents and raw transport errors never enter health
   or durable run evidence. Structured output always receives local JSON-schema
   validation, including the one explicit capability-rejection fallback to plain
   JSON. Fixed structured health probes verify the selected endpoint/model;

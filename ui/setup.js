@@ -1,6 +1,18 @@
 import { providerCardPresentation } from './lib/providerPresentation.mjs?v=__SCOUT_UI_BUILD__';
 export { providerCardPresentation };
 
+export function localProviderTransportWarning(baseUrl) {
+  if (!baseUrl) return '';
+  try {
+    const url = new URL(baseUrl);
+    if (!['http:', 'https:'].includes(url.protocol)) return 'Use HTTPS, or HTTP with a loopback or private numeric network address.';
+    if (url.hostname === 'localhost' || /^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(url.hostname) || url.hostname === '[::1]') return '';
+    return url.protocol === 'https:'
+      ? 'This model server receives your CV and job text, plus any configured API key. Use only a server you trust.'
+      : 'This connection sends CV and job text, plus any configured key, without transport encryption. Use a trusted private network or HTTPS.';
+  } catch { return 'Use a valid HTTPS URL, or HTTP with a loopback or private numeric network address.'; }
+}
+
 const STEPS = ['Welcome', 'AI provider', 'Your search', 'Adzuna', 'Import CV', 'AI hand-off', 'First scan'];
 // Keep the existing storage key so people who previously dismissed setup are
 // not forced back into it after upgrading. It now represents an intentional
@@ -1491,13 +1503,16 @@ const Setup = {
 
   localProviderFieldsHtml() {
     const local = this.localProviderDraft || this.status?.config?.ai?.local || {};
-    return `<fieldset class="setup-callout"><legend>Local OpenAI-compatible model</legend>
+    const remote = this.status?.requestAccess === 'remote-owner';
+    return `<fieldset class="setup-callout"${remote ? ' disabled' : ''}><legend>Local OpenAI-compatible model</legend>
       <p>Use a model server you control. Scout connects directly; no Codex or Claude installation is needed.</p>
+      ${remote ? '<p>Local model settings can only be changed on the Scout host. You can use its approved model remotely.</p>' : ''}
       <div class="setup-grid">
         <label class="setup-field">Server base URL<input id="setup-local-url" type="url" value="${this.escape(local.baseUrl || '')}" placeholder="http://localhost:8000/v1"></label>
         <label class="setup-field">Model name<input id="setup-local-model" type="text" maxlength="128" value="${this.escape(local.model || '')}" placeholder="Exact name served by your model server"></label>
-        <label class="setup-field">API-key file (optional)<input id="setup-local-key-file" type="text" value="${this.escape(local.apiKeyFile || '')}" placeholder="File on the Scout host"></label>
-      </div><p class="meta">Enter a file path, never the key itself. Leave blank if your local server does not require a key. Use HTTPS for a model on another computer unless your private network protects the connection. Local chat answers questions; it cannot edit files or run tools.</p>
+        <label class="setup-field">API-key file (optional)<input id="setup-local-key-file" type="text" value="${this.escape(local.apiKeyFile || '')}" placeholder=".scout/model-key"></label>
+      </div><p class="meta">Enter a path under this workspace’s .scout directory, or /etc/scout/secrets on a server, never the key itself. Leave blank when no key is required. Public model endpoints require HTTPS; HTTP requires loopback or a private numeric address. Local chat cannot edit files or run tools.</p>
+      <p id="setup-local-transport-warning" class="meta" role="status">${this.escape(localProviderTransportWarning(local.baseUrl))}</p>
       <button id="setup-local-check" class="act" type="button">Save and check local model</button>
       </fieldset>`;
   },
@@ -1511,6 +1526,8 @@ const Setup = {
           model: this.el('setup-local-model').value,
           apiKeyFile: this.el('setup-local-key-file').value || null,
         };
+        const warning = this.el('setup-local-transport-warning');
+        if (warning) warning.textContent = localProviderTransportWarning(this.localProviderDraft.baseUrl);
       });
     }
     for (const radio of document.querySelectorAll('input[name="setup-provider"]')) {
@@ -1541,7 +1558,9 @@ const Setup = {
   },
 
   readLocalProviderSettings() {
-    const current = this.status?.config?.ai?.local || {};
+    const approved = this.status?.config?.ai?.local;
+    if (this.status?.requestAccess === 'remote-owner') return approved;
+    const current = approved || {};
     if (!this.el('setup-local-url')) return current;
     const local = {
       ...current,
