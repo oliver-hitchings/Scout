@@ -36,6 +36,13 @@ A preload rejects source HTTP before loading the server and scan command, so
 the explicit post-reconnection scan reports degraded coverage without contacting
 job sources. The tests use Node's HTTP client only for the loopback Scout API.
 
+The source `npm test` suite also checks local HTTP providers against synthetic
+loopback servers. Known 401/403/429 status tests acquire actual response headers
+before exercising oversized or stalled error bodies. Separate controlled
+pre-header and real deadline checks require a network failure when no status
+arrives; an unreceived status cannot become an authentication claim. A bounded
+child process verifies this ordering without changing the operation deadline.
+
 ## Once with real accounts
 
 Use a separate test workspace and the same operating-system account that runs
