@@ -27,6 +27,8 @@ jobs:
       - run: node tools/typst-runtime.mjs install
       - run: node tools/typst-runtime.mjs verify --compile
       - run: npm test
+      - name: Verify release signatures with ephemeral test keys
+        run: node --test tools/release-signing.test.mjs
       - run: npm run test:acceptance
       - name: Verify release staging
         run: node tools/build-release.mjs --stage-only

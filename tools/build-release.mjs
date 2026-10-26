@@ -57,6 +57,7 @@ export const RELEASE_FILES = Object.freeze([
   { source: 'docs/KNOWN_ISSUES.md', target: 'docs/KNOWN_ISSUES.md' },
   { source: 'docs/REPOSITORY_LAYOUT.md', target: 'docs/REPOSITORY_LAYOUT.md' },
   { source: 'docs/RELEASE.md', target: 'docs/RELEASE.md' },
+  { source: 'docs/RELEASE_KEYS.md', target: 'docs/RELEASE_KEYS.md' },
   { source: 'docs/SUPPLY_CHAIN_SECURITY.md', target: 'docs/SUPPLY_CHAIN_SECURITY.md' },
   { source: 'docs/releases', target: 'docs/releases', tree: true },
   { source: 'docs/diagnostics', target: 'docs/diagnostics', tree: true },

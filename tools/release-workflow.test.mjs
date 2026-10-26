@@ -22,6 +22,16 @@ test('tagged release workflow validates version and requires private markers', (
   assert.match(workflow, /SCOUT_RELEASE_MARKERS/);
 });
 
+test('unenrolled release keys skip protected production signing and publication while CI proves test-key signatures', () => {
+  const readiness = workflow.match(/  signing-readiness:[\s\S]*?(?=\n  [a-z][a-z-]+:)/)?.[0] || '';
+  assert.match(readiness, /release-signing\.mjs readiness/);
+  assert.match(readiness, /outputs:[\s\S]*enrolled:/);
+  assert.doesNotMatch(readiness, /environment:|secrets\./);
+  assert.match(workflow, /publish:\n\s+if:.*needs\.signing-readiness\.outputs\.enrolled == 'true'/);
+  assert.match(workflow, /publish:[\s\S]*needs: \[windows, macos, linux, deploy-vps, signing-readiness\]/);
+  assert.match(ci, /Verify release signatures with ephemeral test keys[\s\S]*node --test tools\/release-signing\.test\.mjs/);
+});
+
 test('CI audits fork pull requests without exposing private release markers', () => {
   assert.doesNotMatch(ci, /pull_request_target/);
   assert.match(ci, /Audit staged public tree for fork pull requests[\s\S]*if: github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.repo\.full_name != github\.repository[\s\S]*--root dist\/release\/stage --stage\s/);
@@ -140,7 +150,7 @@ test('tagged release deploys the private VPS before publication', () => {
   assert.match(workflow, /deployment tag must be denied by the tailnet or Scout/i);
   assert.match(workflow, /scout-deploy@"\$VPS_HOST"/);
   assert.doesNotMatch(workflow, /ubuntu@"\$VPS_HOST"/);
-  assert.match(workflow, /publish:[\s\S]*needs: \[windows, macos, linux, deploy-vps\]/);
+  assert.match(workflow, /publish:[\s\S]*needs: \[windows, macos, linux, deploy-vps, signing-readiness\]/);
   assert.match(deploy, /status --porcelain --untracked-files=normal -- \. ':\(exclude\)\.scout-runtime\/\*\*'/);
   assert.match(deploy, /refs\/tags\/v\$version:refs\/tags\/v\$version/);
   assert.match(deploy, /refs\/heads\/codex\/release-candidate/);

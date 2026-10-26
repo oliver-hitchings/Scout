@@ -31,6 +31,14 @@ Release only from this clean-history public application repository. Never copy c
 7. Test on clean Windows, macOS and Ubuntu runners: install; first launch; provider detection; supervised/scheduled scans; missed-run/overlap/timeout; upgrade; and uninstall preserving the workspace.
 8. Tag the reviewed commit with the exact package version prefixed by `v`. The cross-platform workflow builds all packages, runs native smoke tests and required-marker audits, deploys and health-checks the exact tag on the approved private Beta VPS, then signs an exact-version release manifest, verifies it against the enrolled owner public key, and publishes the manifest and detached signature, SHA-256 checksums, a keyless GitHub/Sigstore attestation bundle and release notes. The protected `release-signing` environment requires owner approval and its signing key. Candidate tags containing `-rc` build only; they neither deploy, upload artifacts nor publish. A failed or unapproved VPS deployment prevents publication. Follow [release package verification and signing](SUPPLY_CHAIN_SECURITY.md) for the ownership, verification, rotation, incident and remaining platform-signing contract.
 
+Production signing, tag deployment and publication are cleanly skipped with a
+visible workflow summary when no active public release key is enrolled. The
+public readiness job needs no signing secret or environment approval. Malformed
+trust fails rather than silently skipping. Owner enrollment and rotation steps
+are in [Release key enrollment](RELEASE_KEYS.md); an empty registry keeps the
+updater failing closed and still blocks a signed release. Manual protected VPS
+rehearsals retain their explicit owner selection.
+
 Every reusable action in the release workflow is pinned to a reviewed immutable
 full commit SHA. Treat an action update as a dependency change: review the new
 commit, update the pin and rerun the complete release-candidate rehearsal.
