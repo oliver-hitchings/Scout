@@ -61,6 +61,42 @@ namespace ScoutHost {
     }
   }
 
+  sealed class NotificationDiagnostics {
+    public const int MaximumBytes = 64 * 1024;
+    readonly string file;
+    readonly object gate = new object();
+    public NotificationDiagnostics(string file) { this.file = file; }
+    public static NotificationDiagnostics Local() {
+      return new NotificationDiagnostics(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Scout", "logs", "host-notifications.log"));
+    }
+    string Reason(Exception error) {
+      var web = error as WebException;
+      if (web != null) return web.Status == WebExceptionStatus.Timeout ? "timeout" : "http";
+      return error is ArgumentException || error is InvalidOperationException || error is System.Collections.Generic.KeyNotFoundException ? "invalid-response" : "unavailable";
+    }
+    public void RecordPollFailure(Exception error) { Record("notification-poll-" + Reason(error)); }
+    public void RecordReceiptFailure(Exception error) { Record("notification-receipt-" + Reason(error)); }
+    void Record(string reason) {
+      lock (gate) {
+        try {
+          var directory = Path.GetDirectoryName(file);
+          Directory.CreateDirectory(directory);
+          // Diagnostics contain reason codes only and must not follow a linked
+          // log path into another file when the bounded log wraps.
+          for (var entry = new DirectoryInfo(directory); entry != null; entry = entry.Parent) {
+            if ((entry.Attributes & FileAttributes.ReparsePoint) != 0) return;
+          }
+          if (File.Exists(file) && (File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0) return;
+          var bytes = Encoding.UTF8.GetBytes(DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture) + " " + reason + Environment.NewLine);
+          using (var stream = new FileStream(file, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)) {
+            if (stream.Length + bytes.Length > MaximumBytes) stream.SetLength(0);
+            stream.Seek(0, SeekOrigin.End); stream.Write(bytes, 0, bytes.Length); stream.Flush();
+          }
+        } catch { /* Diagnostics must not interrupt retries or reveal raw errors. */ }
+      }
+    }
+  }
+
   sealed class TrayContext : ApplicationContext {
     const string Url = "http://127.0.0.1:8459/";
     readonly NotifyIcon tray;
@@ -71,6 +107,7 @@ namespace ScoutHost {
     System.Windows.Forms.Timer watchdogTimer;
     System.Windows.Forms.Timer notificationTimer;
     readonly NotificationDeliveryState notificationDelivery = new NotificationDeliveryState();
+    readonly NotificationDiagnostics notificationDiagnostics = NotificationDiagnostics.Local();
     NotifyIcon notificationIcon;
     DateTime notificationIconExpiresAt = DateTime.MinValue;
     string pendingBalloonTitle;
@@ -167,8 +204,9 @@ namespace ScoutHost {
           var retired = response != null && response.StatusCode == HttpStatusCode.NotFound;
           if (response != null) response.Close();
           if (retired) { notificationDelivery.ReceiptResult(id, 404); continue; }
+          notificationDiagnostics.RecordReceiptFailure(error);
           break; // Retry the receipt without displaying the balloon again.
-        } catch { break; }
+        } catch (Exception error) { notificationDiagnostics.RecordReceiptFailure(error); break; }
       }
     }
 
@@ -223,7 +261,7 @@ namespace ScoutHost {
           ShowNotificationBalloon(id, title, body);
           break;
         }
-      } catch { /* The durable outbox remains pending while the host or scan is busy. */ }
+      } catch (Exception error) { notificationDiagnostics.RecordPollFailure(error); }
     }
 
     void ShowStatusBalloon(string title, string text, int duration, string link = null) {

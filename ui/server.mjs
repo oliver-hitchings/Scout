@@ -1169,6 +1169,7 @@ async function handleRead(req, res, url) {
     return sendJson(res, 200, readScanHealth());
   }
   if (req.method === 'GET' && url.pathname === '/api/notifications') {
+    if (req.scoutAccess !== 'local') return sendJson(res, 403, { error: 'local dashboard access required' });
     if (!fs.existsSync(WORKSPACE_ROOT)) return sendJson(res, 200, { alerts: [], outbox: [] });
     return sendJson(res, 200, notificationView(readNotifications(WORKSPACE_ROOT)));
   }

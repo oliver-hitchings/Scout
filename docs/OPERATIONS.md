@@ -253,7 +253,19 @@ The [home server guide](HOME_SERVER.md) describes an owner-managed Linux alterna
 
 `GET /api/health` is a local-only versioned liveness/configuration check. `GET /api/summary` is a read-only schema-v1 dashboard projection of mode, bounded scan/provider status, above-threshold new/shortlisted matches and every pending alert within the durable storage boundary. It omits CV/profile/notes, private paths, raw errors/provider output and URL queries/fragments. It never marks results read or triggers work.
 
-Outbound command/webhook notification hooks are owner-configured and disabled by default. The headless process polls the existing alert/digest outbox at startup and every five minutes; CLI scans also dispatch after outcomes. Delivery uses fixed executable argv with `shell: false` or bounded HTTP(S) POST without redirects, and normal delivery receipts are recorded only after success. Shared workspace delivery locks prevent overlap; recovery preserves pending alerts and receipts. Back up complete quiesced workspaces, host selection/unit configuration and separately encrypted provider credentials. No home-server installation or private-network access is performed by application development.
+Outbound command/webhook notification hooks are owner-configured and disabled by default. The headless process polls the existing alert/digest outbox at startup and every five minutes; CLI scans also dispatch after outcomes. Delivery uses fixed executable argv with `shell: false` or bounded HTTP(S) POST without redirects, and normal delivery receipts are recorded only after success. Shared workspace delivery locks prevent overlap. After transport success, only the idempotent receipt retries on a busy workspace fence, bounded by the configured notification timeout and dispatch ownership checks before each attempt. Shutdown stops waiting; exhausted or failed receipts keep the original alert pending. Transport is not resent during receipt settlement. Recovery preserves pending alerts and receipts. Back up complete quiesced workspaces, host selection/unit configuration and separately encrypted provider credentials. No home-server installation or private-network access is performed by application development.
+
+Delivery-lock ownership records bind a random token to PID, process-start identity
+and acquisition time. Short metadata changes reuse the existing crash-safe lease
+guard in a separate lock root; they grant no scan lease. Proven-dead owners can be
+reclaimed, while live or ambiguous owners remain protected even when old. Empty
+legacy mkdir locks recover after ten minutes without recursive removal. Sender
+ownership is rechecked before sending and before delivery receipts. Command
+selection checks protected executable/ancestor ownership and write permissions,
+including Windows owner/DACL checks. `GET /api/notifications` requires local
+access, like health and summary. Windows tray poll/receipt failures append fixed
+reason codes to the local AppData `Scout/logs/host-notifications.log`, capped at
+64 KiB; exception messages, response bodies and notification contents are excluded.
 
 Registered household instances and explicit `SCOUT_HEADLESS=1` services cannot install/remove/run desktop-native schedules or query another person’s user-global task state. CLI/API status labels schedules owner-managed and the UI points to per-instance system timers. Direct scheduled scan execution remains supported.
 
