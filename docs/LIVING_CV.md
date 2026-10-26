@@ -4,8 +4,8 @@ Living CV connects Scout to one Markdown or JSON file maintained by another loca
 
 ## Connect and approve a source
 
-1. Open **CV → Living CV**, enter the absolute path to the source file on the computer running Scout, then choose **Connect source**. On a phone, this is a path on the Scout host, not on the phone.
-2. Use Markdown, or a JSON object with exactly one `markdown` string containing the CV text. The file must be a regular file outside the workspace, between 500 bytes and 256 KiB. Choose the original file rather than a symbolic link.
+1. On the computer running Scout, open its loopback dashboard, choose **CV → Living CV**, enter the absolute path to your source file, then choose **Connect source**. Connecting or disconnecting a source is host-local administration; a remote browser cannot change this file selector.
+2. Use Markdown, or a JSON object with exactly one `markdown` string containing the CV text. The file must be a regular file outside the workspace, between 500 bytes and 256 KiB. Choose the original file rather than a symbolic link. Sources inside any registered household workspace or a `.scout` directory are rejected, including paths reached through directory aliases. An unavailable household instance keeps its registered privacy boundary.
 3. Read the diff. Removed lines have a minus sign; added lines have a plus sign. Scout keeps using the saved CV while you review. It will not approve a truncated diff.
 4. Check the confirmation and choose **Approve this CV change**. Approval is bound to the exact source and saved CV you reviewed. If either changed, refresh and review again. A running scan may delay the save; retry after it finishes.
 

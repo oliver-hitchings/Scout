@@ -1442,6 +1442,27 @@ test('remote owner mutations require HTTPS Origin and administration remains loc
   assert.equal(remoteUpdate.status, 403);
 });
 
+test('the actual Living CV source route rejects the authenticated remote owner before source mutation', async () => {
+  const settingsFile = process.env.SCOUT_DEVICE_SETTINGS;
+  const previous = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile) : null;
+  const headers = {
+    host: 'scout-household.example.ts.net', origin: 'https://scout-household.example.ts.net',
+    'tailscale-user-login': 'synthetic-owner@example.test', 'content-type': 'application/json',
+  };
+  fs.writeFileSync(settingsFile, JSON.stringify({ schemaVersion: 3, remoteAccess: {
+    enabled: true, ownerLogin: headers['tailscale-user-login'], origin: headers.origin,
+  } }));
+  try {
+    assert.equal((await request({ path: '/api/app-info', headers })).status, 200, 'remote identity must be authenticated');
+    const result = await request({ method: 'POST', path: '/api/cv/living/source', headers, body: '{"sourcePath":null}' });
+    assert.equal(result.status, 403);
+    assert.match(JSON.parse(result.text).error, /only be changed on the Scout host/);
+  } finally {
+    if (previous) fs.writeFileSync(settingsFile, previous);
+    else fs.rmSync(settingsFile, { force: true });
+  }
+});
+
 test('backup divergence confirmation cannot acquire authority while a scan owns the fence', async () => {
   const active = acquireScanLease(testWorkspace, currentLeaseOwner(), {
     kind: 'scan', runId: 'active-scan-during-backup-resolution',

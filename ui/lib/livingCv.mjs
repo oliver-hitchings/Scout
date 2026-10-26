@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFile } from './atomicWrite.mjs';
+import { readHousehold } from './household.mjs';
 import { validatePhysicalWorkspacePath } from './physicalPath.mjs';
 import { withWorkspaceMutationAuthority } from './workspaceMutationAuthority.mjs';
 
@@ -32,21 +33,38 @@ function readConfig(root) {
 function sourceFile(root, value) {
   if (typeof value !== 'string' || value.includes('\0') || !path.isAbsolute(value) || !/\.(md|markdown|json)$/i.test(value)) throw new Error('Choose an absolute path to an external Markdown or JSON file.');
   const file = path.resolve(value);
-  const relative = path.relative(fs.realpathSync(root), fs.realpathSync(file));
-  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) throw new Error('The source must be outside this workspace. Scout only reads the external file.');
-  const stat = fs.lstatSync(file);
+  const stat = fs.lstatSync(file, { bigint: true });
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Choose a regular source file rather than a link, pipe or device.');
-  return file;
+  const canonical = fs.realpathSync(file);
+  if ([file, canonical].some((candidate) => candidate.split(path.sep).some((component) => component.toLowerCase() === '.scout'))) {
+    throw new Error('A Living CV source cannot read private .scout state.');
+  }
+  const inside = (directory, candidate) => {
+    const relative = path.relative(directory, candidate);
+    return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  };
+  for (const instance of readHousehold().instances) {
+    // Retain unavailable registry paths as privacy boundaries. Resolve aliases
+    // when present without requiring another person's workspace to be healthy.
+    const boundaries = [instance.workspace];
+    try { boundaries.push(fs.realpathSync(instance.workspace)); } catch {}
+    if (boundaries.some((directory) => inside(directory, file) || inside(directory, canonical))) {
+      throw new Error('A Living CV source cannot read a registered household workspace.');
+    }
+  }
+  if (inside(fs.realpathSync(root), canonical)) throw new Error('The source must be outside this workspace. Scout only reads the external file.');
+  const canonicalStat = fs.lstatSync(canonical, { bigint: true });
+  if (!canonicalStat.isFile() || canonicalStat.isSymbolicLink() || canonicalStat.dev !== stat.dev || canonicalStat.ino !== stat.ino) throw new Error('The source changed while checking its path.');
+  return { file: canonical, identity: canonicalStat };
 }
 
 function readSource(root, filename) {
-  const file = sourceFile(root, filename);
-  const identity = fs.lstatSync(file);
+  const { file, identity } = sourceFile(root, filename);
   const handle = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
   let raw;
   try {
-    const stat = fs.fstatSync(handle);
-    if (!stat.isFile() || stat.dev !== identity.dev || stat.ino !== identity.ino || stat.size > MAX_BYTES) throw new Error('The source must be an unchanged regular file of at most 256 KiB.');
+    const stat = fs.fstatSync(handle, { bigint: true });
+    if (!stat.isFile() || stat.dev !== identity.dev || stat.ino !== identity.ino || stat.size > BigInt(MAX_BYTES)) throw new Error('The source must be an unchanged regular file of at most 256 KiB.');
     const buffer = Buffer.alloc(MAX_BYTES + 1);
     let count = 0;
     while (count < buffer.length) {
@@ -55,6 +73,12 @@ function readSource(root, filename) {
       count += read;
     }
     if (count > MAX_BYTES) throw new Error('The source is too large.');
+    const after = fs.fstatSync(handle, { bigint: true });
+    const selected = sourceFile(root, filename).identity;
+    if ([after, selected].some((current) => current.dev !== identity.dev || current.ino !== identity.ino
+      || current.size !== identity.size || current.mtimeNs !== identity.mtimeNs || current.ctimeNs !== identity.ctimeNs)) {
+      throw new Error('The source changed while reading. Review the current file again.');
+    }
     raw = buffer.subarray(0, count).toString('utf8');
   } finally { fs.closeSync(handle); }
   let markdown = raw;

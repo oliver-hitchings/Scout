@@ -626,6 +626,7 @@ const LOCAL_ONLY_ROUTES = new Set([
   'POST /api/update/download',
   'POST /api/setup/section',
   'POST /api/setup/recovery',
+  'POST /api/cv/living/source',
   'POST /api/remote-access/enable',
   'POST /api/remote-access/disable',
   'POST /api/shutdown',

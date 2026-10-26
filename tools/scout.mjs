@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { activateHouseholdRuntime, assertDesktopScheduleAllowed, createHouseholdInstance, householdScheduleManagement, readHousehold, switchHouseholdInstance } from '../ui/lib/household.mjs';
+import { activateHouseholdRuntime, assertDesktopScheduleAllowed, createHouseholdInstance, householdScheduleManagement, listHousehold, switchHouseholdInstance } from '../ui/lib/household.mjs';
 import { dispatchHeadlessNotifications } from '../ui/lib/headlessNotifications.mjs';
 import { doctor } from '../ui/lib/doctor.mjs';
 import { fetchAdzuna, resolveAdzunaCredentials } from '../ui/lib/adzuna.mjs';
@@ -1360,7 +1360,7 @@ function print(value) { process.stdout.write(`${typeof value === 'string' ? valu
 async function main() {
   const argv = process.argv.slice(2);
   const command = argv[0] || 'help';
-  const root = selectedWorkspace(argv);
+  const root = command === 'household' ? null : selectedWorkspace(argv);
   if (command !== 'household') activateHouseholdRuntime(root);
   if (command === 'notifications') {
     if (argv[1] !== 'dispatch') throw new Error('notifications action must be dispatch');
@@ -1371,7 +1371,7 @@ async function main() {
   }
   if (command === 'household') {
     const action = argv[1] || 'list';
-    if (action === 'list') return print({ ok: true, ...readHousehold() });
+    if (action === 'list') return print({ ok: true, ...listHousehold() });
     if (action === 'switch') return print(switchHouseholdInstance(argv[2]));
     if (action === 'create') return print(createHouseholdInstance({
       appRoot: APP_ROOT, directory: argValue('--directory', argv), id: argv[2],
