@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import {
   CURRENT_WORKSPACE_SCHEMA, DEFAULT_WORKSPACE_CONFIG, backupWorkspace, defaultWorkspaceRoot, ensureWorkspaceDirectories, mergeWorkspaceDefaults, migrateWorkspace, resolveWorkspaceRoot,
-  modelForProvider, mutateWorkspaceConfig, mutateWorkspaceConfigAsync, syncManagedInstructions,
+  loadWorkspaceConfig, modelForProvider, mutateWorkspaceConfig, mutateWorkspaceConfigAsync, syncManagedInstructions,
   validateWorkspaceConfig, workspacePaths, writeWorkspaceConfig,
 } from './workspace.mjs';
 import { withWorkspaceMutationAuthorityAsync } from './workspaceMutationAuthority.mjs';
@@ -21,6 +21,30 @@ test('generic defaults do not silently choose a country or regional time zone', 
   const existing = mergeWorkspaceDefaults({ locale: 'en-NZ', currency: 'NZD', timezone: 'Pacific/Auckland', sources: { adzuna: { country: 'nz' } } });
   assert.equal(existing.sources.adzuna.country, 'nz');
   assert.equal(existing.timezone, 'Pacific/Auckland');
+});
+
+test('loading and migrating an existing workspace preserve explicit regional settings and default only absent keys', () => {
+  const explicit = { locale: 'en-GB', currency: 'GBP', timezone: 'Europe/London', sources: { adzuna: { country: 'gb' } } };
+  const neutral = { locale: 'en', currency: 'USD', timezone: 'UTC', country: null };
+  for (const schemaVersion of [1, CURRENT_WORKSPACE_SCHEMA]) {
+    for (const [settings, expected] of [
+      [explicit, { locale: 'en-GB', currency: 'GBP', timezone: 'Europe/London', country: 'gb' }],
+      [{}, neutral],
+      [{ locale: 'en-GB', sources: { adzuna: { country: 'gb' } } }, { ...neutral, locale: 'en-GB', country: 'gb' }],
+    ]) {
+      const root = temp();
+      const file = path.join(root, 'workspace.json');
+      const before = `${JSON.stringify({ schemaVersion, ...settings })}\n`;
+      fs.writeFileSync(file, before);
+      const regional = (config) => ({ locale: config.locale, currency: config.currency, timezone: config.timezone, country: config.sources.adzuna.country });
+      assert.deepEqual(regional(loadWorkspaceConfig(root)), expected);
+      assert.equal(fs.readFileSync(file, 'utf8'), before, 'reading defaults must not rewrite an existing workspace');
+      const migration = migrateWorkspace(root);
+      assert.deepEqual(regional(loadWorkspaceConfig(root)), expected);
+      if (migration.backup) assert.equal(fs.readFileSync(migration.backup, 'utf8'), before, 'the pre-migration configuration remains exact');
+      else assert.equal(fs.readFileSync(file, 'utf8'), before, 'current-schema files are not rewritten to fill missing keys');
+    }
+  }
 });
 
 test('explicit workspace overrides backwards-compatible app root', () => {

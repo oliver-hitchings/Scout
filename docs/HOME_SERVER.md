@@ -36,6 +36,94 @@ Run one Scout instance per person, without a desktop or tray. Each instance has 
    A successful response includes `schemaVersion: 1`, the application version and `status: "ready"`. `setup-required` means the workspace has not been initialised. This is a liveness/configuration check; provider and scan readiness are reported separately.
 7. Open this instance through an owner-controlled private connection and complete setup: choose background watch or active job hunt, import that person's CV, set their location, currency and timezone, and choose an AI provider. A local OpenAI-compatible provider does not require the Codex CLI. No public port, remote proxy or tray is configured by these examples.
 
+## Verify the filesystem sandbox on the real host
+
+Before enabling household schedules, rehearse the shipped service restrictions
+on the Linux host that will run Scout. A static unit-file check does not prove
+runtime mount behaviour. In particular, `ProtectSystem=strict` must leave the
+selected `BindPaths` workspace writable while `TemporaryFileSystem` hides its
+siblings. Repeat this after changing systemd, unit overrides or storage mounts.
+
+The following requires the dedicated `scout` account and administrator access.
+It creates only synthetic directories in the OS volatile runtime area (`/run`), starts a
+short-lived transient unit with the same restrictions as both Scout service
+templates, checks the actual namespace with `findmnt`, then removes the synthetic
+state. It never starts Scout, contacts a provider or opens a real workspace.
+The fixture uses `/run` so `PrivateTmp=true` cannot hide its host source before
+the bind-mount rehearsal. Both shipped templates bind `/srv/appdata/scout`,
+which is also outside the private `/tmp` and `/var/tmp` mounts. Run the complete
+block in Bash on the real host:
+
+<!-- scout-sandbox-rehearsal:start -->
+```bash
+bash <<'SCOUT_SANDBOX_REHEARSAL'
+set -eu
+if [ ! -d /run/systemd/system ]; then
+  printf '%s\n' 'No running systemd manager; runtime verification remains pending.' >&2
+  exit 1
+fi
+command -v systemd-run >/dev/null
+command -v findmnt >/dev/null
+probe_root=$(sudo mktemp -d /run/scout-sandbox.XXXXXX)
+case "$probe_root" in /run/scout-sandbox.*) ;; *) exit 1 ;; esac
+probe_unit="scout-sandbox-check-$$.service"
+cleanup_probe() {
+  sudo systemctl stop "$probe_unit" >/dev/null 2>&1 || true
+  sudo rm -rf -- "$probe_root"
+}
+trap cleanup_probe EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+sudo chown scout:scout -- "$probe_root"
+sudo -u scout mkdir "$probe_root/workspace-selected" "$probe_root/workspace-sibling"
+sudo -u scout sh -c 'printf "%s\n" "Synthetic sandbox fixture" > "$1/sentinel"' \
+  sh "$probe_root/workspace-sibling"
+systemctl --version
+sudo systemd-run --unit="$probe_unit" --wait --collect --pipe --quiet \
+  --property=User=scout --property=Group=scout \
+  --property=ProtectSystem=strict --property=ProtectHome=true \
+  --property=PrivateTmp=true --property=NoNewPrivileges=true --property=UMask=0077 \
+  --property="TemporaryFileSystem=$probe_root:ro" \
+  --property="BindPaths=$probe_root/workspace-selected" \
+  /bin/sh -eu -s -- "$probe_root/workspace-selected" "$probe_root" <<'SCOUT_SANDBOX_CHECK'
+workspace=$1
+masked_parent=$2
+workspace_options=$(findmnt -n -o OPTIONS --target "$workspace")
+parent_options=$(findmnt -n -o OPTIONS --target "$masked_parent")
+system_options=$(findmnt -n -o OPTIONS --target /usr)
+case ",$workspace_options," in *,rw,*) ;; *) exit 1 ;; esac
+case ",$parent_options," in *,ro,*) ;; *) exit 1 ;; esac
+case ",$system_options," in *,ro,*) ;; *) exit 1 ;; esac
+printf '%s\n' 'Synthetic writable workspace check' > "$workspace/sandbox-write-check"
+test -s "$workspace/sandbox-write-check"
+rm "$workspace/sandbox-write-check"
+if [ -e "$masked_parent/workspace-sibling" ]; then
+  printf '%s\n' 'FAIL: a sibling workspace is visible.' >&2
+  exit 1
+fi
+if (printf '%s\n' 'must not persist' > "$masked_parent/unbound-write-check") 2>/dev/null; then
+  printf '%s\n' 'FAIL: the unbound parent is writable.' >&2
+  exit 1
+fi
+findmnt -n -o TARGET,FSTYPE,OPTIONS --target "$workspace"
+findmnt -n -o TARGET,FSTYPE,OPTIONS --target "$masked_parent"
+printf '%s\n' 'PASS: selected workspace writable; sibling hidden; unbound parent and system read-only.'
+SCOUT_SANDBOX_CHECK
+SCOUT_SANDBOX_REHEARSAL
+```
+<!-- scout-sandbox-rehearsal:end -->
+
+Accept only exit status zero and the final `PASS` line after all positive and
+negative checks. Record the systemd version, unit-template revision, exit status
+and sanitised mount/result evidence in the private operator context; share only
+the synthetic result in the release gate. An error, a skipped invocation or a
+machine without a running systemd manager leaves this gate open. Do not remove
+`ProtectSystem`, change read-only mounts or expose sibling paths to pass it.
+
+Until a successful rehearsal is recorded for the intended host, runtime
+verification remains pending. Automated tests check the procedure syntax and
+required unit properties, not live mount isolation.
+
 ## Schedule scans without a desktop
 
 Use the system timer templates above for a system account. Registered household instances and explicitly headless services (`SCOUT_HEADLESS=1`, set by the templates) reject desktop-native schedule install, remove and run-now actions in both the CLI and UI/API. Their native status is marked owner-managed rather than guessed from another person's user-global task name. The settings screen directs the owner to this guide and keeps manual scans available. Manage each instance's system timer with the administrator commands below. Scout's desktop `schedule install` command remains available outside household/headless mode and needs a working user service manager.

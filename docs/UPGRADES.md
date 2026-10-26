@@ -54,6 +54,19 @@ VPS source checkouts continue to use the protected release workflow described in
 runs the complete tests, rolls back a failed health check, and preserves the
 separate workspace, provider credentials and existing Tailscale Serve mapping.
 
+## Regional settings when fields are missing
+
+Existing explicit regional settings are preserved: a workspace with locale
+`en-GB`, currency `GBP`, timezone `Europe/London` and Adzuna country `gb` keeps
+those choices. Only missing keys receive the neutral defaults `en`, `USD`,
+`UTC` and country `null`. Scout does not infer a country from the machine or
+silently restore a UK default. Check **Settings → Search & profile** after an
+upgrade if an older workspace omitted any of these fields; review and save the
+language, currency, time zone and optional source country you actually want.
+Reading a current-schema workspace fills missing defaults in memory without
+rewriting its file. An older-schema migration saves the original configuration
+before persisting the filled defaults.
+
 ## Legacy/private checkout migration
 
 The migration command seeds the current schema, overlays the legacy private content,

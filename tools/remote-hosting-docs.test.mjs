@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 function read(relative) { return fs.readFileSync(new URL(`../${relative}`, import.meta.url), 'utf8'); }
@@ -64,4 +65,34 @@ test('release guide keeps live private-hosting acceptance current', () => {
     assert.match(release, new RegExp(phrase, 'i'));
   }
   assert.match(release, /pull request or release record/i);
+});
+
+test('upgrade guidance distinguishes missing neutral defaults from explicit existing regional choices', () => {
+  const upgrades = read('docs/UPGRADES.md');
+  for (const required of ['missing', '`en`', '`USD`', '`UTC`', '`null`', '`en-GB`', '`GBP`', '`Europe/London`', '`gb`']) {
+    assert.ok(upgrades.includes(required), `upgrade guidance must disclose ${required}`);
+  }
+  assert.match(upgrades, /explicit.*(?:retain|preserv)|(?:retain|preserv).*explicit/is);
+});
+
+test('home-server rehearsal exercises shipped sandbox properties and requires runtime evidence', () => {
+  const home = read('docs/HOME_SERVER.md');
+  const procedure = home.match(/<!-- scout-sandbox-rehearsal:start -->\s*```bash\n([\s\S]*?)\n```\s*<!-- scout-sandbox-rehearsal:end -->/)?.[1];
+  assert.ok(procedure, 'the real-host synthetic sandbox rehearsal must be copyable');
+  assert.equal(spawnSync('bash', ['-n'], { input: procedure, encoding: 'utf8' }).status, 0, 'the complete rehearsal must parse');
+  for (const unit of ['templates/systemd/scout@.service', 'templates/systemd/scout-scan@.service']) {
+    const source = read(unit);
+    for (const property of ['ProtectSystem=strict', 'ProtectHome=true', 'PrivateTmp=true', 'NoNewPrivileges=true', 'UMask=0077']) {
+      assert.ok(source.includes(property), `${unit}: ${property}`);
+      assert.ok(procedure.includes(`--property=${property}`), `rehearsal: ${property}`);
+    }
+    assert.match(source, /^TemporaryFileSystem=\/srv\/appdata\/scout:ro$/m);
+    assert.match(source, /^BindPaths=\/srv\/appdata\/scout\/workspace-%i$/m);
+  }
+  assert.match(procedure, /systemd-run/);
+  assert.match(procedure, /findmnt/);
+  assert.match(procedure, /workspace-sibling/);
+  assert.match(procedure, /sandbox-write-check/);
+  assert.match(home, /static.*(?:does not|cannot).*runtime/is);
+  assert.match(home, /runtime verification remains pending/i);
 });
