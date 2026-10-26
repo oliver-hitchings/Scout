@@ -357,6 +357,12 @@ Run it alongside the normal suite. The owner-only current-provider check is in
 
 Pushing or merging a branch does not by itself update the live VPS.
 
+Release-candidate preparation keeps package, root lockfile, installer fallback,
+versioned artifacts and candidate notes in agreement. The requested tag must
+match that exact package version before packaging. Candidate refs retain the
+existing no-upload, no-deploy and no-publish guards; changing version metadata
+does not create a tag or satisfy hosted installation, privacy or owner gates.
+
 ## Maintenance contract
 
 Critical mutable workspace records are replaced atomically. Scout writes new contents to a temporary file in the same directory, flushes that file, and then renames it over the canonical path. This covers configuration, tracker state, chats, company timelines, CV-quality records, onboarding state, scan artifacts, recovery metadata, and imported CV text. Code that adds another critical workspace write must use the shared atomic-write helper; temporary files are never a source of truth.

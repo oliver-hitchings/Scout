@@ -52,5 +52,7 @@ Read [CONTRIBUTING.md](../CONTRIBUTING.md), then use:
 - [documentation maintenance](DOCUMENTATION.md) whenever a change affects users, setup, operations, security, or support.
 
 Historical release notes live in [`docs/releases`](releases/). They describe a release as it was and are not current setup instructions.
+The [current release-candidate notes](releases/0.1.0-beta.24-rc1.md) describe the
+prepared candidate and its remaining acceptance and owner gates.
 The [native packaging privacy-audit note](releases/native-packaging-privacy-audit.md)
 describes the scoped vendor metadata correction and remaining packaging gate.

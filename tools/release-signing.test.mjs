@@ -19,7 +19,7 @@ test('release CLI signs each artifact and verifies installer bytes against indep
   const keyId = crypto.createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
   const trust = { schemaVersion: 1, keys: [{ keyId, publicKey: publicKey.export({ type: 'spki', format: 'pem' }) }], revokedKeyIds: [] };
   const trustFile = path.join(root, 'trust.json'); fs.writeFileSync(trustFile, JSON.stringify(trust));
-  const version = '0.1.0-beta.12';
+  const version = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   const names = ['windows-x64.exe', 'macos-arm64.dmg', 'macos-x64.dmg', 'linux-x64.deb', 'linux-x64.tar.gz'].map((suffix) => `Scout-${version}-${suffix}`);
   for (const name of names) fs.writeFileSync(path.join(output, name), 'synthetic package');
   const run = (args) => spawnSync(process.execPath, [fileURLToPath(cli), ...args], { encoding: 'utf8' });
@@ -32,6 +32,8 @@ test('release CLI signs each artifact and verifies installer bytes against indep
   assert.ok(manifest.artifacts.every((artifact) => artifact.sha256 === crypto.createHash('sha256').update('synthetic package').digest('hex')));
   const args = ['verify', '--package', path.join(output, names[0]), '--manifest', manifestFile, '--signature', signatureFile, '--version', version, '--trust-file', trustFile];
   assert.equal(run(args).status, 0);
+  const wrongVersion = [...args]; wrongVersion[wrongVersion.indexOf('--version') + 1] = '0.1.0-beta.23';
+  assert.notEqual(run(wrongVersion).status, 0, 'The candidate signature must reject the previous package version');
   fs.writeFileSync(path.join(output, names[0]), 'tampered package!');
   assert.notEqual(run(args).status, 0);
   fs.writeFileSync(path.join(output, names[0]), 'synthetic package');
