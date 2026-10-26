@@ -2483,6 +2483,9 @@ test('source preview refuses loopback destinations before network access', { con
 });
 
 test('a UI mutation racing scan completion preserves every tracked user field', { concurrency: false }, async () => {
+  // Earlier HTTP cases can leave a coalesced checkpoint pending. Close this
+  // server's owned work before fixture writes and the intended scan admission.
+  await drainScheduledCheckpoints();
   seedWorkspace(APP_ROOT, testWorkspace);
   const trackerFile = path.join(testWorkspace, 'data', 'opportunities.json');
   const id = 'race-example-2026-07';
@@ -2498,7 +2501,9 @@ test('a UI mutation racing scan completion preserves every tracked user field', 
     }],
   };
   fs.writeFileSync(trackerFile, `${JSON.stringify(original, null, 2)}\n`);
-  const before = JSON.parse((await request({ path: '/api/opportunities' })).text);
+  const beforeResponse = await request({ path: '/api/opportunities' });
+  assert.equal(beforeResponse.status, 200, beforeResponse.text);
+  const before = JSON.parse(beforeResponse.text);
   const scanLock = acquireScanLock(testWorkspace, { agent: 'test-scan', mode: 'primary' });
   assert.equal(scanLock.ok, true);
 
